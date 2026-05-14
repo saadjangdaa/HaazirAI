@@ -1,0 +1,35 @@
+{
+  "expo": {
+    "name": "Haazir AI",
+    "slug": "haazir-ai",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#0A0A0A"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.haazir.ai"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#0A0A0A"
+      },
+      "package": "com.haazir.ai"
+    },
+    "web": {
+      "bundler": "metro"
+    },
+    "plugins": ["expo-router"],
+    "scheme": "haazir",
+    "extra": {
+      "eas": {
+        "projectId": "haazir-ai-project"
+      }
+    }
+  }
+}
