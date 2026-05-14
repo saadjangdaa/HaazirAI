@@ -4,8 +4,9 @@ import {
   StyleSheet, ActivityIndicator, Animated, Easing, Alert,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Colors, Spacing, Radius, FontSize, Shadow } from '../constants/theme';
-import { submitRequest } from '../services/api';
+import { Colors, Spacing, Radius, FontSize, Shadow } from '../../constants/theme';
+import { submitRequest } from '../../services/api';
+import { useAuth } from '../../context/AuthContext';
 
 const QUICK_SERVICES = [
   { label: 'AC Technician', icon: '❄️' },
@@ -23,8 +24,9 @@ const RECENT_REQUESTS = [
   'Math tutor bachon ke liye',
 ];
 
-export default function HomeScreen() {
+export default function CustomerHomeScreen() {
   const router = useRouter();
+  const { user } = useAuth();
   const [input, setInput] = useState('');
   const [location, setLocation] = useState('');
   const [loading, setLoading] = useState(false);
@@ -104,42 +106,67 @@ export default function HomeScreen() {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      {/* Header */}
       <View style={styles.header}>
-        <Text style={styles.logo}>حاضر AI</Text>
-        <Text style={styles.logoEn}>Haazir AI</Text>
-        <Text style={styles.tagline}>Jo bhi chahiye, Haazir hai</Text>
+        <View style={styles.headerLeft}>
+          <View style={styles.headerIcon}><Text style={styles.headerIconText}>🤖</Text></View>
+          <View>
+            <Text style={styles.headerTitle}>Haazir AI</Text>
+            <Text style={styles.headerSub}>Pakistan's AI service agent</Text>
+          </View>
+        </View>
+        <View style={styles.notifBtn}>
+          <Text style={styles.notifIcon}>🔔</Text>
+          <View style={styles.notifDot} />
+        </View>
       </View>
 
-      <Animated.View style={[styles.voiceBtn, { transform: [{ scale: pulseAnim }] }, recording && styles.voiceBtnActive]}>
-        <TouchableOpacity onPress={handleVoice} style={styles.voiceInner}>
-          <Text style={styles.voiceIcon}>{recording ? '⏹' : '🎙'}</Text>
-          <Text style={styles.voiceLabel}>{recording ? 'Rok Dein' : 'Bolen'}</Text>
-        </TouchableOpacity>
-      </Animated.View>
+      {/* Greeting */}
+      <Text style={styles.greeting}>
+        {user?.name ? `Assalam o Alaikum, ${user.name.split(' ')[0]}! 👋` : 'Assalam o Alaikum! 👋'}
+      </Text>
+      <Text style={styles.greetingSub}>Kya chahiye aaj?</Text>
 
-      <View style={styles.inputCard}>
+      {/* Voice Button */}
+      <View style={styles.voiceCenter}>
+        <Animated.View style={[styles.voiceBtn, { transform: [{ scale: pulseAnim }] }, recording && styles.voiceBtnActive]}>
+          <TouchableOpacity onPress={handleVoice} style={styles.voiceInner}>
+            <Text style={styles.voiceIcon}>{recording ? '⏹' : '🎙'}</Text>
+          </TouchableOpacity>
+        </Animated.View>
+        <Text style={styles.voiceLabel}>{recording ? 'Rok Dein' : 'Bolein ya likhein'}</Text>
+      </View>
+
+      {/* Input Card */}
+      <View style={[styles.inputCard, Shadow.card]}>
         <TextInput
           style={styles.textInput}
           value={input}
           onChangeText={setInput}
-          placeholder="Kya chahiye? (Urdu ya English mein likhein)"
+          placeholder="e.g. AC bilkul kaam nahi kar raha, kal subah chahiye..."
           placeholderTextColor={Colors.textMuted}
           multiline
           numberOfLines={3}
           textAlignVertical="top"
         />
-        <View style={styles.locationRow}>
-          <Text style={styles.locationIcon}>📍</Text>
-          <TextInput
-            style={styles.locationInput}
-            value={location}
-            onChangeText={setLocation}
-            placeholder="Aapka area / mohalla (e.g. G-13, DHA)"
-            placeholderTextColor={Colors.textMuted}
-          />
+        <View style={styles.inputBottom}>
+          <View style={styles.locationRow}>
+            <Text style={styles.locationIcon}>📍</Text>
+            <TextInput
+              style={styles.locationInput}
+              value={location}
+              onChangeText={setLocation}
+              placeholder="Aapka area (e.g. G-13, DHA)"
+              placeholderTextColor={Colors.textMuted}
+            />
+          </View>
+          <TouchableOpacity style={styles.sendBtn} onPress={handleSubmit} disabled={loading}>
+            <Text style={styles.sendBtnText}>→</Text>
+          </TouchableOpacity>
         </View>
       </View>
 
+      {/* Quick Services */}
       <Text style={styles.sectionLabel}>Jaldi Chunein:</Text>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipsScroll}>
         {QUICK_SERVICES.map((s) => (
@@ -154,14 +181,24 @@ export default function HomeScreen() {
         ))}
       </ScrollView>
 
+      {/* Agent Info Card */}
+      <View style={[styles.agentCard, Shadow.card]}>
+        <Text style={styles.agentCardTitle}>✨ Haazir hai!</Text>
+        <Text style={styles.agentCardText}>
+          4 AI agents — SAMAJH, DHUNDHO, CHUNNO, PAKKA — milkar aapka best provider chunte hain. Fikr mat karo. ✨
+        </Text>
+      </View>
+
+      {/* Recent Requests */}
       <Text style={styles.sectionLabel}>Pehle Ki Requests:</Text>
       {RECENT_REQUESTS.map((r, i) => (
-        <TouchableOpacity key={i} style={styles.recentItem} onPress={() => setInput(r)}>
+        <TouchableOpacity key={i} style={[styles.recentItem, Shadow.card]} onPress={() => setInput(r)}>
           <Text style={styles.recentIcon}>🕐</Text>
           <Text style={styles.recentText}>{r}</Text>
         </TouchableOpacity>
       ))}
 
+      {/* Loading / Submit */}
       {loading ? (
         <View style={styles.loadingCard}>
           <ActivityIndicator size="large" color={Colors.primary} />
@@ -182,33 +219,43 @@ export default function HomeScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
-  content: { padding: Spacing.md, paddingBottom: 48 },
-  header: { alignItems: 'center', marginTop: Spacing.xl, marginBottom: Spacing.xl },
-  logo: { fontSize: 36, color: Colors.primary, fontWeight: '900', textAlign: 'center' },
-  logoEn: { fontSize: FontSize.xxl, color: Colors.textPrimary, fontWeight: '800' },
-  tagline: { fontSize: FontSize.md, color: Colors.textSecondary, marginTop: 4 },
+  content: { padding: Spacing.md, paddingBottom: 32 },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.md },
+  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  headerIcon: { width: 38, height: 38, borderRadius: Radius.md, backgroundColor: Colors.surfaceElevated, justifyContent: 'center', alignItems: 'center' },
+  headerIconText: { fontSize: 20 },
+  headerTitle: { fontSize: FontSize.md, fontWeight: '800', color: Colors.textPrimary },
+  headerSub: { fontSize: FontSize.xs, color: Colors.textMuted },
+  notifBtn: { width: 38, height: 38, borderRadius: Radius.md, backgroundColor: Colors.surfaceElevated, justifyContent: 'center', alignItems: 'center', position: 'relative' },
+  notifIcon: { fontSize: 16 },
+  notifDot: { position: 'absolute', top: 7, right: 7, width: 7, height: 7, borderRadius: 4, backgroundColor: Colors.primary },
+  greeting: { fontSize: FontSize.xxl, fontWeight: '800', color: Colors.textPrimary, marginBottom: 4 },
+  greetingSub: { fontSize: FontSize.sm, color: Colors.textMuted, marginBottom: Spacing.lg },
+  voiceCenter: { alignItems: 'center', marginBottom: Spacing.lg },
   voiceBtn: {
-    alignSelf: 'center', width: 90, height: 90, borderRadius: 45,
-    backgroundColor: Colors.primaryDim, borderWidth: 2, borderColor: Colors.primary,
-    marginBottom: Spacing.lg, justifyContent: 'center', alignItems: 'center',
+    width: 88, height: 88, borderRadius: 44,
+    backgroundColor: Colors.primary,
+    justifyContent: 'center', alignItems: 'center',
     ...Shadow.primary,
   },
-  voiceBtnActive: { backgroundColor: '#FF444422', borderColor: Colors.danger },
-  voiceInner: { alignItems: 'center' },
-  voiceIcon: { fontSize: 30 },
-  voiceLabel: { fontSize: FontSize.xs, color: Colors.textSecondary, marginTop: 2 },
+  voiceBtnActive: { backgroundColor: Colors.danger },
+  voiceInner: { justifyContent: 'center', alignItems: 'center' },
+  voiceIcon: { fontSize: 34, color: Colors.background },
+  voiceLabel: { marginTop: Spacing.sm, fontSize: FontSize.sm, fontWeight: '600', color: Colors.textSecondary },
   inputCard: {
-    backgroundColor: Colors.cardBg, borderRadius: Radius.lg,
+    backgroundColor: Colors.cardBg, borderRadius: Radius.xl,
     borderWidth: 1, borderColor: Colors.border, padding: Spacing.md, marginBottom: Spacing.md,
   },
   textInput: {
-    color: Colors.textPrimary, fontSize: FontSize.md, minHeight: 72,
-    fontFamily: 'System',
+    color: Colors.textPrimary, fontSize: FontSize.md, minHeight: 60,
   },
-  locationRow: { flexDirection: 'row', alignItems: 'center', marginTop: Spacing.sm, paddingTop: Spacing.sm, borderTopWidth: 1, borderTopColor: Colors.border },
-  locationIcon: { fontSize: 16, marginRight: 6 },
+  inputBottom: { flexDirection: 'row', alignItems: 'center', marginTop: Spacing.sm, paddingTop: Spacing.sm, borderTopWidth: 1, borderTopColor: Colors.border },
+  locationRow: { flex: 1, flexDirection: 'row', alignItems: 'center' },
+  locationIcon: { fontSize: 14, marginRight: 6 },
   locationInput: { flex: 1, color: Colors.textPrimary, fontSize: FontSize.sm },
-  sectionLabel: { color: Colors.textSecondary, fontSize: FontSize.sm, fontWeight: '600', marginBottom: Spacing.sm, marginTop: Spacing.sm },
+  sendBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: Colors.primary, justifyContent: 'center', alignItems: 'center', marginLeft: Spacing.sm },
+  sendBtnText: { color: Colors.background, fontSize: FontSize.lg, fontWeight: '800' },
+  sectionLabel: { color: Colors.textSecondary, fontSize: FontSize.sm, fontWeight: '700', marginBottom: Spacing.sm, marginTop: Spacing.sm },
   chipsScroll: { marginBottom: Spacing.md },
   chip: {
     flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.surfaceElevated,
@@ -219,6 +266,9 @@ const styles = StyleSheet.create({
   chipIcon: { fontSize: 14, marginRight: 4 },
   chipText: { color: Colors.textPrimary, fontSize: FontSize.sm, fontWeight: '600' },
   chipTextDanger: { color: Colors.danger },
+  agentCard: { backgroundColor: Colors.surfaceElevated, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.primaryDim, padding: Spacing.md, marginBottom: Spacing.md },
+  agentCardTitle: { fontSize: FontSize.md, fontWeight: '700', color: Colors.primary, marginBottom: 4 },
+  agentCardText: { fontSize: FontSize.sm, color: Colors.textSecondary, lineHeight: 20 },
   recentItem: {
     flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.cardBg,
     borderRadius: Radius.md, padding: Spacing.sm, marginBottom: Spacing.xs,
@@ -232,7 +282,7 @@ const styles = StyleSheet.create({
   },
   loadingMsg: { color: Colors.primary, fontSize: FontSize.md, marginTop: Spacing.md, fontWeight: '600', textAlign: 'center' },
   submitBtn: {
-    backgroundColor: Colors.primary, borderRadius: Radius.lg, padding: Spacing.md + 2,
+    backgroundColor: Colors.primary, borderRadius: Radius.xl, padding: Spacing.md + 2,
     alignItems: 'center', marginTop: Spacing.lg,
   },
   submitText: { color: Colors.background, fontSize: FontSize.lg, fontWeight: '800' },
