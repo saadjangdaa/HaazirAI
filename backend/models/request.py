@@ -3,9 +3,11 @@ from typing import Optional, List
 
 
 class ServiceRequest(BaseModel):
+    """Primary field ``user_input``; location/id optional for LangGraph-only Samajh flow."""
+
     user_input: str
-    user_location: str
-    user_id: str
+    user_location: str = ""
+    user_id: str = "anonymous"
 
 
 class BidRequest(BaseModel):

@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import asyncio
 import google.generativeai as genai
@@ -14,20 +15,29 @@ _model = None
 if not MOCK_MODE:
     try:
         genai.configure(api_key=GEMINI_API_KEY)
-        _model = genai.GenerativeModel("gemini-2.0-flash-exp")
+        _model = genai.GenerativeModel("gemini-2.0-flash")
     except Exception as e:
         print(f"Gemini init error: {e} — switching to mock mode")
         MOCK_MODE = True
 
 
-async def generate(prompt: str, system_prompt: str = "") -> str:
+async def generate(prompt: str, system_prompt: str = "", *, json_mode: bool = False) -> str:
     if MOCK_MODE:
         return _mock_gemini_response(prompt, system_prompt)
 
     try:
         full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
         loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(None, lambda: _model.generate_content(full_prompt))
+
+        def _call():
+            kwargs: dict = {}
+            if json_mode:
+                kwargs["generation_config"] = genai.GenerationConfig(
+                    response_mime_type="application/json",
+                )
+            return _model.generate_content(full_prompt, **kwargs)
+
+        response = await loop.run_in_executor(None, _call)
         return response.text
     except Exception as e:
         print(f"Gemini API error: {e} — falling back to mock")
@@ -37,44 +47,15 @@ async def generate(prompt: str, system_prompt: str = "") -> str:
 def _mock_gemini_response(prompt: str, system_prompt: str = "") -> str:
     sp_lower = system_prompt.lower()
 
-    if "samajh" in sp_lower or "extract" in sp_lower and "service" in sp_lower:
-        p_lower = prompt.lower()
-        service = "AC repair"
-        if "plumb" in p_lower or "nal" in p_lower or "paani" in p_lower:
-            service = "plumber"
-        elif "electric" in p_lower or "bijli" in p_lower:
-            service = "electrician"
-        elif "tutor" in p_lower or "math" in p_lower:
-            service = "tutor"
-        elif "beauty" in p_lower or "salon" in p_lower:
-            service = "beautician"
-        elif "carpent" in p_lower or "furniture" in p_lower:
-            service = "carpenter"
-        elif "paint" in p_lower or "rang" in p_lower:
-            service = "painter"
+    if "samajh" in sp_lower or ("extract" in sp_lower and "service" in sp_lower):
+        # Reuse Samajh offline heuristics so mock mode matches production fallback (no stale defaults).
+        from agents.samajh import SamajhAgent, _detect_emergency
 
-        city = "Islamabad"
-        if "karachi" in p_lower or "khi" in p_lower:
-            city = "Karachi"
-        elif "lahore" in p_lower or "lhr" in p_lower:
-            city = "Lahore"
-
-        is_emergency = any(kw in p_lower for kw in ["gas leak", "aag", "fire", "bijli ka jhatka", "emergency"])
-        return json.dumps({
-            "service_type": service,
-            "location": "G-13",
-            "city": city,
-            "time_preference": "tomorrow_morning",
-            "urgency": "critical" if is_emergency else "high",
-            "budget_sensitivity": "high",
-            "job_complexity": "intermediate",
-            "emergency": is_emergency,
-            "confidence_score": 0.92,
-            "clarification_needed": False,
-            "clarification_question": None,
-            "detected_language": "roman_urdu",
-            "special_requirements": None,
-        })
+        m = re.search(r'User request:\s*\n*"""([\s\S]*?)"""', prompt)
+        user_text = (m.group(1).strip() if m else prompt.strip())
+        agent = SamajhAgent()
+        payload = agent._heuristic_intent(user_text, _detect_emergency(user_text))
+        return json.dumps(payload, ensure_ascii=False)
 
     if "jhagra" in sp_lower or "dispute" in sp_lower:
         return json.dumps({

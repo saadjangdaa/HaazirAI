@@ -1,7 +1,6 @@
 """Haazir AI — FastAPI backend entry point."""
 import json
 import os
-import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -9,7 +8,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from models.request import ServiceRequest, BidRequest, BookingRequest, DisputeRequest, FeedbackRequest
-from agents.orchestrator import run_full_orchestration, run_bidding, run_dispute, run_provider_report
+from agents.orchestrator import run_bidding, run_dispute, run_provider_report
+from graph import new_request_id, run_samajh_workflow
 from agents.pakka import PakkaAgent
 from services.firebase import save_review, get_booking, update_booking_status
 
@@ -49,25 +49,65 @@ async def health():
     return {"status": "ok", "timestamp": datetime.now().isoformat(), "service": "Haazir AI"}
 
 
+def _judge_logs_to_mobile_agent_logs(logs: list) -> list:
+    """Map judge-facing reasoning entries to the legacy shape used by the Expo AgentLogViewer."""
+    out = []
+    for entry in logs:
+        ts = entry.get("timestamp", "")
+        out.append(
+            {
+                "agent_name": entry.get("agent", "Samajh"),
+                "agent_name_urdu": "سمجھ",
+                "start_time": ts,
+                "end_time": ts,
+                "input_summary": entry.get("reasoning", ""),
+                "output_summary": entry.get("decision", ""),
+                "decision_made": entry.get("decision", ""),
+                "confidence": float(entry.get("confidence", 0.0)),
+                "fallback_used": entry.get("status") == "failure",
+                "time_seconds": 0.0,
+            }
+        )
+    return out
+
+
 @app.post("/api/request")
 async def handle_service_request(body: ServiceRequest):
-    """Full Antigravity orchestration: Samajh → Dhundho → Chunno → Hifazat → Hisaab → Pakka."""
-    result = await run_full_orchestration(
-        user_input=body.user_input,
-        user_location=body.user_location,
-        user_id=body.user_id,
-    )
-    request_id = result.get("request_id", f"REQ-{uuid.uuid4().hex[:8].upper()}")
+    """
+    **Antigravity (target):** Samajh → Dhundho → Chunno → … (see ``agents.orchestrator``).
 
-    # Cache providers for subsequent /api/bid calls
-    if "providers_ranked" in result:
-        _request_store[request_id] = {
-            "providers": result["providers_ranked"],
-            "intent": result.get("extracted_intent", {}),
-            "user_id": body.user_id,
-        }
+    **This handler today:** Samajh only — ``graph.run_samajh_workflow`` (LangGraph:
+    START → samajh → END). Sheryar can extend ``graph.py`` with a ``dhundho`` node, or
+    switch this route to ``run_full_orchestration`` when the chain is ready.
 
-    return result
+    **Voice later:** STT text → same ``user_input`` with ``source='voice_transcript'``.
+    """
+    request_id = new_request_id()
+    # ``source`` reserved for Uplift AI STT — always plain text for now
+    final_state = await run_samajh_workflow(user_input=body.user_input.strip(), source="text")
+    intent = final_state.get("intent") or {}
+    logs = final_state.get("logs") or []
+
+    _request_store[request_id] = {
+        "logs": logs,
+        "intent": intent,
+        "user_id": body.user_id,
+        "providers": [],
+    }
+
+    agent_logs = _judge_logs_to_mobile_agent_logs(logs)
+
+    return {
+        "request_id": request_id,
+        "extracted_intent": intent,
+        "logs": logs,
+        "agent_logs": agent_logs,
+        "clarification_needed": bool(intent.get("clarification_needed")),
+        "clarification_question": intent.get("clarification_question"),
+        "emergency": bool(intent.get("emergency")),
+        # Downstream agents not wired in this milestone — empty list keeps mobile UI stable
+        "providers_ranked": [],
+    }
 
 
 @app.post("/api/bid")
