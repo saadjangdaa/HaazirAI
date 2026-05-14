@@ -1,12 +1,20 @@
-"""Agent 2 — DHUNDHO: Provider discovery from mock DB + Maps fallback."""
+"""Agent 2 — DHUNDHO: Provider discovery from mock DB + Maps geocode + Firestore availability."""
 import json
 import os
-from datetime import datetime
-from typing import List, Optional
+from collections import Counter
+from datetime import datetime, timedelta
+from typing import List, Optional, Tuple
+
+from services.firebase import check_slot_conflict
 from services.maps import haversine, get_user_coordinates
+from services.scheduling import scheduled_time_from_intent
 
 _PROVIDERS_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "providers.json")
 _providers_cache: Optional[List[dict]] = None
+_cache_loaded_at: Optional[datetime] = None
+_CACHE_TTL_SECONDS = 300  # 5 minutes
+
+TOP_N = 10
 
 COMPLEXITY_MAP = {
     "basic": ["basic", "intermediate", "complex"],
@@ -16,11 +24,94 @@ COMPLEXITY_MAP = {
 
 
 def _load_providers() -> List[dict]:
-    global _providers_cache
-    if _providers_cache is None:
+    global _providers_cache, _cache_loaded_at
+    now = datetime.now()
+    if _providers_cache is None or (
+        _cache_loaded_at is not None
+        and (now - _cache_loaded_at).total_seconds() > _CACHE_TTL_SECONDS
+    ):
         with open(_PROVIDERS_PATH, encoding="utf-8") as f:
             _providers_cache = json.load(f)
+        _cache_loaded_at = now
     return _providers_cache
+
+
+def _service_matches(intent_service: str, provider: dict) -> bool:
+    """Match SAMAJH service_type strings to provider.service + specialization."""
+    s = (intent_service or "").lower().strip()
+    p_service = (provider.get("service") or "").lower()
+    specs = [x.lower() for x in provider.get("specialization", [])]
+    blob = p_service + " " + " ".join(specs)
+
+    def has(*words: str) -> bool:
+        return any(w in blob for w in words)
+
+    if any(k in s for k in ["ac", "air condition", "cooling", "gas refill", "split", "inverter"]):
+        return has("ac", "climate", "cooling", "gas", "split")
+    if "plumb" in s or "pipe" in s or "drain" in s or "tap" in s or "nal" in s:
+        return has("plumb", "pipe", "drain", "sanitary", "bathroom", "kitchen", "water")
+    if "electric" in s or "wiring" in s or "bijli" in s or "ups" in s:
+        return has("electric", "wiring", "switch", "fault", "ups")
+    if "tutor" in s or "teacher" in s or "math" in s or "science" in s:
+        return has("tutor", "teacher", "math", "science", "academic")
+    if "beaut" in s or "salon" in s or "hair" in s or "makeup" in s:
+        return has("beaut", "salon", "hair", "makeup", "thread")
+    if "carpent" in s or "wood" in s or "furniture" in s:
+        return has("carpent", "wood", "furniture")
+    if "paint" in s or "wall" in s or "rang" in s:
+        return has("paint", "wall")
+
+    if s and (s in p_service or p_service in s):
+        return True
+    return any(s in sp or sp in s for sp in specs if s)
+
+
+async def _resolve_availability(
+    provider: dict, scheduled_time: str
+) -> Tuple[bool, Optional[str], bool]:
+    """
+    Firestore-backed slot check aligned with Pakka (same scheduled_time string).
+    Returns (eligible, suggested_slot_or_none, used_fallback_slot).
+    """
+    pid = provider.get("id")
+    if not pid:
+        return False, None, False
+
+    if not await check_slot_conflict(pid, scheduled_time):
+        return True, scheduled_time, False
+
+    date_part = scheduled_time[:10]
+    try:
+        base = datetime.strptime(scheduled_time, "%Y-%m-%d %H:%M")
+    except ValueError:
+        return True, scheduled_time, False
+
+    for slot in provider.get("available_slots") or []:
+        cand = f"{date_part} {slot}"
+        if cand == scheduled_time:
+            continue
+        if not await check_slot_conflict(pid, cand):
+            return True, cand, True
+
+    next_day = (base + timedelta(days=1)).strftime("%Y-%m-%d")
+    for slot in provider.get("available_slots") or []:
+        cand = f"{next_day} {slot}"
+        if not await check_slot_conflict(pid, cand):
+            return True, cand, True
+
+    return False, None, False
+
+
+def _aggregate_next_slot_hint(providers_same_city: List[dict]) -> str:
+    slots: List[str] = []
+    for p in providers_same_city[:8]:
+        for s in p.get("available_slots") or []:
+            slots.append(s)
+    if not slots:
+        return "Kal subah 10:00 bajay (standard window) — waitlist par naam likhwayein"
+    top = Counter(slots).most_common(1)[0][0]
+    tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+    return f"Agla mashwara: {tomorrow} {top} (ya waitlist — hum aap ko notify karenge)"
 
 
 class DhundhoAgent:
@@ -29,88 +120,148 @@ class DhundhoAgent:
         start = datetime.now()
         all_providers = _load_providers()
 
-        service_type = intent.get("service_type", "").lower()
+        service_type = intent.get("service_type", "")
         city = intent.get("city", "Islamabad")
         location = intent.get("location", "")
         complexity = intent.get("job_complexity", "intermediate")
         is_emergency = intent.get("emergency", False)
 
+        scheduled_time = scheduled_time_from_intent(intent)
         user_coords = get_user_coordinates(location, city)
         user_lat, user_lng = user_coords["lat"], user_coords["lng"]
 
         allowed_complexities = COMPLEXITY_MAP.get(complexity, ["basic", "intermediate", "complex"])
 
-        filters_applied = []
-        candidates = []
+        filter_trace: List[str] = []
+        counts: dict[str, int] = {}
 
-        for p in all_providers:
-            p_service = p["service"].lower()
-            p_spec = [s.lower() for s in p.get("specialization", [])]
+        def count_stage(name: str, n: int) -> None:
+            counts[name] = n
+            filter_trace.append(f"{name}={n}")
 
-            service_match = (
-                service_type in p_service
-                or p_service in service_type
-                or any(service_type in s or s in service_type for s in p_spec)
-            )
-            if not service_match:
-                continue
+        pool = list(all_providers)
+        count_stage("all_db", len(pool))
 
-            if p["city"].lower() != city.lower():
-                continue
+        after_service = [p for p in pool if _service_matches(service_type, p)]
+        count_stage("after_service_match", len(after_service))
 
-            if not p["available"]:
-                continue
+        after_city = [p for p in after_service if (p.get("city") or "").lower() == (city or "").lower()]
+        count_stage("after_city_match", len(after_city))
 
-            if p.get("complexity_level") not in allowed_complexities:
-                continue
+        after_complexity = [
+            p for p in after_city if p.get("complexity_level") in allowed_complexities
+        ]
+        count_stage("after_complexity_vs_job", len(after_complexity))
 
-            if is_emergency and not p.get("verified"):
-                continue
+        if is_emergency:
+            after_verified = [p for p in after_complexity if p.get("verified")]
+            count_stage("after_emergency_verified", len(after_verified))
+            base_candidates = after_verified
+        else:
+            base_candidates = after_complexity
 
-            dist = haversine(user_lat, user_lng, p["lat"], p["lng"])
-            p_copy = {**p, "distance_km": dist}
-            candidates.append(p_copy)
+        with_distance: List[dict] = []
+        for p in base_candidates:
+            dist = haversine(user_lat, user_lng, float(p["lat"]), float(p["lng"]))
+            with_distance.append({**p, "distance_km": dist})
+        with_distance.sort(key=lambda x: x["distance_km"])
+        count_stage("with_distance_sorted", len(with_distance))
 
         filters_applied = [
-            f"service={service_type}",
+            f"service_type~match({service_type!r})",
             f"city={city}",
-            "available=true",
-            f"complexity_level in {allowed_complexities}",
+            f"job_complexity={complexity} → provider.complexity_level in {allowed_complexities}",
+            f"user_geocode={user_coords.get('formatted_address', location)} (Maps Geocoding API when configured)",
+            f"firestore_slot_check primary={scheduled_time}",
+            "proximity=sort_by_haversine_km_from_user_coords",
         ]
         if is_emergency:
-            filters_applied.append("verified=true (emergency fast-track)")
+            filters_applied.append("emergency: verified=true")
 
-        candidates.sort(key=lambda x: x["distance_km"])
-        top10 = candidates[:10]
+        available_top: List[dict] = []
+        slot_fallback_count = 0
+        for p in with_distance:
+            if len(available_top) >= TOP_N:
+                break
+            ok, suggested, used_fb = await _resolve_availability(p, scheduled_time)
+            if not ok:
+                continue
+            row = {**p}
+            if used_fb and suggested:
+                row["dhundho_suggested_slot"] = suggested
+                slot_fallback_count += 1
+            available_top.append(row)
+
+        if slot_fallback_count:
+            filters_applied.append(
+                f"firestore_availability: {slot_fallback_count} provider(s) moved to alternate slot "
+                f"(same/next day from available_slots)"
+            )
 
         fallback_used = False
         fallback_message = None
-        if not top10:
+        waitlist_recommended = False
+        next_slot_hint: Optional[str] = None
+
+        if not available_top:
             fallback_used = True
-            fallback_message = (
-                "Abhi is area mein koi provider available nahi hai. "
-                "Aap waitlist mein add ho saktay hain ya kal dobara try karein."
-            )
-            filters_applied.append("FALLBACK: no providers found — returning waitlist suggestion")
+            waitlist_recommended = True
+            next_slot_hint = _aggregate_next_slot_hint(after_city if after_city else after_service)
+            if not with_distance:
+                fallback_message = (
+                    "Abhi aap ke filters par koi provider nahi mila. "
+                    "Waitlist par naam likhwayein — jaisay hi koi available ho ga hum rabita karen ge. "
+                    f"{next_slot_hint}"
+                )
+            else:
+                fallback_message = (
+                    "Providers milay lekin maangay gay waqt / qareebi slot par sab busy hain. "
+                    "Agla mashwara slot try karein ya waitlist join karein. "
+                    f"{next_slot_hint}"
+                )
+            filters_applied.append("FALLBACK: no eligible provider after slot filter — waitlist + next slot")
 
         end = datetime.now()
         elapsed = round((end - start).total_seconds(), 3)
 
+        total_matching = len(with_distance)
+        out_providers = available_top
+
+        log_decision = (
+            f"Pool {total_matching} after service/city/complexity/distance; "
+            f"Firestore+slots → {len(out_providers)} for CHUNNO (cap {TOP_N}). "
+            f"Trace: {'; '.join(filter_trace)}. Fallback={'yes' if fallback_used else 'no'}"
+        )
+
         return {
-            "providers": top10,
-            "total_found": len(candidates),
+            "providers": out_providers,
+            "total_found": len(out_providers),
+            "total_matched_before_availability": total_matching,
+            "filters_applied": filters_applied,
+            "filter_trace": filter_trace,
+            "counts": counts,
+            "scheduled_time_checked": scheduled_time,
             "fallback_triggered": fallback_used,
             "fallback_message": fallback_message,
+            "waitlist_recommended": waitlist_recommended,
+            "next_available_slot_hint": next_slot_hint,
             "user_coords": user_coords,
             "_log": {
                 "agent_name": "DHUNDHO",
                 "agent_name_urdu": "ڈھونڈو",
                 "start_time": start.isoformat(),
                 "end_time": end.isoformat(),
-                "input_summary": f"Looking for {service_type} in {city} ({location}), complexity={complexity}",
-                "output_summary": f"Found {len(candidates)} matching providers, returning top {len(top10)}",
-                "decision_made": f"Filters: {', '.join(filters_applied)}",
-                "confidence": 1.0 if top10 else 0.0,
+                "input_summary": (
+                    f"Discovery: service={service_type!r} city={city} area={location!r} "
+                    f"complexity={complexity} emergency={is_emergency}"
+                ),
+                "output_summary": (
+                    f"Providers returned for CHUNNO: {len(out_providers)} "
+                    f"(candidates_before_slot_filter={total_matching}, cap={TOP_N}, "
+                    f"alternate_slots_used={slot_fallback_count})"
+                ),
+                "decision_made": log_decision,
+                "confidence": 1.0 if out_providers else 0.0,
                 "fallback_used": fallback_used,
                 "time_seconds": elapsed,
             },
