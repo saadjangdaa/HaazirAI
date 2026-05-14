@@ -73,20 +73,8 @@ def _judge_logs_to_mobile_agent_logs(logs: list) -> list:
 
 @app.post("/api/request")
 async def handle_service_request(body: ServiceRequest):
-    """
-    **Antigravity (target):** Samajh → Dhundho → Chunno → … (see ``agents.orchestrator``).
-
-    **This handler today:** Samajh only — ``graph.run_samajh_workflow`` (LangGraph:
-    START → samajh → END). Sheryar can extend ``graph.py`` with a ``dhundho`` node, or
-    switch this route to ``run_full_orchestration`` when the chain is ready.
-
-    **Voice later:** STT text → same ``user_input`` with ``source='voice_transcript'``.
-    """
-    request_id = new_request_id()
-    # ``source`` reserved for Uplift AI STT — always plain text for now
-    final_state = await run_samajh_workflow(user_input=body.user_input.strip(), source="text")
-    intent = final_state.get("intent") or {}
-    logs = final_state.get("logs") or []
+    
+    :
 
     _request_store[request_id] = {
         "logs": logs,
