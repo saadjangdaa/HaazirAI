@@ -153,3 +153,5 @@ __pycache__/
 *.pyd
 .pytest_cache/
 
+
+.python-version
