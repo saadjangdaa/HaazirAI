@@ -21,7 +21,7 @@ load_dotenv(BACKEND_DIR / ".env")
 class Config:
     """Base configuration — all keys from environment."""
 
-    FIREBASE_PROJECT_ID: str = os.getenv("FIREBASE_PROJECT_ID", "haazir-dost")
+    FIREBASE_PROJECT_ID: str = os.getenv("FIREBASE_PROJECT_ID", "haazir-ai")
     FIREBASE_CREDENTIALS_PATH: str = os.getenv("FIREBASE_CREDENTIALS_PATH", "firebase-key.json")
     FIRESTORE_REGION: str = os.getenv("FIRESTORE_REGION", "asia-southeast1")
 
