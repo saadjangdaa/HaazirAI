@@ -141,20 +141,26 @@ def _judge_logs_to_mobile_agent_logs(logs: list) -> list:
 @app.post("/api/request")
 async def handle_service_request(body: ServiceRequest):
     """
-    Antigravity target: full agent chain. Current milestone: Samajh only (LangGraph).
+    Samajh (Gemini) + Dhundho (provider discovery) via LangGraph.
 
-    Sheryar / others extend ``graph.py`` or switch to ``run_full_orchestration`` when ready.
+    Send ``user_location`` from mobile when possible (maps + city fallback for Sheryar's agent).
     """
     request_id = new_request_id()
-    final_state = await run_samajh_workflow(user_input=body.user_input.strip(), source="text")
+    final_state = await run_samajh_workflow(
+        user_input=body.user_input.strip(),
+        source="text",
+        user_location=(body.user_location or "").strip(),
+    )
     intent = final_state.get("intent") or {}
     logs = final_state.get("logs") or []
+    providers_ranked = final_state.get("providers") or []
+    dh_meta = final_state.get("dhundho_meta") or {}
 
     _request_store[request_id] = {
         "logs": logs,
         "intent": intent,
         "user_id": body.user_id,
-        "providers": [],
+        "providers": providers_ranked,
     }
 
     agent_logs = _judge_logs_to_mobile_agent_logs(logs)
@@ -167,7 +173,9 @@ async def handle_service_request(body: ServiceRequest):
         "clarification_needed": bool(intent.get("clarification_needed")),
         "clarification_question": intent.get("clarification_question"),
         "emergency": bool(intent.get("emergency")),
-        "providers_ranked": [],
+        "providers_ranked": providers_ranked,
+        "fallback": dh_meta.get("fallback_message"),
+        "dhundho_meta": dh_meta,
     }
 
 
