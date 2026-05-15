@@ -153,6 +153,8 @@ class FirebaseService:
             COL_REVIEWS: {},
             COL_WAITLIST: {},
         }
+        # Slot locks for claim_slot_atomic in mock mode: "provider_id/slug" -> booking_id
+        self._mock_slot_claims: Dict[str, str] = {}
 
         if not os.path.isfile(path):
             logger.warning(
@@ -862,6 +864,92 @@ async def get_booking(booking_id: str) -> Optional[dict]:
 async def get_provider_bookings(provider_id: str) -> list:
     svc = get_firebase_service()
     return await asyncio.to_thread(svc.get_provider_bookings, provider_id)
+
+
+def _scheduled_time_slug(scheduled_time: str) -> str:
+    return scheduled_time.replace(" ", "_").replace(":", "-")
+
+
+async def claim_slot_atomic(provider_id: str, scheduled_time: str, booking_data: dict) -> bool:
+    """
+    Atomically checks slot availability and writes booking if free.
+    Returns True if the slot was successfully claimed, False if already taken.
+    Uses a Firestore transaction on doc path:
+      slots/{provider_id}/times/{scheduled_time_slug}
+    where scheduled_time_slug = scheduled_time.replace(' ', '_').replace(':', '-')
+    """
+    slug = _scheduled_time_slug(scheduled_time)
+    svc = get_firebase_service()
+    bid = booking_data.get("booking_id") or f"HAZ-{datetime.now().strftime('%Y%m%d')}-{str(uuid.uuid4())[:6].upper()}"
+    payload = {**booking_data, "booking_id": bid}
+
+    if svc.is_mock:
+        conflict = await check_slot_conflict(provider_id, scheduled_time)
+        if conflict:
+            return False
+        lock_key = f"{provider_id}/{slug}"
+        if lock_key in svc._mock_slot_claims:
+            return False
+        svc._mock_slot_claims[lock_key] = bid
+        ok = await save_booking(payload)
+        return bool(ok)
+
+    try:
+        from firebase_admin import firestore
+
+        db = svc.db
+        slot_ref = db.collection("slots").document(provider_id).collection("times").document(slug)
+        booking_ref = db.collection(COL_BOOKINGS).document(bid)
+
+        @firestore.transactional
+        def _txn(transaction: Any) -> bool:
+            snap = slot_ref.get(transaction=transaction)
+            if snap.exists:
+                return False
+            transaction.set(
+                slot_ref,
+                {
+                    "provider_id": provider_id,
+                    "scheduled_time": scheduled_time,
+                    "booking_id": bid,
+                    "claimed_at": firestore.SERVER_TIMESTAMP,
+                },
+            )
+            slot_dt: Optional[datetime] = None
+            try:
+                slot_dt = datetime.strptime(scheduled_time[:16], "%Y-%m-%d %H:%M")
+            except ValueError:
+                pass
+            doc_payload: Dict[str, Any] = {
+                "booking_id": bid,
+                "user_id": payload.get("user_id", ""),
+                "provider_id": provider_id,
+                "service": payload.get("service", ""),
+                "location": payload.get("location", ""),
+                "slot_time": slot_dt or scheduled_time,
+                "scheduled_time": scheduled_time,
+                "price": payload.get("price", 0),
+                "status": payload.get("status", "confirmed"),
+                "created_at": firestore.SERVER_TIMESTAMP,
+                "emergency": payload.get("emergency", False),
+                "notification": payload.get("notification"),
+                "travel_buffer_minutes": payload.get("travel_buffer_minutes"),
+            }
+            transaction.set(booking_ref, doc_payload)
+            return True
+
+        claimed = await asyncio.to_thread(_txn, db.transaction())
+        if claimed:
+            logger.info(
+                "claim_slot_atomic: claimed provider=%s slot=%s booking=%s",
+                provider_id,
+                scheduled_time,
+                bid,
+            )
+        return bool(claimed)
+    except Exception as e:
+        logger.error("claim_slot_atomic failed: %s — treating as not claimed", e)
+        return False
 
 
 async def check_slot_conflict(provider_id: str, scheduled_time: str) -> bool:
