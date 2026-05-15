@@ -108,8 +108,10 @@ class PakkaAgent:
             "user_id": user_id,
             "service": service,
             "scheduled_time": scheduled_time,
+            "slot_time": scheduled_time,
             "status": "confirmed",
             "price": total_price,
+            "reminder_sent": False,
             "emergency": is_emergency,
         }
         await save_booking(booking_data)

@@ -11,7 +11,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from models.request import ServiceRequest, BidRequest, BookingRequest, DisputeRequest, FeedbackRequest
 from agents.orchestrator import run_full_orchestration, run_bidding, run_dispute, run_provider_report
 from agents.pakka import PakkaAgent
-from services.firebase import save_review, get_booking, update_booking_status
+from services.firebase import (
+    save_review,
+    get_booking,
+    update_booking_status,
+    save_agent_logs,
+    get_agent_logs_doc,
+    create_dispute,
+    list_providers as firestore_list_providers,
+    seed_providers_from_json,
+    is_mock_mode,
+    append_user_booking,
+    schedule_booking_reminders,
+)
 
 app = FastAPI(
     title="Haazir AI API",
@@ -58,14 +70,19 @@ async def handle_service_request(body: ServiceRequest):
         user_id=body.user_id,
     )
     request_id = result.get("request_id", f"REQ-{uuid.uuid4().hex[:8].upper()}")
+    logs = result.get("agent_logs", [])
+
+    await save_agent_logs(
+        request_id, body.user_input, logs, user_id=body.user_id
+    )
 
     # Cache providers for subsequent /api/bid calls
-    if "providers_ranked" in result:
-        _request_store[request_id] = {
-            "providers": result["providers_ranked"],
-            "intent": result.get("extracted_intent", {}),
-            "user_id": body.user_id,
-        }
+    _request_store[request_id] = {
+        "providers": result.get("providers_ranked", []),
+        "intent": result.get("extracted_intent", {}),
+        "user_id": body.user_id,
+        "logs": logs,
+    }
 
     return result
 
@@ -106,8 +123,17 @@ async def confirm_booking(body: BookingRequest):
     pricing = {"total": body.price_accepted}
     result = await pakka_agent.create_booking(intent, provider, pricing, body.user_id)
     log = result.pop("_log", None)
+    booking_id = result["booking_id"]
+    await append_user_booking(body.user_id, booking_id)
+    if result.get("reminder_times"):
+        await schedule_booking_reminders(
+            booking_id,
+            body.user_id,
+            result["reminder_times"],
+            "Haazir AI reminder: booking {booking_id} is coming up soon.",
+        )
     return {
-        "booking_id": result["booking_id"],
+        "booking_id": booking_id,
         "receipt": result["receipt"],
         "confirmation_message": result["confirmation_message"],
         "reminders": result["reminder_times"],
@@ -124,6 +150,19 @@ async def handle_dispute(body: DisputeRequest):
         description=body.description,
         evidence_url=body.evidence_url,
     )
+    dispute_id = await create_dispute(
+        {
+            "booking_id": body.booking_id,
+            "type": body.dispute_type,
+            "description": body.description,
+            "status": "resolved",
+            "resolution": result.get("resolution"),
+            "refund_amount": result.get("refund_amount"),
+            "provider_penalty": result.get("provider_penalty"),
+            "escalated_to_human": result.get("escalated_to_human", False),
+        }
+    )
+    result["dispute_id"] = dispute_id
     return result
 
 
@@ -165,10 +204,22 @@ async def get_booking_status(booking_id: str):
 
 @app.get("/api/logs/{request_id}")
 async def get_agent_logs(request_id: str):
-    """Return cached agent trace logs for a request."""
+    """Return agent trace logs from Firestore or in-memory cache."""
+    doc = await get_agent_logs_doc(request_id)
+    if doc:
+        return {
+            "request_id": request_id,
+            "user_input": doc.get("user_input"),
+            "timestamp": doc.get("timestamp"),
+            "logs": doc.get("logs", []),
+        }
     cached = _request_store.get(request_id)
     if not cached:
-        return {"request_id": request_id, "logs": [], "message": "Logs not found — run /api/request first"}
+        return {
+            "request_id": request_id,
+            "logs": [],
+            "message": "Logs not found — run /api/request first",
+        }
     return {"request_id": request_id, "logs": cached.get("logs", [])}
 
 
@@ -185,13 +236,30 @@ async def get_provider_report(provider_id: str):
 
 @app.get("/api/providers")
 async def list_providers(city: str = None, service: str = None):
-    """List all providers with optional filters."""
-    providers = _load_providers()
-    if city:
-        providers = [p for p in providers if p["city"].lower() == city.lower()]
-    if service:
-        providers = [p for p in providers if service.lower() in p["service"].lower()]
+    """List providers from Firestore, falling back to local JSON."""
+    providers = await firestore_list_providers(city=city, service=service)
+    if not providers:
+        providers = _load_providers()
+        if city:
+            providers = [p for p in providers if p["city"].lower() == city.lower()]
+        if service:
+            providers = [
+                p for p in providers if service.lower() in p["service"].lower()
+            ]
     return {"providers": providers, "count": len(providers)}
+
+
+@app.post("/api/admin/seed-providers")
+async def seed_providers():
+    """Seed Firestore providers collection from backend/data/providers.json."""
+    if os.getenv("ENVIRONMENT", "development") != "development":
+        raise HTTPException(status_code=403, detail="Seed only allowed in development")
+    count = await seed_providers_from_json(str(_PROVIDERS_PATH))
+    return {
+        "seeded": count,
+        "mock_mode": is_mock_mode(),
+        "message": "Providers written to Firestore (or mock DB)",
+    }
 
 
 @app.post("/api/feedback")
