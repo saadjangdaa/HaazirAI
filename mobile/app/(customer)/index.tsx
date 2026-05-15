@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, ScrollView,
   StyleSheet, ActivityIndicator, Animated, Easing, Alert,
@@ -33,6 +33,10 @@ export default function CustomerHomeScreen() {
   const [agentMsg, setAgentMsg] = useState('');
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const [recording, setRecording] = useState(false);
+
+  useEffect(() => {
+    console.log('App loaded successfully');
+  }, []);
 
   const startPulse = () => {
     Animated.loop(
