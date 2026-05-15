@@ -8,13 +8,17 @@ import urllib.parse
 import urllib.request
 from typing import Optional
 
-from dotenv import load_dotenv
-
-load_dotenv()
-
 logger = logging.getLogger(__name__)
 
-GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
+try:
+    from config import config
+
+    GOOGLE_MAPS_API_KEY = (config.MAPS_API_KEY or "").strip()
+except ImportError:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+    GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
 
 CITY_FALLBACK_COORDS = {
     "karachi": {"lat": 24.8607, "lng": 67.0011},

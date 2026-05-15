@@ -11,3 +11,4 @@ httpx
 python-multipart
 pytest
 pytest-asyncio
+mypy

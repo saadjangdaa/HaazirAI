@@ -3,11 +3,16 @@ import re
 import json
 import asyncio
 import google.generativeai as genai
-from dotenv import load_dotenv
 
-load_dotenv()
+try:
+    from config import config
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+    GEMINI_API_KEY = (config.GEMINI_API_KEY or "").strip()
+    _GEMINI_MODEL = getattr(config, "GEMINI_MODEL", None) or "gemini-2.0-flash"
+except ImportError:
+    GEMINI_API_KEY = os.getenv("GOOGLE_GEMINI_API_KEY", "") or os.getenv("GEMINI_API_KEY", "")
+    _GEMINI_MODEL = "gemini-2.0-flash"
+
 MOCK_MODE = not GEMINI_API_KEY or GEMINI_API_KEY == "your_gemini_api_key"
 
 _model = None
@@ -15,7 +20,7 @@ _model = None
 if not MOCK_MODE:
     try:
         genai.configure(api_key=GEMINI_API_KEY)
-        _model = genai.GenerativeModel("gemini-2.0-flash")
+        _model = genai.GenerativeModel(_GEMINI_MODEL)
     except Exception as e:
         print(f"Gemini init error: {e} — switching to mock mode")
         MOCK_MODE = True
