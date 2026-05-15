@@ -116,15 +116,23 @@ async def test_firebase():
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
+_AGENT_URDU = {
+    "Samajh": "سمجھ",
+    "Dhundho": "ڈھونڈو",
+    "Chunno": "چُنّو",
+}
+
+
 def _judge_logs_to_mobile_agent_logs(logs: list) -> list:
     """Map judge-facing reasoning entries to the legacy shape used by the Expo AgentLogViewer."""
     out = []
     for entry in logs:
         ts = entry.get("timestamp", "")
+        agent = entry.get("agent", "Samajh")
         out.append(
             {
-                "agent_name": entry.get("agent", "Samajh"),
-                "agent_name_urdu": "سمجھ",
+                "agent_name": agent.upper(),
+                "agent_name_urdu": _AGENT_URDU.get(agent, agent),
                 "start_time": ts,
                 "end_time": ts,
                 "input_summary": entry.get("reasoning", ""),
@@ -141,9 +149,9 @@ def _judge_logs_to_mobile_agent_logs(logs: list) -> list:
 @app.post("/api/request")
 async def handle_service_request(body: ServiceRequest):
     """
-    Samajh (Gemini) + Dhundho (provider discovery) via LangGraph.
+    Samajh → Dhundho → Chunno via LangGraph.
 
-    Send ``user_location`` from mobile when possible (maps + city fallback for Sheryar's agent).
+    ``providers_ranked`` is sorted by Chunno (``ranking_score`` desc). Send ``user_location`` from mobile.
     """
     request_id = new_request_id()
     final_state = await run_samajh_workflow(
@@ -153,8 +161,11 @@ async def handle_service_request(body: ServiceRequest):
     )
     intent = final_state.get("intent") or {}
     logs = final_state.get("logs") or []
-    providers_ranked = final_state.get("providers") or []
+    providers_ranked = final_state.get("providers_ranked") or []
+    providers_discovered = final_state.get("providers") or []
     dh_meta = final_state.get("dhundho_meta") or {}
+    chunno_warnings = final_state.get("chunno_warnings") or []
+    best_provider = providers_ranked[0] if providers_ranked else None
 
     _request_store[request_id] = {
         "logs": logs,
@@ -174,8 +185,12 @@ async def handle_service_request(body: ServiceRequest):
         "clarification_question": intent.get("clarification_question"),
         "emergency": bool(intent.get("emergency")),
         "providers_ranked": providers_ranked,
+        "best_provider": best_provider,
+        "chunno_warnings": chunno_warnings,
         "fallback": dh_meta.get("fallback_message"),
         "dhundho_meta": dh_meta,
+        "chunno_meta": final_state.get("chunno_meta") or {},
+        "providers_discovered_count": len(providers_discovered),
     }
 
 
