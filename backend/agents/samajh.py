@@ -87,10 +87,12 @@ class SamajhAgent:
 
     def _heuristic_intent(self, user_input: str, is_emergency: bool) -> dict:
         p = user_input.lower()
-        service = "AC repair"
-        if any(w in p for w in ["plumb", "nal", "paani", "pipe", "tap"]):
+
+        # --- service (explicit branches only; None = unclear) ---
+        service = None
+        if any(w in p for w in ["plumb", "nal", "paani", "pipe", "tap", "drain"]):
             service = "plumber"
-        elif any(w in p for w in ["electric", "bijli", "wiring", "switchboard"]):
+        elif any(w in p for w in ["electric", "bijli", "wiring", "switchboard", "ups"]):
             service = "electrician"
         elif any(w in p for w in ["tutor", "math", "science", "parhna", "teacher"]):
             service = "tutor"
@@ -100,19 +102,146 @@ class SamajhAgent:
             service = "carpenter"
         elif any(w in p for w in ["paint", "rang", "colour", "wall"]):
             service = "painter"
+        elif "gas leak" in p or "gas ler" in p or ("gas" in p and "leak" in p):
+            service = "electrician"
+        elif any(
+            w in p
+            for w in [
+                "ac repair",
+                "ac technician",
+                "split",
+                "inverter",
+                "cooling",
+                " gas refill",
+                "gas refill",
+                " ac ",
+                " ac,",
+                "ac.",
+                "/ac",
+            ]
+        ) or (p.strip().startswith("ac ") or " ac " in f" {p} "):
+            service = "AC repair"
 
-        city = "Islamabad"
-        if any(w in p for w in ["karachi", "khi", "clifton", "dha karachi"]):
+        # --- city (default Islamabad only if no signal) ---
+        city = None
+        karachi_sig = [
+            "karachi",
+            "khi",
+            "clifton",
+            "dha karachi",
+            "gulshan",
+            "nazimabad",
+            "pechs",
+            "saddar karachi",
+        ]
+        lahore_sig = ["lahore", "lhr", "gulberg", "dha lahore", "model town", "johar town"]
+        islamabad_sig = [
+            "islamabad",
+            "isb",
+            "f-7",
+            "f-10",
+            "g-9",
+            "g-13",
+            "i-8",
+            "blue area",
+            "bahria islamabad",
+        ]
+        if any(w in p for w in karachi_sig):
             city = "Karachi"
-        elif any(w in p for w in ["lahore", "lhr", "gulberg", "dha lahore"]):
+        elif any(w in p for w in lahore_sig):
             city = "Lahore"
+        elif any(w in p for w in islamabad_sig):
+            city = "Islamabad"
+        else:
+            city = "Islamabad"
 
-        location = "G-13"
-        for area in ["DHA", "Gulshan", "Clifton", "F-7", "G-13", "G-9", "I-8",
-                     "Model Town", "Gulberg", "Bahria", "F-10", "North Nazimabad", "Saddar"]:
+        # --- location: longest area substring first; empty if none ---
+        area_candidates = [
+            "North Nazimabad",
+            "Blue Area",
+            "Tariq Road",
+            "Model Town",
+            "Johar Town",
+            "Gulshan-e-Iqbal",
+            "Gulshan",
+            "Clifton",
+            "Defence",
+            "Bahria",
+            "Gulberg",
+            "Saddar",
+            "Pechs",
+            "Nazimabad",
+            "F-10",
+            "F-7",
+            "F-6",
+            "G-9",
+            "G-11",
+            "G-13",
+            "I-10",
+            "I-8",
+            "DHA",
+            "Rawalpindi",
+            "Pindi",
+            "Askari",
+        ]
+        area_candidates.sort(key=len, reverse=True)
+        location = ""
+        for area in area_candidates:
             if area.lower() in p:
                 location = area
                 break
+        if city == "Karachi" and not location:
+            location = ""
+        if city == "Islamabad" and not location:
+            location = ""
+
+        # --- service keyword strength (for clarification) ---
+        service_kw = [
+            "ac repair",
+            "ac technician",
+            "split",
+            "inverter",
+            "cooling",
+            "gas refill",
+            "plumb",
+            "nal",
+            "paani",
+            "pipe",
+            "tap",
+            "drain",
+            "electric",
+            "bijli",
+            "wiring",
+            "switchboard",
+            "ups",
+            "tutor",
+            "math",
+            "science",
+            "teacher",
+            "parhna",
+            "beauty",
+            "salon",
+            "hair",
+            "makeup",
+            "carpent",
+            "furniture",
+            "wood",
+            "paint",
+            "rang",
+            "wall",
+            "colour",
+            "gas leak",
+            "gas ler",
+        ]
+        kw_hits = sum(1 for kw in service_kw if kw in p)
+        if " ac " in f" {p} " or p.strip().startswith("ac "):
+            if "ac repair" not in p and "ac technician" not in p:
+                kw_hits += 1
+
+        if service is not None:
+            kw_hits = max(kw_hits, 2)
+
+        needs_clarification = (service is None) or (kw_hits < 2)
 
         detected_lang = "roman_urdu"
         if any("؀" <= c <= "ۿ" for c in user_input):
@@ -120,8 +249,27 @@ class SamajhAgent:
         elif all(ord(c) < 128 for c in user_input):
             detected_lang = "english"
 
+        if needs_clarification:
+            service_type_out = "unknown"
+            confidence_score = 0.55
+            clarification_needed = True
+            clarification_question = (
+                "Aap kaunsi service chahiye? "
+                "Maslan: AC repair, plumber, electrician, painter, tutor, beautician"
+            )
+        elif not location.strip():
+            service_type_out = service
+            confidence_score = 0.65
+            clarification_needed = False
+            clarification_question = None
+        else:
+            service_type_out = service
+            confidence_score = 0.90
+            clarification_needed = False
+            clarification_question = None
+
         return {
-            "service_type": service,
+            "service_type": service_type_out,
             "location": location,
             "city": city,
             "time_preference": "tomorrow_morning",
@@ -129,9 +277,9 @@ class SamajhAgent:
             "budget_sensitivity": "medium",
             "job_complexity": "intermediate",
             "emergency": is_emergency,
-            "confidence_score": 0.85,
-            "clarification_needed": False,
-            "clarification_question": None,
+            "confidence_score": confidence_score,
+            "clarification_needed": clarification_needed,
+            "clarification_question": clarification_question,
             "detected_language": detected_lang,
             "special_requirements": None,
         }
