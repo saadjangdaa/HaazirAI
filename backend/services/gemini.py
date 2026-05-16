@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_API_KEY = os.getenv("GOOGLE_GEMINI_API_KEY", "") or os.getenv("GEMINI_API_KEY", "")
 MOCK_MODE = not GEMINI_API_KEY or GEMINI_API_KEY == "your_gemini_api_key"
 
 _model = None
@@ -18,6 +18,19 @@ if not MOCK_MODE:
     except Exception as e:
         print(f"Gemini init error: {e} — switching to mock mode")
         MOCK_MODE = True
+
+
+async def generate_with_parts(parts: list) -> str:
+    """Generate content from multimodal parts — used for audio transcription."""
+    if MOCK_MODE:
+        return '{"text": "AC bilkul kaam nahi kar raha, kal subah repair chahiye", "detected_language": "roman_urdu", "confidence": 0.95}'
+    try:
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(None, lambda: _model.generate_content(parts))
+        return response.text
+    except Exception as e:
+        print(f"Gemini multimodal error: {e} — falling back to mock")
+        return '{"text": "", "detected_language": "unknown", "confidence": 0.0}'
 
 
 async def generate(prompt: str, system_prompt: str = "") -> str:

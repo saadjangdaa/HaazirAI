@@ -35,3 +35,8 @@ class FeedbackRequest(BaseModel):
     rating: int
     tags: List[str] = []
     review: Optional[str] = None
+
+
+class VoiceRequest(BaseModel):
+    audio_base64: str
+    mime_type: str = "audio/m4a"

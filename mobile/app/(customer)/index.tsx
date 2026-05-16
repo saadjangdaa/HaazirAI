@@ -7,6 +7,7 @@ import { useRouter } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../../constants/theme';
 import { submitRequest } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
+import { requestMicPermission, startRecording, stopAndTranscribe } from '../../services/voice';
 
 const QUICK_SERVICES = [
   { label: 'AC Technician', icon: '❄️' },
@@ -33,6 +34,7 @@ export default function CustomerHomeScreen() {
   const [agentMsg, setAgentMsg] = useState('');
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const [recording, setRecording] = useState(false);
+  const [voiceProcessing, setVoiceProcessing] = useState(false);
 
   useEffect(() => {
     console.log('App loaded successfully');
@@ -52,16 +54,34 @@ export default function CustomerHomeScreen() {
     Animated.timing(pulseAnim, { toValue: 1.0, duration: 200, useNativeDriver: true }).start();
   };
 
-  const handleVoice = () => {
+  const handleVoice = async () => {
+    if (voiceProcessing) return;
+
     if (recording) {
       setRecording(false);
       stopPulse();
-      setInput('AC bilkul kaam nahi kar raha, kal subah G-13 mein technician chahiye');
-      setLocation('G-13, Islamabad');
+      setVoiceProcessing(true);
+      try {
+        const { text } = await stopAndTranscribe();
+        if (text) setInput(text);
+      } catch {
+        Alert.alert('Voice Error', 'Awaaz samajh nahi ayi — dobara try karein');
+      } finally {
+        setVoiceProcessing(false);
+      }
     } else {
-      setRecording(true);
-      startPulse();
-      Alert.alert('Voice Input', 'Bolein... (demo mode — simulated input)');
+      const granted = await requestMicPermission();
+      if (!granted) {
+        Alert.alert('Permission Chahiye', 'Settings mein microphone access allow karein');
+        return;
+      }
+      try {
+        await startRecording();
+        setRecording(true);
+        startPulse();
+      } catch {
+        Alert.alert('Error', 'Recording shuru nahi ho saki — dobara try karein');
+      }
     }
   };
 
@@ -134,11 +154,16 @@ export default function CustomerHomeScreen() {
       {/* Voice Button */}
       <View style={styles.voiceCenter}>
         <Animated.View style={[styles.voiceBtn, { transform: [{ scale: pulseAnim }] }, recording && styles.voiceBtnActive]}>
-          <TouchableOpacity onPress={handleVoice} style={styles.voiceInner}>
-            <Text style={styles.voiceIcon}>{recording ? '⏹' : '🎙'}</Text>
+          <TouchableOpacity onPress={handleVoice} style={styles.voiceInner} disabled={voiceProcessing}>
+            {voiceProcessing
+              ? <ActivityIndicator color={Colors.background} size="small" />
+              : <Text style={styles.voiceIcon}>{recording ? '⏹' : '🎙'}</Text>
+            }
           </TouchableOpacity>
         </Animated.View>
-        <Text style={styles.voiceLabel}>{recording ? 'Rok Dein' : 'Bolein ya likhein'}</Text>
+        <Text style={styles.voiceLabel}>
+          {voiceProcessing ? 'Samajh raha hun...' : recording ? 'Rok Dein' : 'Bolein ya likhein'}
+        </Text>
       </View>
 
       {/* Input Card */}

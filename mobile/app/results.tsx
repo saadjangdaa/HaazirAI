@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator,
 } from 'react-native';
+import { speakText, stopSpeaking, getIsSpeaking } from '../services/voice';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize } from '../constants/theme';
 import { FullOrchestrationResponse, Provider, triggerBidding } from '../services/api';
@@ -21,6 +22,7 @@ export default function ResultsScreen() {
   const [biddingLoading, setBiddingLoading] = useState(false);
   const [biddingResult, setBiddingResult] = useState<any>(null);
   const [showLogs, setShowLogs] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
 
   useEffect(() => {
     if (data) setResult(JSON.parse(data));
@@ -31,6 +33,22 @@ export default function ResultsScreen() {
   const intent = result.extracted_intent;
   const urgency = intent?.urgency || 'medium';
   const agents = result.agent_logs || [];
+
+  const handleSpeak = async () => {
+    const already = await getIsSpeaking();
+    if (already || speaking) {
+      stopSpeaking();
+      setSpeaking(false);
+      return;
+    }
+    const bp = result?.best_provider;
+    if (!bp) return;
+    const price = result?.price_breakdown?.total || 0;
+    const service = intent?.service_type || 'service';
+    const msg = `Best match found: ${bp.name}. Service: ${service}. Rating: ${bp.rating} out of 5. Estimated price: ${price} rupees. Tap the card to book.`;
+    setSpeaking(true);
+    speakText(msg, () => setSpeaking(false));
+  };
 
   const handleNegotiate = async () => {
     setBiddingLoading(true);
@@ -106,6 +124,14 @@ export default function ResultsScreen() {
         </View>
       )}
 
+      {/* Voice Summary */}
+      {result.best_provider && (
+        <TouchableOpacity style={[styles.ttsBtn, speaking && styles.ttsBtnActive]} onPress={handleSpeak}>
+          <Text style={styles.ttsIcon}>{speaking ? '🔇' : '🔊'}</Text>
+          <Text style={styles.ttsText}>{speaking ? 'Rokein' : 'Sunein — Best Match'}</Text>
+        </TouchableOpacity>
+      )}
+
       {/* Price Breakdown */}
       {result.price_breakdown && (
         <PriceBreakdown pricing={result.price_breakdown} />
@@ -179,6 +205,10 @@ const styles = StyleSheet.create({
   intentValue: { color: Colors.textPrimary, fontSize: FontSize.sm, fontWeight: '600', flex: 1 },
   urgencyBadge: { borderRadius: Radius.full, paddingHorizontal: 10, paddingVertical: 2 },
   urgencyText: { fontSize: FontSize.xs, fontWeight: '700' },
+  ttsBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.surfaceElevated, borderRadius: Radius.lg, padding: Spacing.sm + 2, marginBottom: Spacing.md, borderWidth: 1, borderColor: Colors.border, gap: 8 },
+  ttsBtnActive: { borderColor: Colors.primary, backgroundColor: Colors.primaryDim },
+  ttsIcon: { fontSize: 18 },
+  ttsText: { color: Colors.textSecondary, fontSize: FontSize.sm, fontWeight: '600' },
   negotiateBtn: { backgroundColor: Colors.surfaceElevated, borderRadius: Radius.lg, padding: Spacing.md, marginBottom: Spacing.md, borderWidth: 1, borderColor: Colors.primary, alignItems: 'center' },
   negotiateBtnText: { color: Colors.primary, fontWeight: '700', fontSize: FontSize.md },
   negotiateBtnSub: { color: Colors.textMuted, fontSize: FontSize.xs, marginTop: 2 },

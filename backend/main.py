@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from models.request import ServiceRequest, BidRequest, BookingRequest, DisputeRequest, FeedbackRequest
+from models.request import ServiceRequest, BidRequest, BookingRequest, DisputeRequest, FeedbackRequest, VoiceRequest
 from agents.orchestrator import run_full_orchestration, run_bidding, run_dispute, run_provider_report
 from agents.pakka import PakkaAgent
 from services.firebase import (
@@ -54,6 +54,14 @@ def _load_providers() -> list:
         with open(_PROVIDERS_PATH, encoding="utf-8") as f:
             _providers_cache = json.load(f)
     return _providers_cache
+
+
+@app.post("/api/voice/transcribe")
+async def transcribe_voice(body: VoiceRequest):
+    """Transcribe audio using Gemini 2.0 Flash. Supports Urdu, Roman Urdu, English, Sindhi."""
+    from services.voice import transcribe_audio
+    result = await transcribe_audio(body.audio_base64, body.mime_type)
+    return result
 
 
 @app.get("/health")
