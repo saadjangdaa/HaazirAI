@@ -126,7 +126,7 @@ export default function LogsScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0D0D1A' },
+  container: { flex: 1, backgroundColor: Colors.background },
   content: { padding: Spacing.md, paddingBottom: 48 },
   title: { color: Colors.primary, fontSize: FontSize.xxl, fontWeight: '800', marginBottom: 4 },
   sub: { color: Colors.textMuted, fontSize: FontSize.sm, marginBottom: Spacing.lg },

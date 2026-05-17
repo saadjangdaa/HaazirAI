@@ -3,6 +3,7 @@ import {
   View, Text, TextInput, TouchableOpacity, ScrollView, StyleSheet, Alert, ActivityIndicator,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../constants/theme';
 import { submitFeedback } from '../services/api';
 
@@ -19,6 +20,7 @@ const FEEDBACK_CHIPS = [
 export default function FeedbackScreen() {
   const router = useRouter();
   const { bookingId } = useLocalSearchParams<{ bookingId: string }>();
+  const insets = useSafeAreaInsets();
   const [rating, setRating] = useState(0);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [review, setReview] = useState('');
@@ -62,7 +64,7 @@ export default function FeedbackScreen() {
   }
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <ScrollView style={styles.container} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
       <Text style={styles.title}>Service Kaisi Rahi?</Text>
       <Text style={styles.sub}>Booking: {bookingId || 'HAZ-DEMO-001'}</Text>
 

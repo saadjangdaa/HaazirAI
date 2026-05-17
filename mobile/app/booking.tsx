@@ -3,6 +3,7 @@ import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, ActivityIndicator,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../constants/theme';
 import { confirmBooking } from '../services/api';
 import BookingReceipt from '../components/BookingReceipt';
@@ -17,17 +18,22 @@ const PAYMENT_METHODS = [
 
 export default function BookingScreen() {
   const router = useRouter();
-  const { providerData, priceData, requestId } = useLocalSearchParams<{
-    providerData: string; priceData: string; requestId: string;
+  const { providerData, priceData, requestId, confirmedData } = useLocalSearchParams<{
+    providerData: string; priceData: string; requestId: string; confirmedData: string;
   }>();
 
   const provider = providerData ? JSON.parse(providerData) : null;
   const pricing = priceData ? JSON.parse(priceData) : null;
 
+  const insets = useSafeAreaInsets();
   const [paymentMethod, setPaymentMethod] = useState('jazzcash');
   const [urgent, setUrgent] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [confirmed, setConfirmed] = useState<any>(null);
+  // If arriving from voice booking with pre-confirmed data, show receipt immediately
+  const [confirmed, setConfirmed] = useState<any>(() => {
+    if (!confirmedData) return null;
+    try { return JSON.parse(confirmedData as string); } catch { return null; }
+  });
   const [showLogs, setShowLogs] = useState(false);
 
   if (!provider) return <View style={styles.center}><Text style={styles.errorText}>Provider data missing</Text></View>;
@@ -54,7 +60,7 @@ export default function BookingScreen() {
 
   if (confirmed) {
     return (
-      <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+      <ScrollView style={styles.container} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
         <BookingReceipt
           bookingId={confirmed.booking_id}
           provider={provider}
@@ -73,7 +79,7 @@ export default function BookingScreen() {
   }
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <ScrollView style={styles.container} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
       <View style={styles.providerCard}>
         <Text style={styles.providerName}>{provider.name}</Text>
         <View style={styles.providerMeta}>

@@ -37,3 +37,22 @@ class FeedbackRequest(BaseModel):
     rating: int
     tags: List[str] = []
     review: Optional[str] = None
+
+
+class VoiceRequest(BaseModel):
+    audio_base64: str
+    mime_type: str = "audio/m4a"
+
+
+class TTSRequest(BaseModel):
+    text: str
+    voice_id: str = "v_8eelc901"
+    translate: bool = True
+
+
+class ConversationRequest(BaseModel):
+    session_id: str
+    user_text: str
+    user_id: str = "user_001"
+    user_name: Optional[str] = None
+    providers: Optional[List[dict]] = None

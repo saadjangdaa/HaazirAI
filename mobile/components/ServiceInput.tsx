@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, Animated, Easing, Alert } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, Animated, Easing, Alert, ActivityIndicator } from 'react-native';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../constants/theme';
+import { requestMicPermission, startRecording, stopAndTranscribe } from '../services/voice';
 
 interface Props {
   value: string;
@@ -13,6 +14,7 @@ interface Props {
 
 export default function ServiceInput({ value, onChangeText, location, onLocationChange, onSubmit, loading }: Props) {
   const [recording, setRecording] = useState(false);
+  const [voiceProcessing, setVoiceProcessing] = useState(false);
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const pulseRef = useRef<Animated.CompositeAnimation | null>(null);
 
@@ -31,16 +33,34 @@ export default function ServiceInput({ value, onChangeText, location, onLocation
     Animated.timing(pulseAnim, { toValue: 1.0, duration: 150, useNativeDriver: true }).start();
   };
 
-  const handleVoice = () => {
+  const handleVoice = async () => {
+    if (voiceProcessing) return;
+
     if (recording) {
       setRecording(false);
       stopPulse();
-      onChangeText('AC gas khatam ho gayi hai, kal subah repair chahiye — budget kam hai');
-      onLocationChange('G-13, Islamabad');
+      setVoiceProcessing(true);
+      try {
+        const { text } = await stopAndTranscribe();
+        if (text) onChangeText(text);
+      } catch {
+        Alert.alert('Voice Error', 'Awaaz samajh nahi ayi — dobara try karein');
+      } finally {
+        setVoiceProcessing(false);
+      }
     } else {
-      setRecording(true);
-      startPulse();
-      Alert.alert('🎙 Voice Input', 'Bolein... (demo: simulated input loaded on stop)');
+      const granted = await requestMicPermission();
+      if (!granted) {
+        Alert.alert('Permission Chahiye', 'Settings mein microphone access allow karein');
+        return;
+      }
+      try {
+        await startRecording();
+        setRecording(true);
+        startPulse();
+      } catch {
+        Alert.alert('Error', 'Recording shuru nahi ho saki — dobara try karein');
+      }
     }
   };
 
@@ -52,8 +72,13 @@ export default function ServiceInput({ value, onChangeText, location, onLocation
           onPress={handleVoice}
           activeOpacity={0.85}
         >
-          <Text style={styles.voiceIcon}>{recording ? '⏹' : '🎙'}</Text>
-          <Text style={styles.voiceLabel}>{recording ? 'Rokein' : 'Bolein'}</Text>
+          {voiceProcessing
+            ? <ActivityIndicator color={Colors.primary} size="small" />
+            : <Text style={styles.voiceIcon}>{recording ? '⏹' : '🎙'}</Text>
+          }
+          <Text style={styles.voiceLabel}>
+            {voiceProcessing ? 'Samajh...' : recording ? 'Rokein' : 'Bolein'}
+          </Text>
         </TouchableOpacity>
       </Animated.View>
 

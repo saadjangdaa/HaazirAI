@@ -190,6 +190,7 @@ class PakkaAgent:
             "scheduled_time": scheduled_time,
             "status": final_status,
             "price": total_price,
+            "reminder_sent": False,
             "emergency": is_emergency,
             "notification": notification,
             "travel_buffer_minutes": TRAVEL_BUFFER_MINUTES,

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../constants/theme';
 import { getBookingStatus, BookingStatus } from '../services/api';
 
@@ -16,6 +17,7 @@ const STEPS = [
 export default function TrackingScreen() {
   const router = useRouter();
   const { bookingId } = useLocalSearchParams<{ bookingId: string }>();
+  const insets = useSafeAreaInsets();
   const [status, setStatus] = useState<BookingStatus | null>(null);
   const [simStep, setSimStep] = useState(1);
 
@@ -32,7 +34,7 @@ export default function TrackingScreen() {
   };
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <ScrollView style={styles.container} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
       <Text style={styles.bookingId}>Ref: {bookingId || 'HAZ-DEMO-001'}</Text>
 
       <View style={styles.timeline}>

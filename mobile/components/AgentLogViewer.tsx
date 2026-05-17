@@ -9,15 +9,15 @@ interface Props {
 }
 
 const AGENT_COLORS: Record<string, { bg: string; border: string; text: string }> = {
-  SAMAJH:  { bg: '#003D2E', border: '#00C896', text: '#00C896' },
-  DHUNDHO: { bg: '#003040', border: '#00B8D4', text: '#00B8D4' },
-  CHUNNO:  { bg: '#1A2A00', border: '#AEEA00', text: '#AEEA00' },
-  HIFAZAT: { bg: '#2A1800', border: '#FF8C00', text: '#FF8C00' },
-  HISAAB:  { bg: '#1A0030', border: '#E040FB', text: '#E040FB' },
-  PAKKA:   { bg: '#003020', border: '#00E676', text: '#00E676' },
-  MOLTOL:  { bg: '#2A2000', border: '#FFD600', text: '#FFD600' },
-  JHAGRA:  { bg: '#2A0000', border: '#FF4444', text: '#FF4444' },
-  REPORT:  { bg: '#001A2A', border: '#40C4FF', text: '#40C4FF' },
+  SAMAJH:  { bg: '#E6FAF5', border: '#00A37A', text: '#007A5C' },
+  DHUNDHO: { bg: '#E0F2FE', border: '#0284C7', text: '#0369A1' },
+  CHUNNO:  { bg: '#F0FDF4', border: '#16A34A', text: '#15803D' },
+  HIFAZAT: { bg: '#FFF7ED', border: '#EA580C', text: '#C2410C' },
+  HISAAB:  { bg: '#FAF5FF', border: '#9333EA', text: '#7E22CE' },
+  PAKKA:   { bg: '#ECFDF5', border: '#059669', text: '#047857' },
+  MOLTOL:  { bg: '#FFFBEB', border: '#D97706', text: '#B45309' },
+  JHAGRA:  { bg: '#FEF2F2', border: '#DC2626', text: '#B91C1C' },
+  REPORT:  { bg: '#ECFEFF', border: '#0891B2', text: '#0E7490' },
 };
 
 function ConfidenceBar({ value }: { value: number }) {
