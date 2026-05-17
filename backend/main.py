@@ -1,12 +1,62 @@
 """Haazir AI — FastAPI backend entry point."""
+from __future__ import annotations
+
 import json
-import os
-import uuid
+import sys
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+
+# Load config + logging first (single dotenv via config.py)
+from config import config
+from logging_config import logger
+
+from agents.orchestrator import run_bidding, run_dispute, run_provider_report
+from agents.pakka import PakkaAgent
+from graph import new_request_id, run_samajh_workflow
+from models.request import (
+    ServiceRequest,
+    BidRequest,
+    BookingRequest,
+    DisputeRequest,
+    FeedbackRequest,
+)
+from services.firebase import (
+    FirebaseService,
+    get_booking,
+    save_review,
+    set_firebase_service,
+    update_booking_status,
+)
+
+firebase: Optional[FirebaseService] = None
+
+_PROVIDERS_PATH = Path(__file__).parent / "data" / "providers.json"
+_request_store: dict = {}
+_providers_cache: list = []
+pakka_agent = PakkaAgent()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup: validate config, init Firebase singleton for agents + routes."""
+    global firebase
+    if not config.validate():
+        logger.error("Configuration validation failed — exiting")
+        sys.exit(1)
+
+    cred_path = str(config.resolved_credentials_path())
+    firebase = FirebaseService(cred_path)
+    set_firebase_service(firebase)
+    app.state.firebase = firebase
+
+    logger.info("Haazir backend started — environment=%s firebase_mock=%s", config.ENVIRONMENT, firebase.is_mock)
+    yield
+    logger.info("Haazir backend shutdown")
 
 from models.request import ServiceRequest, BidRequest, BookingRequest, DisputeRequest, FeedbackRequest, VoiceRequest, TTSRequest, ConversationRequest
 from agents.orchestrator import run_full_orchestration, run_bidding, run_dispute, run_provider_report
@@ -26,9 +76,10 @@ from services.firebase import (
 )
 
 app = FastAPI(
-    title="Haazir AI API",
-    description="Pakistan's Agentic Home Services Orchestrator",
+    title="Haazir Dost API",
+    description="Pakistan's agentic home-services orchestrator",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -38,14 +89,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-_PROVIDERS_PATH = Path(__file__).parent / "data" / "providers.json"
-
-# In-memory store for quick lookups during demo
-_request_store: dict = {}
-_providers_cache: list = []
-
-pakka_agent = PakkaAgent()
 
 
 def _load_providers() -> list:
@@ -74,33 +117,113 @@ async def voice_tts(body: TTSRequest):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "timestamp": datetime.now().isoformat(), "service": "Haazir AI"}
+    """Liveness + quick Firebase mode indicator for ops / mobile."""
+    fb = getattr(app.state, "firebase", None) or firebase
+    mode = "mock" if fb is None or fb.is_mock else "connected"
+    return {
+        "status": "ok",
+        "timestamp": datetime.now().isoformat(),
+        "service": "Haazir AI",
+        "firebase": mode,
+        "environment": config.ENVIRONMENT,
+    }
+
+
+@app.get("/test/firebase")
+async def test_firebase():
+    """Smoke-test Firestore (or mock store): list providers count."""
+    fb = getattr(app.state, "firebase", None) or firebase
+    if fb is None:
+        raise HTTPException(status_code=503, detail="Firebase not initialized")
+    try:
+        providers = fb.get_all_providers()
+        logger.info("test_firebase: providers_count=%s mock=%s", len(providers), fb.is_mock)
+        return {
+            "status": "success",
+            "firebase": "mock" if fb.is_mock else "connected",
+            "providers_count": len(providers),
+        }
+    except Exception as e:
+        logger.error("test_firebase failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+_AGENT_URDU = {
+    "Samajh": "سمجھ",
+    "Dhundho": "ڈھونڈو",
+    "Chunno": "چُنّو",
+}
+
+
+def _judge_logs_to_mobile_agent_logs(logs: list) -> list:
+    """Map judge-facing reasoning entries to the legacy shape used by the Expo AgentLogViewer."""
+    out = []
+    for entry in logs:
+        ts = entry.get("timestamp", "")
+        agent = entry.get("agent", "Samajh")
+        out.append(
+            {
+                "agent_name": agent.upper(),
+                "agent_name_urdu": _AGENT_URDU.get(agent, agent),
+                "start_time": ts,
+                "end_time": ts,
+                "input_summary": entry.get("reasoning", ""),
+                "output_summary": entry.get("decision", ""),
+                "decision_made": entry.get("decision", ""),
+                "confidence": float(entry.get("confidence", 0.0)),
+                "fallback_used": entry.get("status") == "failure",
+                "time_seconds": 0.0,
+            }
+        )
+    return out
 
 
 @app.post("/api/request")
 async def handle_service_request(body: ServiceRequest):
-    """Full Antigravity orchestration: Samajh → Dhundho → Chunno → Hifazat → Hisaab → Pakka."""
-    result = await run_full_orchestration(
-        user_input=body.user_input,
-        user_location=body.user_location,
-        user_id=body.user_id,
-    )
-    request_id = result.get("request_id", f"REQ-{uuid.uuid4().hex[:8].upper()}")
-    logs = result.get("agent_logs", [])
+    """
+    Samajh → Dhundho → Chunno via LangGraph.
 
-    await save_agent_logs(
-        request_id, body.user_input, logs, user_id=body.user_id
+    ``providers_ranked`` is sorted by Chunno (``ranking_score`` desc). Send ``user_location`` from mobile.
+    """
+    request_id = new_request_id()
+    final_state = await run_samajh_workflow(
+        user_input=body.user_input.strip(),
+        source="text",
+        user_location=(body.user_location or "").strip(),
     )
+    intent = final_state.get("intent") or {}
+    logs = final_state.get("logs") or []
+    providers_ranked = final_state.get("providers_ranked") or []
+    providers_discovered = final_state.get("providers") or []
+    dh_meta = final_state.get("dhundho_meta") or {}
+    chunno_warnings = final_state.get("chunno_warnings") or []
+    best_provider = providers_ranked[0] if providers_ranked else None
 
-    # Cache providers for subsequent /api/bid calls
     _request_store[request_id] = {
-        "providers": result.get("providers_ranked", []),
-        "intent": result.get("extracted_intent", {}),
-        "user_id": body.user_id,
         "logs": logs,
+        "intent": intent,
+        "user_id": body.user_id,
+        "providers": providers_ranked,
     }
 
-    return result
+    agent_logs = _judge_logs_to_mobile_agent_logs(logs)
+
+    return {
+        "request_id": request_id,
+        "extracted_intent": intent,
+        "logs": logs,
+        "agent_logs": agent_logs,
+        "clarification_needed": bool(intent.get("clarification_needed")),
+        "clarification_question": intent.get("clarification_question"),
+        "emergency": bool(intent.get("emergency")),
+        "providers_ranked": providers_ranked,
+        "best_provider": best_provider,
+        "chunno_warnings": chunno_warnings,
+        "fallback": dh_meta.get("fallback_message"),
+        "dhundho_meta": dh_meta,
+        "chunno_meta": final_state.get("chunno_meta") or {},
+        "providers_discovered_count": len(providers_discovered),
+    }
 
 
 @app.post("/api/bid")
@@ -108,7 +231,6 @@ async def trigger_bidding(body: BidRequest):
     """Trigger MOLTOL negotiation agent for a prior request."""
     cached = _request_store.get(body.request_id)
     if not cached:
-        # Fallback: use all providers
         providers = _load_providers()[:5]
         intent = {"service_type": "service", "job_complexity": "intermediate", "urgency": "medium"}
     else:
@@ -187,7 +309,6 @@ async def get_booking_status(booking_id: str):
     """Fetch booking status + tracking info."""
     booking = await get_booking(booking_id)
     if not booking:
-        # Return a mock for demo
         return {
             "booking_id": booking_id,
             "status": "confirmed",
@@ -373,17 +494,31 @@ async def submit_feedback(body: FeedbackRequest):
     """Submit post-service rating + review."""
     if not 1 <= body.rating <= 5:
         raise HTTPException(status_code=400, detail="Rating must be between 1 and 5")
-    review_id = await save_review({
-        "booking_id": body.booking_id,
-        "user_id": body.user_id,
-        "provider_id": body.provider_id,
-        "rating": body.rating,
-        "tags": body.tags,
-        "review": body.review,
-    })
+    review_id = await save_review(
+        {
+            "booking_id": body.booking_id,
+            "user_id": body.user_id,
+            "provider_id": body.provider_id,
+            "rating": body.rating,
+            "tags": body.tags,
+            "review": body.review,
+        }
+    )
     await update_booking_status(body.booking_id, "completed")
     return {
         "success": True,
         "review_id": review_id,
         "message": f"Shukriya! Aapka feedback submit ho gaya. Rating: {body.rating}/5",
     }
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        "main:app",
+        host=config.HOST,
+        port=config.PORT,
+        reload=config.DEBUG,
+        log_level=config.LOG_LEVEL.lower(),
+    )
