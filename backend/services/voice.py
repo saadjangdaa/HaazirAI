@@ -5,13 +5,14 @@ import re
 from services.gemini import MOCK_MODE, generate_with_parts
 
 _TRANSCRIBE_PROMPT = (
-    "Transcribe this audio exactly as spoken. "
-    "The speaker may use Urdu, Roman Urdu (Urdu words in English letters), English, or Sindhi. "
-    "Return ONLY a JSON object with these three fields:\n"
-    '  "text": the exact transcription as a string\n'
-    '  "detected_language": one of "urdu", "roman_urdu", "english", "sindhi", "mixed"\n'
-    '  "confidence": a float between 0 and 1\n'
-    "No explanation, no markdown — only raw JSON."
+    "Transcribe this audio. The speaker may use Urdu, Roman Urdu, English, or mixed. "
+    "CRITICAL: Always write the transcription using English/Latin letters only (Roman Urdu). "
+    "NEVER use Urdu script, Arabic script, Devanagari, or any non-Latin characters. "
+    "Write all Urdu words phonetically in English letters — for example: "
+    "'mujhe AC repair chahiye G-13 mein' not 'مجھے AC ریپیئر چاہیے'."
+    "Return ONLY a JSON object:\n"
+    '{"text": "roman urdu transcription here", "detected_language": "roman_urdu", "confidence": 0.95}\n'
+    "No explanation, no markdown, no extra text — only raw JSON."
 )
 
 _MOCK_RESPONSES = [
@@ -31,10 +32,13 @@ async def transcribe_audio(audio_base64: str, mime_type: str = "audio/m4a") -> d
         return response
 
     try:
-        import google.generativeai as genai
-        audio_bytes = base64.b64decode(audio_base64)
-        audio_part = genai.types.Part.from_data(data=audio_bytes, mime_type=mime_type)
-
+        # inline_data dict format works across all google-generativeai versions
+        audio_part = {
+            "inline_data": {
+                "mime_type": mime_type,
+                "data": audio_base64,  # base64 string, not bytes
+            }
+        }
         raw = await generate_with_parts([audio_part, _TRANSCRIBE_PROMPT])
         raw = raw.strip()
 

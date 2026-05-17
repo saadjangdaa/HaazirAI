@@ -37,7 +37,7 @@ export default function ResultsScreen() {
   const handleSpeak = async () => {
     const already = await getIsSpeaking();
     if (already || speaking) {
-      stopSpeaking();
+      await stopSpeaking();
       setSpeaking(false);
       return;
     }
@@ -45,7 +45,7 @@ export default function ResultsScreen() {
     if (!bp) return;
     const price = result?.price_breakdown?.total || 0;
     const service = intent?.service_type || 'service';
-    const msg = `Best match found: ${bp.name}. Service: ${service}. Rating: ${bp.rating} out of 5. Estimated price: ${price} rupees. Tap the card to book.`;
+    const msg = `${bp.name} best match hai ${service} ke liye. Rating ${bp.rating}. Price ${price} rupees. Card tap karein booking ke liye.`;
     setSpeaking(true);
     speakText(msg, () => setSpeaking(false));
   };

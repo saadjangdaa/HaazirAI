@@ -3,6 +3,7 @@ import {
   View, Text, TextInput, TouchableOpacity, ScrollView,
   StyleSheet, ActivityIndicator, Animated, Easing, Alert,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../../constants/theme';
 import { submitRequest } from '../../services/api';
@@ -28,6 +29,7 @@ const RECENT_REQUESTS = [
 export default function CustomerHomeScreen() {
   const router = useRouter();
   const { user } = useAuth();
+  const insets = useSafeAreaInsets();
   const [input, setInput] = useState('');
   const [location, setLocation] = useState('');
   const [loading, setLoading] = useState(false);
@@ -64,8 +66,10 @@ export default function CustomerHomeScreen() {
       try {
         const { text } = await stopAndTranscribe();
         if (text) setInput(text);
-      } catch {
-        Alert.alert('Voice Error', 'Awaaz samajh nahi ayi — dobara try karein');
+      } catch (e: any) {
+        const msg = e?.message || e?.code || 'Unknown error';
+        console.error('[home] voice error:', msg);
+        Alert.alert('Voice Error', `${msg}`);
       } finally {
         setVoiceProcessing(false);
       }
@@ -129,7 +133,7 @@ export default function CustomerHomeScreen() {
   };
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+    <ScrollView style={styles.container} contentContainerStyle={[styles.content, { paddingTop: insets.top + Spacing.md }]} keyboardShouldPersistTaps="handled">
       {/* Header */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
@@ -165,6 +169,16 @@ export default function CustomerHomeScreen() {
           {voiceProcessing ? 'Samajh raha hun...' : recording ? 'Rok Dein' : 'Bolein ya likhein'}
         </Text>
       </View>
+
+      {/* Talk to AI — full conversational mode */}
+      <TouchableOpacity style={styles.talkBtn} onPress={() => router.push('/voice-conversation')}>
+        <Text style={styles.talkBtnIcon}>🗣️</Text>
+        <View style={styles.talkBtnText}>
+          <Text style={styles.talkBtnTitle}>AI se Baat Karein</Text>
+          <Text style={styles.talkBtnSub}>Voice conversation — agent khud poochega</Text>
+        </View>
+        <Text style={styles.talkBtnArrow}>→</Text>
+      </TouchableOpacity>
 
       {/* Input Card */}
       <View style={[styles.inputCard, Shadow.card]}>
@@ -271,6 +285,18 @@ const styles = StyleSheet.create({
   voiceInner: { justifyContent: 'center', alignItems: 'center' },
   voiceIcon: { fontSize: 34, color: Colors.background },
   voiceLabel: { marginTop: Spacing.sm, fontSize: FontSize.sm, fontWeight: '600', color: Colors.textSecondary },
+  talkBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    backgroundColor: Colors.primaryDim, borderRadius: Radius.xl,
+    padding: Spacing.md, marginBottom: Spacing.md,
+    borderWidth: 1.5, borderColor: Colors.primary,
+    ...Shadow.primary,
+  },
+  talkBtnIcon: { fontSize: 28 },
+  talkBtnText: { flex: 1 },
+  talkBtnTitle: { fontSize: FontSize.md, fontWeight: '800', color: Colors.primary },
+  talkBtnSub: { fontSize: FontSize.xs, color: Colors.textSecondary, marginTop: 2 },
+  talkBtnArrow: { fontSize: FontSize.lg, color: Colors.primary, fontWeight: '700' },
   inputCard: {
     backgroundColor: Colors.cardBg, borderRadius: Radius.xl,
     borderWidth: 1, borderColor: Colors.border, padding: Spacing.md, marginBottom: Spacing.md,

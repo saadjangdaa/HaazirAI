@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../../constants/theme';
 import { useAuth } from '../../context/AuthContext';
@@ -16,6 +17,7 @@ export default function CustomerProfileScreen() {
   const router = useRouter();
   const { user, signOut } = useAuth();
 
+  const insets = useSafeAreaInsets();
   const displayName = user?.name || 'Ahmed Khan';
   const initial = displayName.charAt(0).toUpperCase();
 
@@ -27,7 +29,7 @@ export default function CustomerProfileScreen() {
   };
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.content}>
+    <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
       {/* Identity */}
       <View style={[styles.profileCard, Shadow.card]}>
         <View style={styles.profileRow}>

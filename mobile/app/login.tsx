@@ -3,6 +3,7 @@ import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
   ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView, Alert,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
@@ -10,6 +11,7 @@ import { useAuth } from '../context/AuthContext';
 export default function LoginScreen() {
   const router = useRouter();
   const { signIn, loading } = useAuth();
+  const insets = useSafeAreaInsets();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
@@ -34,7 +36,7 @@ export default function LoginScreen() {
       style={styles.root}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+      <ScrollView contentContainerStyle={[styles.scroll, { paddingTop: insets.top + Spacing.lg, paddingBottom: insets.bottom + Spacing.lg }]} keyboardShouldPersistTaps="handled">
         {/* Brand */}
         <View style={styles.brand}>
           <Text style={styles.brandEmoji}>🤝</Text>
@@ -107,7 +109,7 @@ export default function LoginScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: Colors.background },
-  scroll: { flexGrow: 1, justifyContent: 'center', padding: Spacing.lg },
+  scroll: { flexGrow: 1, justifyContent: 'center', paddingHorizontal: Spacing.lg },
   brand: { alignItems: 'center', marginBottom: Spacing.xl },
   brandEmoji: { fontSize: 56, marginBottom: Spacing.sm },
   brandName: { fontSize: FontSize.xxxl, fontWeight: '800', color: Colors.primary },

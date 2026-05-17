@@ -4,6 +4,7 @@ import {
   ScrollView, Alert, ActivityIndicator,
 } from 'react-native';
 import { useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
 
@@ -23,6 +24,7 @@ const CITIES = ['Islamabad', 'Rawalpindi', 'Lahore', 'Karachi', 'Peshawar', 'Mul
 export default function WorkerSignupScreen() {
   const router = useRouter();
   const { completeWorkerSignup } = useAuth();
+  const insets = useSafeAreaInsets();
   const [selectedSpecs, setSelectedSpecs] = useState<string[]>([]);
   const [selectedCities, setSelectedCities] = useState<string[]>([]);
   const [price, setPrice] = useState('');
@@ -61,7 +63,7 @@ export default function WorkerSignupScreen() {
   };
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.content}>
+    <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
       <Text style={styles.heading}>Worker Profile Complete Karein</Text>
       <Text style={styles.sub}>Ye details aapko customers se match karwane mein madad karein gi</Text>
 

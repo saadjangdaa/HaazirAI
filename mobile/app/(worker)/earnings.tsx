@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../../constants/theme';
 
 const WEEK_BARS = [40, 65, 50, 80, 95, 70, 88];
@@ -13,9 +14,10 @@ const PAYMENTS = [
 
 export default function WorkerEarningsScreen() {
   const maxBar = Math.max(...WEEK_BARS);
+  const insets = useSafeAreaInsets();
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.content}>
+    <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
       <Text style={styles.title}>Meri Kamai 💰</Text>
 
       {/* Today + Rating */}

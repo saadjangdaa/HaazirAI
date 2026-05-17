@@ -16,8 +16,6 @@ export default function CustomerLayout() {
           backgroundColor: Colors.surface,
           borderTopColor: Colors.border,
           borderTopWidth: 1,
-          paddingBottom: 4,
-          height: 60,
         },
         tabBarLabelStyle: { fontSize: FontSize.xs, fontWeight: '700' },
         headerStyle: { backgroundColor: Colors.background },

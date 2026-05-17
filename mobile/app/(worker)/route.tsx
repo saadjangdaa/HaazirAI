@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Text, ScrollView, StyleSheet } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../../constants/theme';
 
 const STOPS = [
@@ -15,8 +16,9 @@ const DOT_POSITIONS = [
 ];
 
 export default function WorkerRouteScreen() {
+  const insets = useSafeAreaInsets();
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.content}>
+    <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
       <Text style={styles.title}>Aaj ka Route 🗺️</Text>
       <Text style={styles.sub}>AI Optimized — 40% time bachayega ⚡</Text>
 

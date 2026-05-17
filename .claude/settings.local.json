@@ -2,7 +2,10 @@
   "permissions": {
     "allow": [
       "Bash(cd \"/d/Hackathons/ai seekho/HaazirAI/mobile\" && cat node_modules/expo-av/package.json | grep '\"version\"' | head -1)",
-      "Read(//d/d/Hackathons/ai seekho/HaazirAI/mobile/node_modules/expo-av/**)"
+      "Read(//d/d/Hackathons/ai seekho/HaazirAI/mobile/node_modules/expo-av/**)",
+      "Bash(npx expo *)",
+      "Bash(cd \"/d/Hackathons/ai seekho/HaazirAI/mobile\" && cat node_modules/expo/package.json | grep '\"version\"' | head -1)",
+      "Read(//d/d/Hackathons/ai seekho/HaazirAI/mobile/node_modules/expo/**)"
     ]
   }
 }

@@ -1,8 +1,11 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import * as SplashScreen from 'expo-splash-screen';
 import { Colors } from '../constants/theme';
 import { AuthProvider, useAuth } from '../context/AuthContext';
+
+SplashScreen.preventAutoHideAsync();
 
 const AUTH_SCREENS = ['login', 'signup'];
 
@@ -10,9 +13,16 @@ function RootLayoutNav() {
   const { user, loading } = useAuth();
   const router = useRouter();
   const segments = useSegments();
+  const [isReady, setIsReady] = useState(false);
+
+  // Wait one tick after mount before navigating — expo-router v6 requirement
+  useEffect(() => {
+    const t = setTimeout(() => setIsReady(true), 0);
+    return () => clearTimeout(t);
+  }, []);
 
   useEffect(() => {
-    if (loading) return;
+    if (!isReady || loading) return;
 
     const current = segments[0] as string | undefined;
     const inAuth = AUTH_SCREENS.includes(current ?? '');
@@ -26,7 +36,7 @@ function RootLayoutNav() {
     } else if (user && user.role === 'worker' && !inWorker && !onWorkerSetup) {
       router.replace('/(worker)/jobs');
     }
-  }, [user, loading, segments]);
+  }, [isReady, user, loading, segments]);
 
   return (
     <>
@@ -51,12 +61,17 @@ function RootLayoutNav() {
         <Stack.Screen name="feedback" options={{ title: 'Feedback Dein' }} />
         <Stack.Screen name="dispute" options={{ title: 'Complaint / Dispute' }} />
         <Stack.Screen name="logs" options={{ title: 'Agent Logs (Judges View)' }} />
+        <Stack.Screen name="voice-conversation" options={{ headerShown: false }} />
       </Stack>
     </>
   );
 }
 
 export default function RootLayout() {
+  useEffect(() => {
+    SplashScreen.hideAsync();
+  }, []);
+
   return (
     <AuthProvider>
       <RootLayoutNav />

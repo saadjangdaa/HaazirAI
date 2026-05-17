@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, ScrollView, StyleSheet,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../../constants/theme';
 
 const DISPUTE_TYPES = [
@@ -21,10 +22,11 @@ export default function DisputesScreen() {
   const [sel, setSel] = useState('quality');
   const [description, setDescription] = useState('');
   const [submitted, setSubmitted] = useState(false);
+  const insets = useSafeAreaInsets();
 
   if (submitted) {
     return (
-      <ScrollView style={styles.root} contentContainerStyle={styles.content}>
+      <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
         <View style={styles.successCard}>
           <Text style={styles.successIcon}>✅</Text>
           <Text style={styles.successTitle}>Dispute Darj Ho Gaya!</Text>
@@ -40,7 +42,7 @@ export default function DisputesScreen() {
   }
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.content}>
+    <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
       <Text style={styles.title}>Masla Darj Karein 🚨</Text>
       <Text style={styles.sub}>Koi masla? Haazir AI aapki madad karega.</Text>
 

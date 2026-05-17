@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../../constants/theme';
 import { useAuth } from '../../context/AuthContext';
@@ -26,13 +27,14 @@ export default function WorkerProfileScreen() {
     ]);
   };
 
+  const insets = useSafeAreaInsets();
   const specs = user?.workerData?.specializations || ['AC Repair', 'Complex Jobs', 'Plumbing'];
   const areas = user?.workerData?.areas || ['Islamabad', 'Rawalpindi'];
   const displayName = user?.name || 'Ali AC Tech';
   const initial = displayName.charAt(0).toUpperCase();
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.content}>
+    <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
       <Text style={styles.title}>Profile</Text>
 
       {/* Identity Card */}
