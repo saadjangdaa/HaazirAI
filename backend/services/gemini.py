@@ -1,10 +1,17 @@
 import os
+import re
 import json
 import asyncio
 import google.generativeai as genai
-from dotenv import load_dotenv
 
-load_dotenv()
+try:
+    from config import config
+
+    GEMINI_API_KEY = (config.GEMINI_API_KEY or "").strip()
+    _GEMINI_MODEL = getattr(config, "GEMINI_MODEL", None) or "gemini-2.0-flash"
+except ImportError:
+    GEMINI_API_KEY = os.getenv("GOOGLE_GEMINI_API_KEY", "") or os.getenv("GEMINI_API_KEY", "")
+    _GEMINI_MODEL = "gemini-2.0-flash"
 
 # ── Collect up to 5 API keys ──────────────────────────────────────────────────
 _ALL_KEYS: list[str] = []

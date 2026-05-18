@@ -6,6 +6,8 @@ import { Colors } from '../constants/theme';
 import { AuthProvider, useAuth, AuthUser } from '../context/AuthContext';
 import AuthSplash from '../components/AuthSplash';
 import { auth } from '../services/firebase';
+import { AuthProvider, useAuth } from '../context/AuthContext';
+import { LanguageProvider } from '../context/LanguageContext';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -59,6 +61,22 @@ function AuthNavigationGuard() {
       if (isAuthPath(pathname) || isWorkerSignupPath(pathname)) {
         target = home;
       }
+  useEffect(() => {
+    if (!isReady || loading) return;
+
+    const current = segments[0] as string | undefined;
+    const inAuth = AUTH_SCREENS.includes(current ?? '');
+    const inWorker = current === '(worker)';
+    const onWorkerSetup = current === 'worker-signup';
+    const onLangSelect = current === 'language-select';
+
+    if (!user && !inAuth && !onWorkerSetup) {
+      router.replace('/login');
+    } else if (user && inAuth) {
+      // After login → pick language first
+      router.replace('/language-select');
+    } else if (user && user.role === 'worker' && !inWorker && !onWorkerSetup && !onLangSelect) {
+      router.replace('/(worker)/jobs');
     }
 
     if (!target || lastNav.current === target) return;
@@ -110,6 +128,9 @@ function RootLayoutNav() {
           name="worker-signup"
           options={{ title: 'Worker Registration', headerBackVisible: false }}
         />
+        <Stack.Screen name="language-select" options={{ headerShown: false }} />
+        <Stack.Screen name="signup" options={{ title: 'Account Banayein' }} />
+        <Stack.Screen name="worker-signup" options={{ title: 'Worker Registration' }} />
         <Stack.Screen name="(customer)" options={{ headerShown: false }} />
         <Stack.Screen name="(worker)" options={{ headerShown: false }} />
         <Stack.Screen name="results" options={{ title: 'Providers Mila Diye' }} />
@@ -131,8 +152,10 @@ export default function RootLayout() {
   }, []);
 
   return (
-    <AuthProvider>
-      <RootLayoutNav />
-    </AuthProvider>
+    <LanguageProvider>
+      <AuthProvider>
+        <RootLayoutNav />
+      </AuthProvider>
+    </LanguageProvider>
   );
 }

@@ -8,6 +8,8 @@ import { useRouter } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../../constants/theme';
 import { submitRequest, formatApiError, pingApi, getApiBaseUrl, requireUserId } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
+import { useLang } from '../../context/LanguageContext';
+import { requestMicPermission, startRecording, stopAndTranscribe } from '../../services/voice';
 
 const QUICK_SERVICES = [
   { label: 'AC Technician', icon: '❄️' },
@@ -28,6 +30,8 @@ const RECENT_REQUESTS = [
 const CustomerHomeScreen = () => {
   const router = useRouter();
   const { user, ensureProfileSyncedBeforeRequest } = useAuth();
+  const { user } = useAuth();
+  const { tr } = useLang();
   const insets = useSafeAreaInsets();
   const [input, setInput] = useState('');
   const [location, setLocation] = useState('');
@@ -205,8 +209,9 @@ const CustomerHomeScreen = () => {
       {/* Greeting */}
       <Text style={styles.greeting}>
         {user?.username ? `Assalam o Alaikum, ${user.username.split(' ')[0]}! 👋` : 'Assalam o Alaikum! 👋'}
+        {tr.homeGreeting(user?.name?.split(' ')[0] || '')}
       </Text>
-      <Text style={styles.greetingSub}>Kya chahiye aaj?</Text>
+      <Text style={styles.greetingSub}>{tr.homeQuestion}</Text>
 
       {/* Voice Button */}
       <View style={styles.voiceCenter}>
@@ -227,8 +232,8 @@ const CustomerHomeScreen = () => {
       <TouchableOpacity style={styles.talkBtn} onPress={() => router.push('/voice-conversation')}>
         <Text style={styles.talkBtnIcon}>🗣️</Text>
         <View style={styles.talkBtnText}>
-          <Text style={styles.talkBtnTitle}>AI se Baat Karein</Text>
-          <Text style={styles.talkBtnSub}>Voice conversation — agent khud poochega</Text>
+          <Text style={styles.talkBtnTitle}>{tr.talkToAI}</Text>
+          <Text style={styles.talkBtnSub}>{tr.talkToAISub}</Text>
         </View>
         <Text style={styles.talkBtnArrow}>→</Text>
       </TouchableOpacity>
@@ -239,7 +244,7 @@ const CustomerHomeScreen = () => {
           style={styles.textInput}
           value={input}
           onChangeText={setInput}
-          placeholder="e.g. AC bilkul kaam nahi kar raha, kal subah chahiye..."
+          placeholder={tr.searchPlaceholder}
           placeholderTextColor={Colors.textMuted}
           multiline
           numberOfLines={3}

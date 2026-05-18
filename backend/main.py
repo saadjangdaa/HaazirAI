@@ -10,6 +10,7 @@ import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 _BACKEND_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _BACKEND_DIR.parent
@@ -22,6 +23,13 @@ from fastapi import HTTPException
 
 from backend.app import APP_INSTANCE_ID, app
 
+# Load config + logging first (single dotenv via config.py)
+from config import config
+from logging_config import logger
+
+from agents.orchestrator import run_bidding, run_dispute, run_provider_report
+from agents.pakka import PakkaAgent
+from graph import new_request_id, run_samajh_workflow
 from models.request import (
     ServiceRequest,
     BidRequest,
@@ -35,6 +43,42 @@ from models.request import (
     BookingStatusUpdate,
 )
 from agents.orchestrator import run_full_orchestration, run_bidding, run_provider_report
+)
+from services.firebase import (
+    FirebaseService,
+    get_booking,
+    save_review,
+    set_firebase_service,
+    update_booking_status,
+)
+
+firebase: Optional[FirebaseService] = None
+
+_PROVIDERS_PATH = Path(__file__).parent / "data" / "providers.json"
+_request_store: dict = {}
+_providers_cache: list = []
+pakka_agent = PakkaAgent()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup: validate config, init Firebase singleton for agents + routes."""
+    global firebase
+    if not config.validate():
+        logger.error("Configuration validation failed — exiting")
+        sys.exit(1)
+
+    cred_path = str(config.resolved_credentials_path())
+    firebase = FirebaseService(cred_path)
+    set_firebase_service(firebase)
+    app.state.firebase = firebase
+
+    logger.info("Haazir backend started — environment=%s firebase_mock=%s", config.ENVIRONMENT, firebase.is_mock)
+    yield
+    logger.info("Haazir backend shutdown")
+
+from models.request import ServiceRequest, BidRequest, BookingRequest, DisputeRequest, FeedbackRequest, VoiceRequest, TTSRequest, ConversationRequest
+from agents.orchestrator import run_full_orchestration, run_bidding, run_dispute, run_provider_report
 from agents.pakka import PakkaAgent
 from services.firestore_schema import FORBIDDEN_USER_IDS
 from services.firebase import (
@@ -75,6 +119,12 @@ from services.push_notify import (
     notify_booking_created,
     notify_feedback_received,
     process_pending_notifications,
+
+app = FastAPI(
+    title="Haazir Dost API",
+    description="Pakistan's agentic home-services orchestrator",
+    version="1.0.0",
+    lifespan=lifespan,
 )
 from services.user_validation import (
     is_profile_complete,
@@ -136,6 +186,9 @@ async def voice_tts(body: TTSRequest):
 
 @app.get("/health")
 async def health():
+    """Liveness + quick Firebase mode indicator for ops / mobile."""
+    fb = getattr(app.state, "firebase", None) or firebase
+    mode = "mock" if fb is None or fb.is_mock else "connected"
     return {
         "status": "ok",
         "timestamp": datetime.now().isoformat(),
@@ -148,6 +201,58 @@ async def health():
             "notification_dedupe_seconds": 90,
         },
     }
+        "firebase": mode,
+        "environment": config.ENVIRONMENT,
+    }
+
+
+@app.get("/test/firebase")
+async def test_firebase():
+    """Smoke-test Firestore (or mock store): list providers count."""
+    fb = getattr(app.state, "firebase", None) or firebase
+    if fb is None:
+        raise HTTPException(status_code=503, detail="Firebase not initialized")
+    try:
+        providers = fb.get_all_providers()
+        logger.info("test_firebase: providers_count=%s mock=%s", len(providers), fb.is_mock)
+        return {
+            "status": "success",
+            "firebase": "mock" if fb.is_mock else "connected",
+            "providers_count": len(providers),
+        }
+    except Exception as e:
+        logger.error("test_firebase failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+_AGENT_URDU = {
+    "Samajh": "سمجھ",
+    "Dhundho": "ڈھونڈو",
+    "Chunno": "چُنّو",
+}
+
+
+def _judge_logs_to_mobile_agent_logs(logs: list) -> list:
+    """Map judge-facing reasoning entries to the legacy shape used by the Expo AgentLogViewer."""
+    out = []
+    for entry in logs:
+        ts = entry.get("timestamp", "")
+        agent = entry.get("agent", "Samajh")
+        out.append(
+            {
+                "agent_name": agent.upper(),
+                "agent_name_urdu": _AGENT_URDU.get(agent, agent),
+                "start_time": ts,
+                "end_time": ts,
+                "input_summary": entry.get("reasoning", ""),
+                "output_summary": entry.get("decision", ""),
+                "decision_made": entry.get("decision", ""),
+                "confidence": float(entry.get("confidence", 0.0)),
+                "fallback_used": entry.get("status") == "failure",
+                "time_seconds": 0.0,
+            }
+        )
+    return out
 
 
 @app.post("/api/request")
@@ -166,14 +271,34 @@ async def handle_service_request(body: ServiceRequest):
     logs = result.get("agent_logs") or []
 
     await save_agent_logs(request_id, body.user_input, logs, user_id=uid)
+    """
+    Samajh → Dhundho → Chunno via LangGraph.
 
-    # Cache providers for subsequent /api/bid calls
+    ``providers_ranked`` is sorted by Chunno (``ranking_score`` desc). Send ``user_location`` from mobile.
+    """
+    request_id = new_request_id()
+    final_state = await run_samajh_workflow(
+        user_input=body.user_input.strip(),
+        source="text",
+        user_location=(body.user_location or "").strip(),
+    )
+    intent = final_state.get("intent") or {}
+    logs = final_state.get("logs") or []
+    providers_ranked = final_state.get("providers_ranked") or []
+    providers_discovered = final_state.get("providers") or []
+    dh_meta = final_state.get("dhundho_meta") or {}
+    chunno_warnings = final_state.get("chunno_warnings") or []
+    best_provider = providers_ranked[0] if providers_ranked else None
+
     _request_store[request_id] = {
         "providers": result.get("providers_ranked", []),
         "intent": result.get("extracted_intent", {}),
         "user_id": uid,
         "user_input": body.user_input,
         "logs": logs,
+        "intent": intent,
+        "user_id": body.user_id,
+        "providers": providers_ranked,
     }
 
     booking = result.get("booking") or {}
@@ -193,6 +318,24 @@ async def handle_service_request(body: ServiceRequest):
             await notify_booking_created(stored)
 
     return result
+    agent_logs = _judge_logs_to_mobile_agent_logs(logs)
+
+    return {
+        "request_id": request_id,
+        "extracted_intent": intent,
+        "logs": logs,
+        "agent_logs": agent_logs,
+        "clarification_needed": bool(intent.get("clarification_needed")),
+        "clarification_question": intent.get("clarification_question"),
+        "emergency": bool(intent.get("emergency")),
+        "providers_ranked": providers_ranked,
+        "best_provider": best_provider,
+        "chunno_warnings": chunno_warnings,
+        "fallback": dh_meta.get("fallback_message"),
+        "dhundho_meta": dh_meta,
+        "chunno_meta": final_state.get("chunno_meta") or {},
+        "providers_discovered_count": len(providers_discovered),
+    }
 
 
 @app.post("/api/bid")
@@ -200,7 +343,6 @@ async def trigger_bidding(body: BidRequest):
     """Trigger MOLTOL negotiation agent for a prior request."""
     cached = _request_store.get(body.request_id)
     if not cached:
-        # Fallback: use all providers
         providers = _load_providers()[:5]
         intent = {"service_type": "service", "job_complexity": "intermediate", "urgency": "medium"}
     else:
@@ -410,6 +552,19 @@ async def sync_user(body: UserSyncRequest):
     if body.role == "worker":
         await resolve_worker_provider_id(uid, persist=True)
     doc = await get_user(uid)
+        return {
+            "booking_id": booking_id,
+            "status": "confirmed",
+            "message": "Booking data retrieved (mock)",
+            "tracking_steps": [
+                {"step": "Booked", "done": True, "time": datetime.now().isoformat()},
+                {"step": "Confirmed", "done": True, "time": datetime.now().isoformat()},
+                {"step": "En Route", "done": False},
+                {"step": "Arrived", "done": False},
+                {"step": "In Progress", "done": False},
+                {"step": "Completed", "done": False},
+            ],
+        }
     return {
         "success": True,
         "user_id": uid,
