@@ -122,6 +122,18 @@ class DhundhoAgent:
 
         service_type = intent.get("service_type", "")
         city = intent.get("city", "Islamabad")
+        service_type = intent.get("service_type", "").lower()
+
+        from services.firebase import list_providers as firestore_list_providers
+        from services.providers_integrity import format_provider_record
+
+        all_providers = await firestore_list_providers(city=city, service=service_type)
+        if not all_providers:
+            all_providers = [
+                format_provider_record(p, p.get("id"))
+                for p in _load_providers()
+            ]
+
         location = intent.get("location", "")
         complexity = intent.get("job_complexity", "intermediate")
         is_emergency = intent.get("emergency", False)

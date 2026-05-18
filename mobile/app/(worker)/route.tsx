@@ -1,13 +1,17 @@
-import React from 'react';
-import { View, Text, ScrollView, StyleSheet } from 'react-native';
+import React, { useCallback, useMemo, useState } from 'react';
+import {
+  View, Text, ScrollView, StyleSheet, ActivityIndicator, RefreshControl,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useFocusEffect } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../../constants/theme';
-
-const STOPS = [
-  { n: 1, time: '10:00 AM', who: 'Ahmed', area: 'G-13', dist: '1.8km', svc: 'AC Repair' },
-  { n: 2, time: '12:30 PM', who: 'Fatima', area: 'G-10', dist: '2.1km', svc: 'AC Service' },
-  { n: 3, time: '3:00 PM', who: 'Bilal', area: 'F-7', dist: '3.4km', svc: 'Electrician' },
-];
+import { useAuth } from '../../context/AuthContext';
+import { formatApiError, getWorkerBookings, requireUserId, UserBooking } from '../../services/api';
+import {
+  formatWorkerPrice,
+  isActiveWorkerStatus,
+  routeStopLabel,
+} from '../../utils/workerBookings';
 
 const DOT_POSITIONS = [
   { x: '12%', y: '22%' },
@@ -17,66 +21,128 @@ const DOT_POSITIONS = [
 
 export default function WorkerRouteScreen() {
   const insets = useSafeAreaInsets();
-  return (
-    <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
-      <Text style={styles.title}>Aaj ka Route 🗺️</Text>
-      <Text style={styles.sub}>AI Optimized — 40% time bachayega ⚡</Text>
+  const { user } = useAuth();
+  const [bookings, setBookings] = useState<UserBooking[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-      {/* Map Placeholder */}
+  const load = useCallback(async () => {
+    if (!user?.id) {
+      setBookings([]);
+      setLoading(false);
+      return;
+    }
+    setError(null);
+    try {
+      const uid = requireUserId(user);
+      const res = await getWorkerBookings(uid);
+      const active = (res.bookings || []).filter((b) => isActiveWorkerStatus(b.status));
+      setBookings(active);
+    } catch (e) {
+      setError(formatApiError(e));
+      setBookings([]);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, [user?.id]);
+
+  useFocusEffect(
+    useCallback(() => {
+      setLoading(true);
+      load();
+    }, [load])
+  );
+
+  const stops = useMemo(() => bookings.slice(0, 6).map((b, i) => routeStopLabel(b, i)), [bookings]);
+  const expectedTotal = useMemo(
+    () => bookings.reduce((sum, b) => sum + (Number(b.price) || 0), 0),
+    [bookings]
+  );
+  const cityLabel = user?.workerData?.areas?.[0] || 'Islamabad';
+
+  if (loading && bookings.length === 0) {
+    return (
+      <View style={styles.center}>
+        <ActivityIndicator size="large" color={Colors.primary} />
+      </View>
+    );
+  }
+
+  return (
+    <ScrollView
+      style={styles.root}
+      contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
+      refreshControl={
+        <RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} />
+      }
+    >
+      <Text style={styles.title}>Aaj ka Route 🗺️</Text>
+      <Text style={styles.sub}>
+        {stops.length > 0
+          ? `${stops.length} active stop(s) — schedule ke mutabiq`
+          : 'Koi active route nahi — jobs accept karein'}
+      </Text>
+      {error ? <Text style={styles.errorText}>{error}</Text> : null}
+
       <View style={styles.mapCard}>
         <View style={styles.mapGrid} />
-        {/* Route dots */}
-        {DOT_POSITIONS.map((pos, i) => (
-          <View key={i} style={[styles.dot, { left: pos.x as any, top: pos.y as any }]}>
+        {DOT_POSITIONS.slice(0, Math.max(stops.length, 1)).map((pos, i) => (
+          <View key={i} style={[styles.dot, { left: pos.x as `${number}%`, top: pos.y as `${number}%` }]}>
             <Text style={styles.dotNum}>{i + 1}</Text>
           </View>
         ))}
-        {/* Dashed line (simplified visual) */}
         <View style={styles.routeLine} />
-        <Text style={styles.mapLabel}>📍 Islamabad Route</Text>
+        <Text style={styles.mapLabel}>📍 {cityLabel} Route</Text>
       </View>
 
-      {/* Stops */}
-      {STOPS.map((stop) => (
-        <View key={stop.n} style={[styles.stopCard, Shadow.card]}>
-          <View style={styles.stopRow}>
-            <View style={styles.stopNumBox}>
-              <Text style={styles.stopNum}>{stop.n}</Text>
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.stopTitle}>{stop.time} — {stop.svc}</Text>
-              <Text style={styles.stopMeta}>{stop.who} · {stop.area} · {stop.dist}</Text>
+      {stops.length === 0 ? (
+        <Text style={styles.emptyText}>Active bookings yahan route stops ki surat mein dikhengi</Text>
+      ) : (
+        stops.map((stop) => (
+          <View key={stop.n} style={[styles.stopCard, Shadow.card]}>
+            <View style={styles.stopRow}>
+              <View style={styles.stopNumBox}>
+                <Text style={styles.stopNum}>{stop.n}</Text>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.stopTitle}>{stop.time} — {stop.svc}</Text>
+                <Text style={styles.stopMeta}>{stop.who} · {stop.area}</Text>
+              </View>
             </View>
           </View>
+        ))
+      )}
+
+      {stops.length > 1 && (
+        <View style={styles.bufferCard}>
+          <Text style={styles.bufferText}>⏱️ 30 min buffer included between jobs</Text>
         </View>
-      ))}
+      )}
 
-      {/* Buffer notice */}
-      <View style={styles.bufferCard}>
-        <Text style={styles.bufferText}>⏱️ 30 min buffer included between jobs</Text>
-      </View>
-
-      {/* AI Tip */}
       <View style={[styles.tipCard, Shadow.card]}>
         <Text style={styles.tipTitle}>✨ AI Tip</Text>
         <Text style={styles.tipText}>
-          Yeh route 40% time bachayega — AI ne automatically nearby jobs group kiye hain.
-          G-13 → G-10 → F-7 shortest path hai.
+          {stops.length > 1
+            ? `Aapke ${stops.length} bookings slot time ke order mein list hain — pehle job se shuru karein.`
+            : 'Zyada bookings accept karein taake optimized route generate ho.'}
         </Text>
       </View>
 
-      {/* Stats */}
       <View style={styles.routeStats}>
         <View style={styles.routeStatItem}>
-          <Text style={styles.routeStatVal}>3</Text>
+          <Text style={styles.routeStatVal}>{stops.length}</Text>
           <Text style={styles.routeStatLabel}>Jobs</Text>
         </View>
         <View style={styles.routeStatItem}>
-          <Text style={styles.routeStatVal}>7.3km</Text>
+          <Text style={styles.routeStatVal}>—</Text>
           <Text style={styles.routeStatLabel}>Total</Text>
         </View>
         <View style={styles.routeStatItem}>
-          <Text style={[styles.routeStatVal, { color: Colors.primary }]}>Rs 2,900</Text>
+          <Text style={[styles.routeStatVal, { color: Colors.primary }]}>
+            {formatWorkerPrice(expectedTotal)}
+          </Text>
           <Text style={styles.routeStatLabel}>Expected</Text>
         </View>
       </View>
@@ -87,17 +153,17 @@ export default function WorkerRouteScreen() {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: Colors.background },
   content: { padding: Spacing.md, paddingBottom: 48 },
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: Colors.background },
   title: { fontSize: FontSize.xxl, fontWeight: '800', color: Colors.textPrimary, marginBottom: 4 },
   sub: { fontSize: FontSize.sm, color: Colors.textMuted, marginBottom: Spacing.md },
+  errorText: { color: Colors.danger, fontSize: FontSize.sm, marginBottom: Spacing.sm },
+  emptyText: { fontSize: FontSize.sm, color: Colors.textMuted, marginBottom: Spacing.md },
   mapCard: {
     height: 180, borderRadius: Radius.xl, backgroundColor: Colors.surfaceElevated,
     borderWidth: 1, borderColor: Colors.border, marginBottom: Spacing.md,
     overflow: 'hidden', position: 'relative',
   },
-  mapGrid: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: Colors.surfaceElevated,
-  },
+  mapGrid: { ...StyleSheet.absoluteFillObject, backgroundColor: Colors.surfaceElevated },
   dot: {
     position: 'absolute', width: 32, height: 32, borderRadius: 16,
     backgroundColor: Colors.warning, justifyContent: 'center', alignItems: 'center',

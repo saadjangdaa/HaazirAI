@@ -4,7 +4,14 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../constants/theme';
-import { submitDispute, DisputeResolution } from '../services/api';
+import {
+  submitDispute,
+  DisputeResolution,
+  formatApiError,
+  isLoginRelatedError,
+  resolveUserId,
+} from '../services/api';
+import { useAuth } from '../context/AuthContext';
 
 const DISPUTE_TYPES = [
   { id: 'no_show', label: 'Provider Nahi Aaya', icon: '🚫' },
@@ -17,6 +24,7 @@ const DISPUTE_TYPES = [
 
 export default function DisputeScreen() {
   const router = useRouter();
+  const { user } = useAuth();
   const { bookingId } = useLocalSearchParams<{ bookingId: string }>();
   const [disputeType, setDisputeType] = useState('');
   const [description, setDescription] = useState('');
@@ -26,18 +34,33 @@ export default function DisputeScreen() {
   const handleSubmit = async () => {
     if (!disputeType) { Alert.alert('Complaint ka type chunein'); return; }
     if (!description.trim()) { Alert.alert('Thoda detail mein batayein'); return; }
+    const bid = (bookingId || '').trim();
+    if (!bid) {
+      Alert.alert('Booking chahiye', 'Pehle My Bookings se booking select karein.');
+      return;
+    }
     setLoading(true);
     try {
+      const uid = await resolveUserId(user);
+      if (!uid) {
+        Alert.alert('Thori der intezar karein', 'Session load ho raha hai — dobara try karein.');
+        return;
+      }
       const result = await submitDispute({
-        bookingId: bookingId || 'HAZ-DEMO-001',
+        bookingId: bid,
+        userId: uid,
         disputeType,
         description,
       });
       setResolution(result);
-    } catch (err: any) {
-      Alert.alert('Error', err?.message || 'Dispute submit nahi hua');
+    } catch (err: unknown) {
+      const msg = formatApiError(err);
+      if (!isLoginRelatedError(msg)) {
+        Alert.alert('Error', msg);
+      }
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   if (resolution) {
@@ -60,8 +83,13 @@ export default function DisputeScreen() {
             <Text style={styles.escalatedText}>⚠️ Human agent ko escalate kiya gaya hai</Text>
           )}
         </View>
-        <TouchableOpacity style={styles.homeBtn} onPress={() => router.push('/')}>
-          <Text style={styles.homeBtnText}>Wapas Jao</Text>
+        <TouchableOpacity
+          style={styles.homeBtn}
+          onPress={() =>
+            router.replace({ pathname: '/tracking', params: { bookingId: bookingId || '' } })
+          }
+        >
+          <Text style={styles.homeBtnText}>Tracking Dekhein</Text>
         </TouchableOpacity>
       </ScrollView>
     );
@@ -71,7 +99,7 @@ export default function DisputeScreen() {
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <Text style={styles.title}>Complaint / Dispute</Text>
       <Text style={styles.sub}>JHAGRA Agent aapka masla solve karega</Text>
-      <Text style={styles.bookingRef}>Booking: {bookingId || 'HAZ-DEMO-001'}</Text>
+      <Text style={styles.bookingRef}>Booking: {bookingId || '—'}</Text>
 
       <Text style={styles.sectionLabel}>Masla Kya Hai?</Text>
       <View style={styles.typeGrid}>
@@ -94,7 +122,7 @@ export default function DisputeScreen() {
         style={styles.descInput}
         value={description}
         onChangeText={setDescription}
-        placeholder="Kya hua? Poori baat batayein — JHAGRA agent aapki baat sunegaTafseel Likhen:"
+        placeholder="Kya hua? Poori baat batayein — JHAGRA agent aapki baat sunega"
         placeholderTextColor={Colors.textMuted}
         multiline
         numberOfLines={5}

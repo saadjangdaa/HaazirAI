@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator,
+  View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Alert,
 } from 'react-native';
-import { speakText, stopSpeaking, getIsSpeaking } from '../services/voice';
+import { speakText, stopSpeaking, getIsSpeaking } from '../services/voiceSpeech';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize } from '../constants/theme';
-import { FullOrchestrationResponse, Provider, triggerBidding } from '../services/api';
+import { FullOrchestrationResponse, Provider, triggerBidding, formatApiError, requireUserId } from '../services/api';
+import { useAuth } from '../context/AuthContext';
 import ProviderCard from '../components/ProviderCard';
 import PriceBreakdown from '../components/PriceBreakdown';
 import BiddingPanel from '../components/BiddingPanel';
@@ -14,7 +15,8 @@ import AgentLogViewer from '../components/AgentLogViewer';
 const URGENCY_COLOR = { low: Colors.success, medium: Colors.warning, high: '#FF8C00', critical: Colors.danger };
 const PIPELINE_STEPS = ['SAMAJH', 'DHUNDHO', 'CHUNNO', 'HISAAB'];
 
-export default function ResultsScreen() {
+const ResultsScreen = () => {
+  const { user } = useAuth();
   const router = useRouter();
   const { data } = useLocalSearchParams<{ data: string }>();
   const [result, setResult] = useState<FullOrchestrationResponse | null>(null);
@@ -54,10 +56,11 @@ export default function ResultsScreen() {
     setBiddingLoading(true);
     setShowBidding(true);
     try {
-      const res = await triggerBidding(result.request_id, 'user_001');
+      const res = await triggerBidding(result.request_id, requireUserId(user));
       setBiddingResult(res);
-    } catch {
+    } catch (e) {
       setBiddingResult(null);
+      Alert.alert('Error', formatApiError(e));
     }
     setBiddingLoading(false);
   };
@@ -186,7 +189,7 @@ export default function ResultsScreen() {
       {showLogs && <AgentLogViewer logs={agents} />}
     </ScrollView>
   );
-}
+};
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
@@ -218,3 +221,5 @@ const styles = StyleSheet.create({
   logsToggle: { padding: Spacing.md, alignItems: 'center', marginTop: Spacing.sm },
   logsToggleText: { color: Colors.textMuted, fontSize: FontSize.sm },
 });
+
+export default ResultsScreen;

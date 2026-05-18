@@ -6,6 +6,13 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../constants/theme';
+import { useAuth } from '../context/AuthContext';
+import { formatAuthError } from '../utils/authErrors';
+import { formatAuthBootstrapError } from '../context/AuthContext';
+
+export default function LoginScreen() {
+  const router = useRouter();
+  const { signIn } = useAuth();
 import { useAuth, UserRole } from '../context/AuthContext';
 import { useLang, LANGUAGE_LABELS, Language } from '../context/LanguageContext';
 
@@ -30,6 +37,13 @@ export default function LoginScreen() {
     }
     setBusy(true);
     try {
+      await signIn(email.trim(), password);
+    } catch (e) {
+      const msg =
+        (e as { code?: string })?.code?.startsWith('auth/')
+          ? formatAuthError(e)
+          : formatAuthBootstrapError(e);
+      Alert.alert('Login fail', msg);
       await signIn(email.trim(), password, role);
     } catch {
       Alert.alert('Login fail', 'Email ya password galat hai');
@@ -112,7 +126,7 @@ export default function LoginScreen() {
           <TouchableOpacity
             style={[styles.btn, role === 'worker' && styles.btnWorker, Shadow.primary]}
             onPress={handleLogin}
-            disabled={busy || loading}
+            disabled={busy}
           >
             {busy ? (
               <ActivityIndicator color={Colors.background} />
@@ -127,6 +141,13 @@ export default function LoginScreen() {
             <View style={styles.dividerLine} />
           </View>
 
+          <TouchableOpacity
+            style={styles.secondaryBtn}
+            onPress={() => router.replace('/signup')}
+          >
+            <Text style={styles.secondaryBtnText}>Naya Account Banayein</Text>
+          </TouchableOpacity>
+        </View>
           <TouchableOpacity style={styles.secondaryBtn} onPress={() => router.push('/signup')}>
             <Text style={styles.secondaryBtnText}>{tr.signupBtn}</Text>
           </TouchableOpacity>

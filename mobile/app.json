@@ -5,7 +5,9 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
-    "assetBundlePatterns": ["**/*"],
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#0A0A0A"
@@ -13,7 +15,9 @@
       "package": "com.haazir.ai",
       "permissions": [
         "android.permission.RECORD_AUDIO",
-        "android.permission.MODIFY_AUDIO_SETTINGS"
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
       ]
     },
     "ios": {
@@ -29,12 +33,27 @@
     "plugins": [
       "expo-router",
       [
-        "expo-av",
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ],
+      [
+        "expo-audio",
         {
           "microphonePermission": "Haazir AI ko awaz sun'ne ke liye microphone chahiye"
         }
-      ]
+      ],
+      "expo-notifications"
     ],
-    "scheme": "haazir"
+    "scheme": "haazir",
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "0e8fd289-493e-4172-b9b2-cafbda8e43e7"
+      }
+    }
   }
 }

@@ -57,15 +57,18 @@ class ChunnoAgent:
             workload = p.get("workload_today", 0)
             capacity_score = max(0.0, 1.0 - (workload / 8))
 
+            trust_score = float(p.get("trust_score", 0.8) or 0.8)
+
             score = (
-                distance_score * 0.20 +
-                rating_score * 0.20 +
-                reliability_score * 0.15 +
+                distance_score * 0.18 +
+                rating_score * 0.18 +
+                reliability_score * 0.14 +
                 review_recency_score * 0.10 +
-                specialization_score * 0.15 +
+                specialization_score * 0.14 +
                 price_score * 0.10 +
                 cancellation_risk * 0.05 +
-                capacity_score * 0.05
+                capacity_score * 0.05 +
+                trust_score * 0.06
             )
 
             provider_warnings = []

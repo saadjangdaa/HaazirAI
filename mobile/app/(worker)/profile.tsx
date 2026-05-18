@@ -36,7 +36,7 @@ export default function WorkerProfileScreen() {
   const insets = useSafeAreaInsets();
   const specs = user?.workerData?.specializations || ['AC Repair', 'Complex Jobs', 'Plumbing'];
   const areas = user?.workerData?.areas || ['Islamabad', 'Rawalpindi'];
-  const displayName = user?.name || 'Ali AC Tech';
+  const displayName = user?.username || user?.email?.split('@')[0] || 'Worker';
   const initial = displayName.charAt(0).toUpperCase();
 
   return (
