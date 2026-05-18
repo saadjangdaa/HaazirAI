@@ -45,11 +45,22 @@ export default function SignupScreen() {
         router.replace('/');
       }
     } catch (e) {
-      const msg =
-        (e as { code?: string })?.code?.startsWith('auth/')
+      const code = (e as { code?: string })?.code;
+      if (code === 'auth/email-already-in-use') {
+        Alert.alert(
+          'Email pehle se registered hai',
+          'Yeh email pehle se Haazir AI mein registered hai. Login karein ya doosra email use karein.',
+          [
+            { text: 'Login Karein', onPress: () => router.replace('/login') },
+            { text: 'Theek Hai', style: 'cancel' },
+          ]
+        );
+      } else {
+        const msg = code?.startsWith('auth/')
           ? formatAuthError(e)
           : formatAuthBootstrapError(e);
-      Alert.alert('Error', msg);
+        Alert.alert('Signup Error', msg);
+      }
     } finally {
       setBusy(false);
     }

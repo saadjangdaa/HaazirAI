@@ -874,6 +874,117 @@ def reset_firebase_service_for_tests() -> None:
     _default_service = None
 
 
+# ── Module-level utility helpers ────────────────────────────────────────────
+
+def _now_iso() -> str:
+    """Current UTC time as ISO-8601 string."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _new_booking_id() -> str:
+    """Generate a unique booking ID in HAZ-YYYYMMDD-XXXXXX format."""
+    return f"HAZ-{datetime.now().strftime('%Y%m%d')}-{str(uuid.uuid4())[:6].upper()}"
+
+
+# ── Module-level DB proxies ──────────────────────────────────────────────────
+# These allow module-level functions (_doc_set, _doc_get, etc.) to delegate
+# to the initialized FirebaseService singleton without holding a direct reference.
+
+class _DbProxy:
+    """Thin proxy so module-level code can write `_db.collection(...)` instead of
+    going through the service each time."""
+    def collection(self, name: str):
+        return get_firebase_service()._db.collection(name)
+
+    def collections(self):
+        return get_firebase_service()._db.collections()
+
+    def document(self, *args):
+        return get_firebase_service()._db.document(*args)
+
+
+_db = _DbProxy()
+
+
+def _mock_bucket(collection: str) -> dict:
+    """Return the in-memory bucket dict for *collection* (mock mode)."""
+    svc = get_firebase_service()
+    return svc._mock_store.setdefault(collection, {})
+
+
+class _MockDbProxy:
+    """Proxy for _mock_db used by migration/audit helpers."""
+    def pop(self, key: str, default=None):
+        return get_firebase_service()._mock_store.pop(key, default)
+
+    def items(self):
+        return get_firebase_service()._mock_store.items()
+
+    def __getitem__(self, key: str):
+        return get_firebase_service()._mock_store[key]
+
+    def __setitem__(self, key: str, value):
+        get_firebase_service()._mock_store[key] = value
+
+    def __contains__(self, key: str):
+        return key in get_firebase_service()._mock_store
+
+
+_mock_db = _MockDbProxy()
+
+
+def _query_all(collection: str) -> list:
+    """Return all documents in *collection* as a list of dicts."""
+    svc = get_firebase_service()
+    if svc._mock:
+        return list(svc._mock_store.get(collection, {}).values())
+    return [snap.to_dict() or {} for snap in svc._db.collection(collection).stream()]
+
+
+def _doc_get(collection: str, doc_id: str) -> Optional[dict]:
+    """Fetch a single document; returns dict or None."""
+    if MOCK_MODE:
+        d = _mock_bucket(collection).get(doc_id)
+        return dict(d) if d else None
+    try:
+        snap = _db.collection(collection).document(doc_id).get()
+        if not snap.exists:
+            return None
+        return _serialize_document(snap.id, snap.to_dict() or {})
+    except Exception as exc:
+        logger.error("_doc_get %s/%s failed: %s", collection, doc_id, exc)
+        return None
+
+
+def _doc_update(collection: str, doc_id: str, data: dict) -> bool:
+    """Merge *data* into an existing document; returns True on success."""
+    if MOCK_MODE:
+        bucket = _mock_bucket(collection)
+        if doc_id not in bucket:
+            return False
+        bucket[doc_id] = {**bucket[doc_id], **data}
+        return True
+    try:
+        _db.collection(collection).document(doc_id).update(data)
+        return True
+    except Exception as exc:
+        logger.error("_doc_update %s/%s failed: %s", collection, doc_id, exc)
+        return False
+
+
+def _doc_delete(collection: str, doc_id: str) -> bool:
+    """Delete a document; returns True on success."""
+    if MOCK_MODE:
+        _mock_bucket(collection).pop(doc_id, None)
+        return True
+    try:
+        _db.collection(collection).document(doc_id).delete()
+        return True
+    except Exception as exc:
+        logger.error("_doc_delete %s/%s failed: %s", collection, doc_id, exc)
+        return False
+
+
 # --- Legacy async API (unchanged signatures for callers) --------------------
 
 async def save_booking(data: dict) -> str:

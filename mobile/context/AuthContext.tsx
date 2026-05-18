@@ -331,7 +331,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
       const mapped = mapProfileToAuthUser(fbUser, profile);
       setUser(mapped);
-      setAllowPostAuthRedirect(true);
+      // Do NOT set allowPostAuthRedirect — worker-signup.tsx navigates directly
+      // to /(worker)/jobs, bypassing the language-select step.
       return mapped;
     });
   };
