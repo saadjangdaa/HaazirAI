@@ -117,8 +117,17 @@ async def run_full_orchestration(
     }
 
 
-async def run_bidding(request_id: str, providers: list, intent: dict) -> dict:
-    result = await moltol.run_bidding(providers, intent, request_id)
+async def run_bidding(
+    request_id: str,
+    providers: list,
+    intent: dict,
+    pricing: dict | None = None,
+) -> dict:
+    if pricing:
+        result = await moltol.negotiate(intent, providers, pricing)
+        result["request_id"] = request_id
+    else:
+        result = await moltol.run_bidding(providers, intent, request_id)
     log = _extract_log(result)
     result["agent_log"] = log
     return result

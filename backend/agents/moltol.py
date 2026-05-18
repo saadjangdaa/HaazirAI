@@ -454,6 +454,21 @@ class MoltolAgent:
             },
         }
 
+    async def run_bidding(
+        self, providers: list[dict], intent: dict, request_id: str
+    ) -> dict:
+        """Orchestrator / ``/api/bid`` entry — runs ``negotiate`` with a reference quote."""
+        reference = 2000
+        if providers:
+            try:
+                reference = int(providers[0].get("base_rate") or providers[0].get("price_per_hour") or 2000)
+            except (TypeError, ValueError):
+                reference = 2000
+        pricing = {"total": reference, "estimated_base": reference}
+        result = await self.negotiate(intent, providers, pricing)
+        result["request_id"] = request_id
+        return result
+
     async def handle_cancellation(
         self, session_result: dict, cancelled_provider_id: str
     ) -> dict:

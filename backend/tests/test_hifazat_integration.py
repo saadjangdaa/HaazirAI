@@ -1,4 +1,4 @@
-"""Integration tests: Samajh → Dhundho → Chunno → Hifazat on POST /api/request."""
+"""Integration tests: full LangGraph pipeline on POST /api/request."""
 from __future__ import annotations
 
 import pytest
@@ -58,6 +58,21 @@ def test_agent_logs_include_hifazat(ac_repair_response):
         assert "DHUNDHO" in names
         assert "CHUNNO" in names
         assert "HIFAZAT" in names
+        assert "HISAAB" in names
+        assert "MOLTOL" in names
+        assert "PAKKA" in names
+
+
+def test_hisaab_pakka_moltol_fields(ac_repair_response):
+    data = ac_repair_response.json()
+    if not data.get("providers_ranked"):
+        pytest.skip("No providers")
+    pricing = data.get("price_breakdown") or {}
+    assert pricing.get("total")
+    moltol = data.get("moltol_result") or {}
+    assert moltol.get("status") in ("bids_ready", "no_bids")
+    booking = data.get("booking") or {}
+    assert booking.get("booking_id", "").startswith("HAZ-")
 
 
 def test_hifazat_meta_present(ac_repair_response):

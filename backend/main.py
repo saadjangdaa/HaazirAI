@@ -153,6 +153,9 @@ _AGENT_URDU = {
     "Dhundho": "ڈھونڈو",
     "Chunno": "چُنّو",
     "Hifazat": "حفاظت",
+    "Hisaab": "حساب",
+    "Moltol": "مول تول",
+    "Pakka": "پکا",
 }
 
 
@@ -182,9 +185,10 @@ def _judge_logs_to_mobile_agent_logs(logs: list) -> list:
 @app.post("/api/request")
 async def handle_service_request(body: ServiceRequest):
     """
-    Samajh → Dhundho → Chunno → Hifazat via LangGraph.
+    Full LangGraph pipeline through Pakka (price + negotiate + book).
 
-    ``providers_ranked`` is Chunno-ranked then Hifazat-filtered (BLOCK removed). Send ``user_location`` from mobile.
+    ``providers_ranked`` is Chunno-ranked then Hifazat-filtered (BLOCK removed).
+    Send ``user_location`` from mobile.
     """
     request_id = new_request_id()
     final_state = await run_samajh_workflow(
@@ -192,6 +196,7 @@ async def handle_service_request(body: ServiceRequest):
         source="text",
         user_location=(body.user_location or "").strip(),
         user_id=body.user_id,
+        request_id=request_id,
     )
     intent = final_state.get("intent") or {}
     logs = final_state.get("logs") or []
@@ -201,13 +206,21 @@ async def handle_service_request(body: ServiceRequest):
     chunno_warnings = final_state.get("chunno_warnings") or []
     trust_scores = final_state.get("trust_scores") or []
     hifazat_meta = final_state.get("hifazat_meta") or {}
-    best_provider = providers_ranked[0] if providers_ranked else None
+    price_breakdown = final_state.get("price_breakdown") or {}
+    moltol_result = final_state.get("moltol_result") or {}
+    booking = final_state.get("booking") or {}
+    best_provider = final_state.get("best_provider") or (
+        providers_ranked[0] if providers_ranked else None
+    )
 
     _request_store[request_id] = {
         "logs": logs,
         "intent": intent,
         "user_id": body.user_id,
         "providers": providers_ranked,
+        "price_breakdown": price_breakdown,
+        "moltol_result": moltol_result,
+        "booking": booking,
     }
 
     agent_logs = _judge_logs_to_mobile_agent_logs(logs)
@@ -228,22 +241,36 @@ async def handle_service_request(body: ServiceRequest):
         "chunno_meta": final_state.get("chunno_meta") or {},
         "trust_scores": trust_scores,
         "hifazat_meta": hifazat_meta,
+        "price_breakdown": price_breakdown,
+        "hisaab_meta": final_state.get("hisaab_meta") or {},
+        "moltol_result": moltol_result,
+        "moltol_meta": final_state.get("moltol_meta") or {},
+        "booking": booking,
+        "pakka_meta": final_state.get("pakka_meta") or {},
         "providers_discovered_count": len(providers_discovered),
     }
 
 
 @app.post("/api/bid")
 async def trigger_bidding(body: BidRequest):
-    """Trigger MOLTOL negotiation agent for a prior request."""
+    """Trigger MOLTOL negotiation for a prior request (returns cached graph result when present)."""
     cached = _request_store.get(body.request_id)
+    if cached and cached.get("moltol_result"):
+        out = dict(cached["moltol_result"])
+        out["request_id"] = body.request_id
+        out["from_cache"] = True
+        return out
+
     if not cached:
         providers = _load_providers()[:5]
         intent = {"service_type": "service", "job_complexity": "intermediate", "urgency": "medium"}
+        pricing = {"total": 2000, "estimated_base": 2000}
     else:
         providers = cached["providers"]
         intent = cached["intent"]
+        pricing = cached.get("price_breakdown") or {"total": 2000, "estimated_base": 2000}
 
-    result = await run_bidding(body.request_id, providers, intent)
+    result = await run_bidding(body.request_id, providers, intent, pricing)
     return result
 
 

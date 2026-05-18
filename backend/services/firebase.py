@@ -984,26 +984,6 @@ async def update_booking_status(booking_id: str, status: str) -> None:
 async def save_review(data: dict) -> str:
     svc = get_firebase_service()
     return await asyncio.to_thread(svc.save_review_document, data)
-async def save_booking(data: dict) -> str:
-    booking_id = data.get("booking_id") or _new_booking_id()
-    slot = data.get("slot_time") or data.get("scheduled_time", "")
-    payload = {
-        **data,
-        "booking_id": booking_id,
-        "slot_time": slot,
-        "scheduled_time": data.get("scheduled_time", slot),
-        "reminder_sent": data.get("reminder_sent", False),
-        "created_at": data.get("created_at", _now_iso()),
-    }
-    _doc_set("bookings", booking_id, payload)
-    return booking_id
-
-
-async def get_booking(booking_id: str) -> Optional[dict]:
-    doc = _doc_get("bookings", booking_id)
-    if doc:
-        return doc
-    return None
 
 
 async def list_bookings(
@@ -1011,30 +991,17 @@ async def list_bookings(
     provider_id: Optional[str] = None,
     status: Optional[str] = None,
 ) -> List[dict]:
-    if MOCK_MODE:
-        rows = list(_mock_bucket("bookings").values())
+    svc = get_firebase_service()
+    if provider_id:
+        rows = await asyncio.to_thread(svc.get_provider_bookings, provider_id)
     else:
-        rows = _query_all("bookings")
+        rows = []
 
     if user_id:
         rows = [b for b in rows if b.get("user_id") == user_id]
-    if provider_id:
-        rows = [b for b in rows if b.get("provider_id") == provider_id]
     if status:
         rows = [b for b in rows if b.get("status") == status]
     return rows
-
-
-async def get_provider_bookings(provider_id: str) -> list:
-    return await list_bookings(provider_id=provider_id)
-
-
-async def update_booking(booking_id: str, data: dict) -> bool:
-    return _doc_update("bookings", booking_id, {**data, "updated_at": _now_iso()})
-
-
-async def update_booking_status(booking_id: str, status: str) -> None:
-    await update_booking(booking_id, {"status": status})
 
 
 async def delete_booking(booking_id: str) -> bool:
