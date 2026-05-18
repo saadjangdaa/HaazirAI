@@ -1,11 +1,12 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, ActivityIndicator,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../constants/theme';
-import { confirmBooking } from '../services/api';
+import { AgentLog, confirmBooking, formatApiError, getAgentLogs, requireUserId } from '../services/api';
+import { useAuth } from '../context/AuthContext';
 import BookingReceipt from '../components/BookingReceipt';
 import PriceBreakdown from '../components/PriceBreakdown';
 import AgentLogViewer from '../components/AgentLogViewer';
@@ -17,6 +18,7 @@ const PAYMENT_METHODS = [
 ];
 
 export default function BookingScreen() {
+  const { user } = useAuth();
   const router = useRouter();
   const { providerData, priceData, requestId, confirmedData } = useLocalSearchParams<{
     providerData: string; priceData: string; requestId: string; confirmedData: string;
@@ -35,6 +37,27 @@ export default function BookingScreen() {
     try { return JSON.parse(confirmedData as string); } catch { return null; }
   });
   const [showLogs, setShowLogs] = useState(false);
+  const [agentLogs, setAgentLogs] = useState<AgentLog[]>([]);
+  const [logsLoading, setLogsLoading] = useState(false);
+
+  useEffect(() => {
+    if (!showLogs || !requestId) return;
+    let cancelled = false;
+    setLogsLoading(true);
+    getAgentLogs(requestId)
+      .then((rows) => {
+        if (!cancelled) setAgentLogs(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setAgentLogs([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLogsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [showLogs, requestId]);
 
   if (!provider) return <View style={styles.center}><Text style={styles.errorText}>Provider data missing</Text></View>;
 
@@ -42,18 +65,26 @@ export default function BookingScreen() {
   const finalTotal = (pricing?.total || 1000) + urgentFee;
 
   const handleConfirm = async () => {
+    if (!user?.profileComplete) {
+      Alert.alert(
+        'Profile incomplete',
+        'Booking confirm karne se pehle apna profile complete karein.',
+        [{ text: 'Profile', onPress: () => router.push('/signup') }]
+      );
+      return;
+    }
     setLoading(true);
     try {
       const result = await confirmBooking({
         providerId: provider.id,
-        userId: 'user_001',
+        userId: requireUserId(user),
         service: provider.service,
         time: 'tomorrow_morning',
         priceAccepted: finalTotal,
       });
       setConfirmed(result);
     } catch (err: any) {
-      Alert.alert('Error', err?.message || 'Booking fail ho gayi — dobara try karein');
+      Alert.alert('Error', formatApiError(err));
     }
     setLoading(false);
   };
@@ -147,6 +178,17 @@ export default function BookingScreen() {
       <TouchableOpacity style={styles.logsToggle} onPress={() => setShowLogs(!showLogs)}>
         <Text style={styles.logsToggleText}>{showLogs ? '🔼 Logs Chhupayein' : '🔍 Agent Logs'}</Text>
       </TouchableOpacity>
+      {showLogs && (
+        logsLoading ? (
+          <ActivityIndicator color={Colors.primary} style={{ marginVertical: Spacing.md }} />
+        ) : agentLogs.length > 0 ? (
+          <AgentLogViewer logs={agentLogs} expanded />
+        ) : (
+          <Text style={styles.logsEmpty}>
+            {requestId ? 'Is request ke logs abhi available nahi.' : 'Request ID missing — pehle results se aayein.'}
+          </Text>
+        )
+      )}
     </ScrollView>
   );
 }
@@ -191,4 +233,5 @@ const styles = StyleSheet.create({
   trackBtnText: { color: Colors.primary, fontSize: FontSize.md, fontWeight: '700' },
   logsToggle: { alignItems: 'center', padding: Spacing.sm },
   logsToggleText: { color: Colors.textMuted, fontSize: FontSize.sm },
+  logsEmpty: { color: Colors.textMuted, fontSize: FontSize.sm, textAlign: 'center', padding: Spacing.md },
 });

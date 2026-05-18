@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, ActivityIndicator } from 'react-native';
+import { useLocalSearchParams } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize } from '../constants/theme';
 import AgentLogViewer from '../components/AgentLogViewer';
-import { AgentLog } from '../services/api';
+import { AgentLog, getAgentLogsDetail } from '../services/api';
 
 const DEMO_LOGS: AgentLog[] = [
   {
@@ -46,7 +47,7 @@ const DEMO_LOGS: AgentLog[] = [
     agent_name_urdu: 'حفاظت',
     start_time: new Date(Date.now() - 2700).toISOString(),
     end_time: new Date(Date.now() - 2200).toISOString(),
-    input_summary: 'Trust-checking 8 providers for customer user_001',
+    input_summary: 'Trust-checking 8 providers for customer',
     output_summary: '0 blocked, 2 warned, 6 approved',
     decision_made: 'Trust scores computed. 0 global flags.',
     confidence: 0.90,
@@ -80,20 +81,56 @@ const DEMO_LOGS: AgentLog[] = [
 ];
 
 export default function LogsScreen() {
-  const [logs] = useState<AgentLog[]>(DEMO_LOGS);
+  const { requestId } = useLocalSearchParams<{ requestId?: string }>();
+  const [logs, setLogs] = useState<AgentLog[]>(DEMO_LOGS);
+  const [userInput, setUserInput] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [source, setSource] = useState<'demo' | 'api'>('demo');
+
+  useEffect(() => {
+    const rid = (requestId || '').trim();
+    if (!rid) return;
+    setLoading(true);
+    getAgentLogsDetail(rid)
+      .then((doc) => {
+        if (doc.logs?.length) {
+          setLogs(doc.logs);
+          setUserInput(doc.user_input || null);
+          setSource('api');
+        }
+      })
+      .catch(() => {
+        /* keep demo logs if fetch fails */
+      })
+      .finally(() => setLoading(false));
+  }, [requestId]);
 
   const handleExport = () => {
     Alert.alert('Export Logs', 'In production: share JSON log file with judges.\n\nLog count: ' + logs.length);
   };
 
-  const totalTime = logs.reduce((s, l) => s + l.time_seconds, 0).toFixed(2);
-  const avgConfidence = (logs.reduce((s, l) => s + l.confidence, 0) / logs.length * 100).toFixed(0);
+  const totalTime = logs.reduce((s, l) => s + (l.time_seconds || 0), 0).toFixed(2);
+  const avgConfidence = logs.length
+    ? (logs.reduce((s, l) => s + (l.confidence || 0), 0) / logs.length * 100).toFixed(0)
+    : '0';
   const fallbacks = logs.filter((l) => l.fallback_used).length;
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <Text style={styles.title}>🤖 Agent Reasoning Trace</Text>
-      <Text style={styles.sub}>Full pipeline execution log — for hackathon judges</Text>
+      <Text style={styles.sub}>
+        {source === 'api' && requestId
+          ? `Request ${requestId} · Firestore`
+          : 'Full pipeline execution log — for hackathon judges'}
+      </Text>
+      {userInput ? (
+        <Text style={styles.userInput} numberOfLines={3}>
+          User: {userInput}
+        </Text>
+      ) : null}
+      {loading ? (
+        <ActivityIndicator color={Colors.primary} style={{ marginBottom: Spacing.md }} />
+      ) : null}
 
       <View style={styles.statsRow}>
         <View style={styles.statCard}>
@@ -129,7 +166,13 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
   content: { padding: Spacing.md, paddingBottom: 48 },
   title: { color: Colors.primary, fontSize: FontSize.xxl, fontWeight: '800', marginBottom: 4 },
-  sub: { color: Colors.textMuted, fontSize: FontSize.sm, marginBottom: Spacing.lg },
+  sub: { color: Colors.textMuted, fontSize: FontSize.sm, marginBottom: Spacing.sm },
+  userInput: {
+    color: Colors.textSecondary,
+    fontSize: FontSize.xs,
+    marginBottom: Spacing.lg,
+    fontStyle: 'italic',
+  },
   statsRow: { flexDirection: 'row', gap: Spacing.sm, marginBottom: Spacing.lg },
   statCard: { flex: 1, backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md, padding: Spacing.sm, alignItems: 'center', borderWidth: 1, borderColor: Colors.border },
   statValue: { color: Colors.textPrimary, fontSize: FontSize.xl, fontWeight: '800' },

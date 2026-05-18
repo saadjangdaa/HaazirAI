@@ -1,9 +1,13 @@
 import React, { useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, Modal } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../../constants/theme';
 import { useAuth } from '../../context/AuthContext';
+import { useLang, LANGUAGE_LABELS } from '../../context/LanguageContext';
+import type { Language } from '../../constants/translations';
+
+const ALL_LANGS = Object.entries(LANGUAGE_LABELS) as [Language, string][];
 
 const DAYS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
 const DOCS = [
@@ -15,27 +19,29 @@ const DOCS = [
 export default function WorkerProfileScreen() {
   const router = useRouter();
   const { user, signOut } = useAuth();
+  const { tr, language, setLanguage } = useLang();
   const [availability, setAvailability] = useState([true, true, true, true, true, true, false]);
+  const [showLangPicker, setShowLangPicker] = useState(false);
 
   const toggleDay = (i: number) =>
     setAvailability((prev) => prev.map((v, idx) => (idx === i ? !v : v)));
 
   const handleLogout = () => {
-    Alert.alert('Logout', 'Kya aap waqai logout karna chahte hain?', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Logout', style: 'destructive', onPress: () => { signOut(); router.replace('/login'); } },
+    Alert.alert(tr.logout, tr.logoutConfirm, [
+      { text: tr.cancel, style: 'cancel' },
+      { text: tr.logout, style: 'destructive', onPress: () => { signOut(); router.replace('/login'); } },
     ]);
   };
 
   const insets = useSafeAreaInsets();
   const specs = user?.workerData?.specializations || ['AC Repair', 'Complex Jobs', 'Plumbing'];
   const areas = user?.workerData?.areas || ['Islamabad', 'Rawalpindi'];
-  const displayName = user?.name || 'Ali AC Tech';
+  const displayName = user?.username || user?.email?.split('@')[0] || 'Worker';
   const initial = displayName.charAt(0).toUpperCase();
 
   return (
     <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
-      <Text style={styles.title}>Profile</Text>
+      <Text style={styles.title}>{tr.profile}</Text>
 
       {/* Identity Card */}
       <View style={[styles.profileCard, Shadow.card]}>
@@ -122,10 +128,37 @@ export default function WorkerProfileScreen() {
         </View>
       </View>
 
+      {/* Language Picker */}
+      <TouchableOpacity style={[styles.card, Shadow.card, { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm }]} onPress={() => setShowLangPicker(true)}>
+        <Text style={{ fontSize: 18, width: 28 }}>🌐</Text>
+        <Text style={[styles.cardTitle, { flex: 1, marginBottom: 0 }]}>{tr.language}</Text>
+        <Text style={{ fontSize: FontSize.sm, color: Colors.warning, fontWeight: '700', marginRight: 4 }}>{LANGUAGE_LABELS[language]}</Text>
+        <Text style={{ fontSize: FontSize.xl, color: Colors.textMuted }}>›</Text>
+      </TouchableOpacity>
+
       {/* Logout */}
       <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout}>
-        <Text style={styles.logoutText}>Logout</Text>
+        <Text style={styles.logoutText}>{tr.logout}</Text>
       </TouchableOpacity>
+
+      {/* Language Modal */}
+      <Modal visible={showLangPicker} transparent animationType="slide">
+        <TouchableOpacity style={styles.modalOverlay} onPress={() => setShowLangPicker(false)}>
+          <View style={styles.modalSheet}>
+            <Text style={styles.modalTitle}>🌐 {tr.selectLanguage}</Text>
+            {ALL_LANGS.map(([code, label]) => (
+              <TouchableOpacity
+                key={code}
+                style={[styles.langOption, language === code && styles.langOptionActive]}
+                onPress={() => { setLanguage(code); setShowLangPicker(false); }}
+              >
+                <Text style={[styles.langOptionText, language === code && styles.langOptionTextActive]}>{label}</Text>
+                {language === code && <Text style={styles.langCheck}>✓</Text>}
+              </TouchableOpacity>
+            ))}
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </ScrollView>
   );
 }
@@ -168,4 +201,12 @@ const styles = StyleSheet.create({
   statLabel: { fontSize: FontSize.xs, color: Colors.textMuted, marginTop: 2 },
   logoutBtn: { borderRadius: Radius.md, borderWidth: 1.5, borderColor: Colors.danger, padding: Spacing.md, alignItems: 'center', marginTop: Spacing.sm },
   logoutText: { color: Colors.danger, fontSize: FontSize.md, fontWeight: '700' },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  modalSheet: { backgroundColor: Colors.surface, borderTopLeftRadius: Radius.xl, borderTopRightRadius: Radius.xl, padding: Spacing.lg, paddingBottom: 40 },
+  modalTitle: { fontSize: FontSize.lg, fontWeight: '800', color: Colors.textPrimary, marginBottom: Spacing.md, textAlign: 'center' },
+  langOption: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: Spacing.md, borderRadius: Radius.md, marginBottom: Spacing.xs },
+  langOptionActive: { backgroundColor: '#FFFBEB' },
+  langOptionText: { fontSize: FontSize.md, color: Colors.textPrimary, fontWeight: '600' },
+  langOptionTextActive: { color: Colors.warning, fontWeight: '800' },
+  langCheck: { color: Colors.warning, fontSize: FontSize.lg, fontWeight: '800' },
 });

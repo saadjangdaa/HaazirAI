@@ -1,9 +1,19 @@
 import React, { useState } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity, ScrollView, StyleSheet,
+  View, Text, TextInput, TouchableOpacity, ScrollView, StyleSheet, Alert, ActivityIndicator,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../../constants/theme';
+import { useAuth } from '../../context/AuthContext';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import {
+  DisputeResolution,
+  formatApiError,
+  getUserBookings,
+  isLoginRelatedError,
+  resolveUserId,
+  submitDispute,
+} from '../../services/api';
 
 const DISPUTE_TYPES = [
   { id: 'noshow', label: 'Provider No-Show', icon: '😤' },
@@ -13,28 +23,146 @@ const DISPUTE_TYPES = [
 ];
 
 const RESOLUTIONS = [
-  { label: '🔄 Re-do Service (Free)', tone: 'primary' },
-  { label: '💸 Partial Refund: Rs 300', tone: 'warning' },
-  { label: '📞 Human Agent se baat karein', tone: 'ghost' },
+  {
+    label: '🔄 Re-do Service (Free)',
+    tone: 'primary' as const,
+    disputeType: 'quality_complaint',
+    note: 'Customer requests free re-do of the service.',
+  },
+  {
+    label: '💸 Partial Refund: Rs 300',
+    tone: 'warning' as const,
+    disputeType: 'refund_request',
+    note: 'Customer requests partial refund of Rs 300.',
+  },
+  {
+    label: '📞 Human Agent se baat karein',
+    tone: 'ghost' as const,
+    disputeType: 'quality_complaint',
+    note: 'Customer requests escalation to a human agent.',
+  },
 ];
 
+function pickBookingForDispute(
+  bookings: { booking_id?: string; status?: string; created_at?: string }[],
+  preferredBookingId?: string
+) {
+  if (preferredBookingId) {
+    const match = bookings.find((b) => b.booking_id === preferredBookingId);
+    if (match?.booking_id) return match;
+  }
+  const eligible = bookings.filter((b) => {
+    const s = (b.status || '').toLowerCase();
+    return b.booking_id && !['cancelled', 'refunded'].includes(s);
+  });
+  if (!eligible.length) return null;
+  const sorted = [...eligible].sort((a, b) =>
+    (b.created_at || '').localeCompare(a.created_at || '')
+  );
+  return sorted[0];
+}
+
 export default function DisputesScreen() {
+  const router = useRouter();
+  const { bookingId: routeBookingId } = useLocalSearchParams<{ bookingId?: string }>();
+  const { user } = useAuth();
   const [sel, setSel] = useState('quality');
   const [description, setDescription] = useState('');
   const [submitted, setSubmitted] = useState(false);
   const insets = useSafeAreaInsets();
+  const [lastDisputeId, setLastDisputeId] = useState<string | null>(null);
+  const [lastBookingId, setLastBookingId] = useState<string | null>(null);
+  const [resolution, setResolution] = useState<DisputeResolution | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
-  if (submitted) {
+  const submitCurrentDispute = async (choice?: (typeof RESOLUTIONS)[number]) => {
+    if (!description.trim()) {
+      Alert.alert('Tafseel likhein', 'Masle ki poori tafseel darj karein.');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const uid = await resolveUserId(user);
+      if (!uid) {
+        Alert.alert('Thori der intezar karein', 'Session load ho raha hai — dobara try karein.');
+        return;
+      }
+      const bookings = await getUserBookings(uid);
+      const preferredId = (routeBookingId || '').trim() || undefined;
+      const target = pickBookingForDispute(bookings, preferredId);
+      if (!target?.booking_id) {
+        Alert.alert(
+          'Booking nahi mili',
+          'Pehle koi booking banayein ya tracking screen se dispute darj karein.'
+        );
+        return;
+      }
+      const disputeType = choice?.disputeType || sel;
+      const fullDescription = [description.trim(), choice?.note].filter(Boolean).join('\n\n');
+      const result = await submitDispute({
+        bookingId: target.booking_id,
+        userId: uid,
+        disputeType,
+        description: fullDescription,
+      });
+      setLastDisputeId(result.dispute_id || null);
+      setLastBookingId(target.booking_id);
+      setResolution(result);
+      setSubmitted(true);
+    } catch (err) {
+      const msg = formatApiError(err);
+      if (!isLoginRelatedError(msg)) {
+        Alert.alert('Error', msg);
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (submitted && resolution) {
+    const refund = resolution.refund_amount;
+    const escalated = resolution.escalated_to_human;
     return (
       <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
-        <View style={styles.successCard}>
-          <Text style={styles.successIcon}>✅</Text>
-          <Text style={styles.successTitle}>Dispute Darj Ho Gaya!</Text>
-          <Text style={styles.successText}>Dispute #D-0021 · 24hr mein jawab milega</Text>
-          <View style={styles.successBadge}><Text style={styles.successBadgeText}>Under Review ⏳</Text></View>
-          <Text style={styles.successNote}>⚠️ Provider flagged for review</Text>
+        <View style={styles.resolutionCard}>
+          <Text style={styles.resolutionIcon}>{escalated ? '👨‍💼' : refund > 0 ? '💚' : 'ℹ️'}</Text>
+          <Text style={styles.resolutionTitle}>JHAGRA Agent ka Faisla</Text>
+          <Text style={styles.resolutionText}>{resolution.resolution}</Text>
+          {refund > 0 && (
+            <View style={styles.refundBadge}>
+              <Text style={styles.refundText}>Refund: Rs {refund.toLocaleString()}</Text>
+            </View>
+          )}
+          <Text style={styles.penaltyText}>Provider: {resolution.provider_penalty}</Text>
+          <Text style={styles.summaryText}>{resolution.case_summary}</Text>
+          {lastDisputeId ? (
+            <Text style={styles.disputeRef}>
+              Dispute #{lastDisputeId.slice(0, 8).toUpperCase()}
+            </Text>
+          ) : null}
+          {escalated && (
+            <Text style={styles.escalatedText}>⚠️ Human agent ko escalate kiya gaya hai</Text>
+          )}
         </View>
-        <TouchableOpacity style={styles.newBtn} onPress={() => { setSel('quality'); setDescription(''); setSubmitted(false); }}>
+        {lastBookingId ? (
+          <TouchableOpacity
+            style={[styles.trackBtn, { marginBottom: Spacing.sm }]}
+            onPress={() => router.push({ pathname: '/tracking', params: { bookingId: lastBookingId } })}
+          >
+            <Text style={styles.trackBtnText}>Booking Tracking Dekhein</Text>
+          </TouchableOpacity>
+        ) : null}
+        <TouchableOpacity
+          style={styles.newBtn}
+          onPress={() => {
+            setSel('quality');
+            setDescription('');
+            setLastDisputeId(null);
+            setLastBookingId(null);
+            setResolution(null);
+            setSubmitted(false);
+          }}
+        >
           <Text style={styles.newBtnText}>Naya Dispute Darj Karein</Text>
         </TouchableOpacity>
       </ScrollView>
@@ -93,24 +221,31 @@ export default function DisputesScreen() {
 
       {/* Resolution Options */}
       <Text style={styles.sectionLabel}>Resolution Options:</Text>
-      {RESOLUTIONS.map((r) => (
-        <TouchableOpacity
-          key={r.label}
-          style={[
-            styles.resBtn,
-            r.tone === 'primary' && styles.resBtnPrimary,
-            r.tone === 'warning' && styles.resBtnWarning,
-            Shadow.card,
-          ]}
-          onPress={() => setSubmitted(true)}
-        >
-          <Text style={[
-            styles.resBtnText,
-            r.tone === 'primary' && styles.resBtnTextWhite,
-            r.tone === 'warning' && styles.resBtnTextWhite,
-          ]}>{r.label}</Text>
-        </TouchableOpacity>
-      ))}
+      {submitting ? (
+        <View style={styles.loadingRow}>
+          <ActivityIndicator color={Colors.danger} />
+          <Text style={styles.loadingText}>JHAGRA agent masla dekh raha hai...</Text>
+        </View>
+      ) : (
+        RESOLUTIONS.map((r) => (
+          <TouchableOpacity
+            key={r.label}
+            style={[
+              styles.resBtn,
+              r.tone === 'primary' && styles.resBtnPrimary,
+              r.tone === 'warning' && styles.resBtnWarning,
+              Shadow.card,
+            ]}
+            onPress={() => submitCurrentDispute(r)}
+          >
+            <Text style={[
+              styles.resBtnText,
+              r.tone === 'primary' && styles.resBtnTextWhite,
+              r.tone === 'warning' && styles.resBtnTextWhite,
+            ]}>{r.label}</Text>
+          </TouchableOpacity>
+        ))
+      )}
     </ScrollView>
   );
 }
@@ -144,13 +279,28 @@ const styles = StyleSheet.create({
   resBtnWarning: { backgroundColor: Colors.warning, borderColor: Colors.warning },
   resBtnText: { fontSize: FontSize.md, fontWeight: '700', color: Colors.textPrimary },
   resBtnTextWhite: { color: Colors.background },
-  successCard: { backgroundColor: Colors.surfaceElevated, borderRadius: Radius.xl, borderWidth: 1, borderColor: Colors.primary, padding: Spacing.xl, alignItems: 'center', marginBottom: Spacing.lg },
-  successIcon: { fontSize: 48, marginBottom: Spacing.md },
-  successTitle: { fontSize: FontSize.xl, fontWeight: '800', color: Colors.primary, marginBottom: 4 },
-  successText: { fontSize: FontSize.sm, color: Colors.textMuted, marginBottom: Spacing.md },
-  successBadge: { backgroundColor: Colors.warningDim, borderRadius: Radius.full, paddingHorizontal: Spacing.md, paddingVertical: 4, marginBottom: Spacing.sm },
-  successBadgeText: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.warning },
-  successNote: { fontSize: FontSize.xs, color: Colors.danger },
+  resolutionCard: {
+    backgroundColor: Colors.cardBg,
+    borderRadius: Radius.xl,
+    padding: Spacing.xl,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: Colors.primary,
+    marginBottom: Spacing.lg,
+  },
+  resolutionIcon: { fontSize: 56, marginBottom: Spacing.md },
+  resolutionTitle: { color: Colors.primary, fontSize: FontSize.xl, fontWeight: '800', marginBottom: Spacing.sm },
+  resolutionText: { color: Colors.textPrimary, fontSize: FontSize.md, textAlign: 'center', marginBottom: Spacing.md, lineHeight: 24 },
+  refundBadge: { backgroundColor: Colors.primaryDim, borderRadius: Radius.full, paddingHorizontal: Spacing.lg, paddingVertical: Spacing.sm, marginBottom: Spacing.sm },
+  refundText: { color: Colors.primary, fontSize: FontSize.lg, fontWeight: '800' },
+  penaltyText: { color: Colors.textSecondary, fontSize: FontSize.sm, marginBottom: Spacing.sm },
+  summaryText: { color: Colors.textMuted, fontSize: FontSize.sm, textAlign: 'center', marginTop: Spacing.sm },
+  disputeRef: { color: Colors.textMuted, fontSize: FontSize.xs, marginTop: Spacing.sm },
+  escalatedText: { color: Colors.warning, fontSize: FontSize.sm, marginTop: Spacing.sm, fontWeight: '600' },
+  trackBtn: { backgroundColor: Colors.primary, borderRadius: Radius.lg, padding: Spacing.md, alignItems: 'center' },
+  trackBtnText: { color: Colors.background, fontSize: FontSize.md, fontWeight: '700' },
   newBtn: { borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border, padding: Spacing.md, alignItems: 'center' },
   newBtnText: { color: Colors.textSecondary, fontSize: FontSize.md, fontWeight: '600' },
+  loadingRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm, padding: Spacing.md },
+  loadingText: { color: Colors.danger, fontSize: FontSize.sm },
 });

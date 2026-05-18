@@ -29,7 +29,7 @@ async def claim_slot_atomic(provider_id: str, scheduled_time: str, booking_data:
 class PakkaAgent:
 
     async def create_booking(
-        self, intent: dict, provider: dict, pricing: dict, user_id: str = "user_001"
+        self, intent: dict, provider: dict, pricing: dict, user_id: str
     ) -> dict:
         start = datetime.now()
 
@@ -117,6 +117,18 @@ class PakkaAgent:
             f"Reference: {booking_id}"
         )
 
+        receipt = {
+            "booking_id": booking_id,
+            "provider_name": provider_name,
+            "provider_phone": provider.get("phone", "03001234567"),
+            "service": service,
+            "location": f"{location}, {city}",
+            "scheduled_time": scheduled_time,
+            "estimated_price": f"Rs. {total_price:,}",
+            "payment_methods": ["JazzCash", "Easypaisa", "Cash"],
+            "status": "assigned",
+            "emergency": is_emergency,
+        }
         if is_emergency:
             confirmation_message_urdu = (
                 f"🚨 فوری بکنگ! ✅ {provider_name} جلد از جلد "
@@ -185,10 +197,12 @@ class PakkaAgent:
         booking_data = {
             "booking_id": booking_id,
             "provider_id": provider_id,
+            "provider_name": provider_name,
             "user_id": user_id,
             "service": service,
             "scheduled_time": scheduled_time,
-            "status": final_status,
+            "slot_time": scheduled_time,
+            "status": "assigned",
             "price": total_price,
             "reminder_sent": False,
             "emergency": is_emergency,

@@ -6,8 +6,9 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../../constants/theme';
-import { submitRequest } from '../../services/api';
+import { submitRequest, formatApiError, pingApi, getApiBaseUrl, requireUserId } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
+import { useLang } from '../../context/LanguageContext';
 import { requestMicPermission, startRecording, stopAndTranscribe } from '../../services/voice';
 
 const QUICK_SERVICES = [
@@ -26,9 +27,11 @@ const RECENT_REQUESTS = [
   'Math tutor bachon ke liye',
 ];
 
-export default function CustomerHomeScreen() {
+const CustomerHomeScreen = () => {
   const router = useRouter();
+  const { user, ensureProfileSyncedBeforeRequest } = useAuth();
   const { user } = useAuth();
+  const { tr } = useLang();
   const insets = useSafeAreaInsets();
   const [input, setInput] = useState('');
   const [location, setLocation] = useState('');
@@ -37,9 +40,16 @@ export default function CustomerHomeScreen() {
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const [recording, setRecording] = useState(false);
   const [voiceProcessing, setVoiceProcessing] = useState(false);
+  const [apiOk, setApiOk] = useState<boolean | null>(null);
 
   useEffect(() => {
-    console.log('App loaded successfully');
+    let mounted = true;
+    pingApi().then(({ ok }) => {
+      if (mounted) setApiOk(ok);
+    });
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   const startPulse = () => {
@@ -64,27 +74,37 @@ export default function CustomerHomeScreen() {
       stopPulse();
       setVoiceProcessing(true);
       try {
+        const { stopAndTranscribe } = await import('../../services/voiceRecord');
         const { text } = await stopAndTranscribe();
         if (text) setInput(text);
-      } catch (e: any) {
-        const msg = e?.message || e?.code || 'Unknown error';
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
         console.error('[home] voice error:', msg);
-        Alert.alert('Voice Error', `${msg}`);
+        if (msg.includes('Network') || msg.includes('rabta')) {
+          Alert.alert('Voice / Network', msg);
+        } else {
+          setInput('AC bilkul kaam nahi kar raha, kal subah G-13 mein technician chahiye');
+          setLocation('G-13, Islamabad');
+          Alert.alert('Voice', msg || 'Transcribe fail — demo text set.');
+        }
       } finally {
         setVoiceProcessing(false);
       }
     } else {
-      const granted = await requestMicPermission();
-      if (!granted) {
-        Alert.alert('Permission Chahiye', 'Settings mein microphone access allow karein');
-        return;
-      }
       try {
+        const { requestMicPermission, startRecording } = await import('../../services/voiceRecord');
+        const granted = await requestMicPermission();
+        if (!granted) {
+          Alert.alert('Permission Chahiye', 'Settings mein microphone access allow karein');
+          return;
+        }
         await startRecording();
         setRecording(true);
         startPulse();
       } catch {
-        Alert.alert('Error', 'Recording shuru nahi ho saki — dobara try karein');
+        setInput('AC bilkul kaam nahi kar raha, kal subah G-13 mein technician chahiye');
+        setLocation('G-13, Islamabad');
+        Alert.alert('Voice', 'Recording unavailable in Expo Go — demo text set.');
       }
     }
   };
@@ -95,9 +115,15 @@ export default function CustomerHomeScreen() {
       Alert.alert('Kuch toh likhein!', 'Apni zaroorat batayein — Urdu ya English mein');
       return;
     }
+    if (!user) {
+      Alert.alert('Login zaroori hai', 'Pehle login karein phir Haazir button dabayein');
+      return;
+    }
+
     setLoading(true);
     const messages = [
       'Agents kaam par hain... 🤖',
+      'Profile sync ho rahi hai...',
       'SAMAJH: Aapki baat samajh raha hun...',
       'DHUNDHO: Providers dhoondh raha hun...',
       'CHUNNO: Best provider chunna ja raha hai...',
@@ -110,16 +136,33 @@ export default function CustomerHomeScreen() {
     }, 1200);
 
     try {
-      const result = await submitRequest(query, location || 'G-13, Islamabad', 'user_001');
-      clearInterval(ticker);
-      setLoading(false);
-      setAgentMsg('');
+      const { ok } = await pingApi();
+      if (!ok) {
+        Alert.alert('Backend offline', formatApiError(new Error('Network Error')));
+        return;
+      }
+
+      // Must finish /api/users/sync before /api/request (backend requires complete profile).
+      const syncedUser = await ensureProfileSyncedBeforeRequest();
+
+      if (!syncedUser.profileComplete) {
+        Alert.alert(
+          'Profile incomplete',
+          'Booking se pehle username, mobile (03XXXXXXXXX) aur CNIC complete karein.',
+          [{ text: 'Profile', onPress: () => router.push('/signup') }]
+        );
+        return;
+      }
+
+      const userId = requireUserId(syncedUser);
+      const result = await submitRequest(query, location || 'G-13, Islamabad', userId);
       router.push({ pathname: '/results', params: { data: JSON.stringify(result) } });
-    } catch (err: any) {
+    } catch (err: unknown) {
+      Alert.alert('Error', formatApiError(err));
+    } finally {
       clearInterval(ticker);
       setLoading(false);
       setAgentMsg('');
-      Alert.alert('Error', err?.message || 'Kuch masla hua — dobara try karein');
     }
   };
 
@@ -149,11 +192,26 @@ export default function CustomerHomeScreen() {
         </View>
       </View>
 
+      {apiOk === false && (
+        <TouchableOpacity
+          style={styles.apiBannerBad}
+          onPress={() => pingApi().then(({ ok }) => setApiOk(ok))}
+        >
+          <Text style={styles.apiBannerText}>
+            ⚠️ Backend offline — tap to retry. URL: {getApiBaseUrl()}
+          </Text>
+        </TouchableOpacity>
+      )}
+      {apiOk === true && __DEV__ && (
+        <Text style={styles.apiBannerOk}>✓ Backend connected</Text>
+      )}
+
       {/* Greeting */}
       <Text style={styles.greeting}>
-        {user?.name ? `Assalam o Alaikum, ${user.name.split(' ')[0]}! 👋` : 'Assalam o Alaikum! 👋'}
+        {user?.username ? `Assalam o Alaikum, ${user.username.split(' ')[0]}! 👋` : 'Assalam o Alaikum! 👋'}
+        {tr.homeGreeting(user?.name?.split(' ')[0] || '')}
       </Text>
-      <Text style={styles.greetingSub}>Kya chahiye aaj?</Text>
+      <Text style={styles.greetingSub}>{tr.homeQuestion}</Text>
 
       {/* Voice Button */}
       <View style={styles.voiceCenter}>
@@ -174,8 +232,8 @@ export default function CustomerHomeScreen() {
       <TouchableOpacity style={styles.talkBtn} onPress={() => router.push('/voice-conversation')}>
         <Text style={styles.talkBtnIcon}>🗣️</Text>
         <View style={styles.talkBtnText}>
-          <Text style={styles.talkBtnTitle}>AI se Baat Karein</Text>
-          <Text style={styles.talkBtnSub}>Voice conversation — agent khud poochega</Text>
+          <Text style={styles.talkBtnTitle}>{tr.talkToAI}</Text>
+          <Text style={styles.talkBtnSub}>{tr.talkToAISub}</Text>
         </View>
         <Text style={styles.talkBtnArrow}>→</Text>
       </TouchableOpacity>
@@ -186,7 +244,7 @@ export default function CustomerHomeScreen() {
           style={styles.textInput}
           value={input}
           onChangeText={setInput}
-          placeholder="e.g. AC bilkul kaam nahi kar raha, kal subah chahiye..."
+          placeholder={tr.searchPlaceholder}
           placeholderTextColor={Colors.textMuted}
           multiline
           numberOfLines={3}
@@ -258,7 +316,7 @@ export default function CustomerHomeScreen() {
       </TouchableOpacity>
     </ScrollView>
   );
-}
+};
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
@@ -272,6 +330,16 @@ const styles = StyleSheet.create({
   notifBtn: { width: 38, height: 38, borderRadius: Radius.md, backgroundColor: Colors.surfaceElevated, justifyContent: 'center', alignItems: 'center', position: 'relative' },
   notifIcon: { fontSize: 16 },
   notifDot: { position: 'absolute', top: 7, right: 7, width: 7, height: 7, borderRadius: 4, backgroundColor: Colors.primary },
+  apiBannerBad: {
+    backgroundColor: Colors.dangerDim,
+    borderRadius: Radius.md,
+    padding: Spacing.sm,
+    marginBottom: Spacing.sm,
+    borderWidth: 1,
+    borderColor: Colors.danger,
+  },
+  apiBannerOk: { fontSize: FontSize.xs, color: Colors.success, marginBottom: Spacing.sm },
+  apiBannerText: { color: Colors.danger, fontSize: FontSize.xs, lineHeight: 18 },
   greeting: { fontSize: FontSize.xxl, fontWeight: '800', color: Colors.textPrimary, marginBottom: 4 },
   greetingSub: { fontSize: FontSize.sm, color: Colors.textMuted, marginBottom: Spacing.lg },
   voiceCenter: { alignItems: 'center', marginBottom: Spacing.lg },
@@ -344,3 +412,5 @@ const styles = StyleSheet.create({
   logsLink: { alignItems: 'center', marginTop: Spacing.lg, padding: Spacing.sm },
   logsLinkText: { color: Colors.textMuted, fontSize: FontSize.sm },
 });
+
+export default CustomerHomeScreen;

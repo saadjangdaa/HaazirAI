@@ -5,7 +5,8 @@ import {
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../constants/theme';
-import { submitFeedback } from '../services/api';
+import { submitFeedback, formatApiError, requireUserId } from '../services/api';
+import { useAuth } from '../context/AuthContext';
 
 const FEEDBACK_CHIPS = [
   { id: 'on_time', label: 'On Time', icon: '⏰', positive: true },
@@ -18,6 +19,7 @@ const FEEDBACK_CHIPS = [
 ];
 
 export default function FeedbackScreen() {
+  const { user } = useAuth();
   const router = useRouter();
   const { bookingId } = useLocalSearchParams<{ bookingId: string }>();
   const insets = useSafeAreaInsets();
@@ -37,7 +39,7 @@ export default function FeedbackScreen() {
     try {
       await submitFeedback({
         bookingId: bookingId || 'HAZ-DEMO-001',
-        userId: 'user_001',
+        userId: requireUserId(user),
         providerId: 'p001',
         rating,
         tags: selectedTags,
@@ -45,7 +47,7 @@ export default function FeedbackScreen() {
       });
       setSubmitted(true);
     } catch (err: any) {
-      Alert.alert('Error', err?.message || 'Feedback submit nahi hua');
+      Alert.alert('Error', formatApiError(err));
     }
     setLoading(false);
   };

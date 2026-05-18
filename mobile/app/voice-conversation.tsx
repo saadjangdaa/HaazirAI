@@ -7,7 +7,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
-import { requestMicPermission, startRecording, stopAndTranscribe, playBase64Audio, stopSpeaking } from '../services/voice';
+import { requestMicPermission, startRecording, stopAndTranscribe } from '../services/voiceRecord';
+import { playBase64Audio, stopSpeaking } from '../services/voicePlayback';
 import { startConversation, sendMessage, ConversationTurn, ConversationPhase, BookingResult } from '../services/conversationApi';
 import ProviderCard from '../components/ProviderCard';
 
