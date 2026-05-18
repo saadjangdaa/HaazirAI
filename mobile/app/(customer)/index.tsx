@@ -8,6 +8,7 @@ import { useRouter } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../../constants/theme';
 import { submitRequest } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
+import { useLang } from '../../context/LanguageContext';
 import { requestMicPermission, startRecording, stopAndTranscribe } from '../../services/voice';
 
 const QUICK_SERVICES = [
@@ -29,6 +30,7 @@ const RECENT_REQUESTS = [
 export default function CustomerHomeScreen() {
   const router = useRouter();
   const { user } = useAuth();
+  const { tr } = useLang();
   const insets = useSafeAreaInsets();
   const [input, setInput] = useState('');
   const [location, setLocation] = useState('');
@@ -151,9 +153,9 @@ export default function CustomerHomeScreen() {
 
       {/* Greeting */}
       <Text style={styles.greeting}>
-        {user?.name ? `Assalam o Alaikum, ${user.name.split(' ')[0]}! 👋` : 'Assalam o Alaikum! 👋'}
+        {tr.homeGreeting(user?.name?.split(' ')[0] || '')}
       </Text>
-      <Text style={styles.greetingSub}>Kya chahiye aaj?</Text>
+      <Text style={styles.greetingSub}>{tr.homeQuestion}</Text>
 
       {/* Voice Button */}
       <View style={styles.voiceCenter}>
@@ -174,8 +176,8 @@ export default function CustomerHomeScreen() {
       <TouchableOpacity style={styles.talkBtn} onPress={() => router.push('/voice-conversation')}>
         <Text style={styles.talkBtnIcon}>🗣️</Text>
         <View style={styles.talkBtnText}>
-          <Text style={styles.talkBtnTitle}>AI se Baat Karein</Text>
-          <Text style={styles.talkBtnSub}>Voice conversation — agent khud poochega</Text>
+          <Text style={styles.talkBtnTitle}>{tr.talkToAI}</Text>
+          <Text style={styles.talkBtnSub}>{tr.talkToAISub}</Text>
         </View>
         <Text style={styles.talkBtnArrow}>→</Text>
       </TouchableOpacity>
@@ -186,7 +188,7 @@ export default function CustomerHomeScreen() {
           style={styles.textInput}
           value={input}
           onChangeText={setInput}
-          placeholder="e.g. AC bilkul kaam nahi kar raha, kal subah chahiye..."
+          placeholder={tr.searchPlaceholder}
           placeholderTextColor={Colors.textMuted}
           multiline
           numberOfLines={3}

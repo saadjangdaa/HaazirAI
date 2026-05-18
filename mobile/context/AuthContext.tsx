@@ -22,7 +22,7 @@ export interface AuthUser {
 interface AuthContextType {
   user: AuthUser | null;
   loading: boolean;
-  signIn: (email: string, password: string) => Promise<void>;
+  signIn: (email: string, password: string, role?: UserRole) => Promise<void>;
   signUp: (email: string, password: string, name: string, role: UserRole) => Promise<void>;
   completeWorkerSignup: (data: WorkerData) => void;
   signOut: () => void;
@@ -37,9 +37,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading] = useState(false);
 
-  const signIn = async (email: string, _password: string) => {
+  const signIn = async (email: string, _password: string, role: UserRole = 'customer') => {
     const name = email.split('@')[0].replace(/[._-]/g, ' ');
-    setUser({ id: Date.now().toString(), email, name, role: 'customer' });
+    setUser({ id: Date.now().toString(), email, name, role });
   };
 
   const signUp = async (email: string, _password: string, name: string, role: UserRole) => {

@@ -4,6 +4,7 @@ import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
 import { Colors } from '../constants/theme';
 import { AuthProvider, useAuth } from '../context/AuthContext';
+import { LanguageProvider } from '../context/LanguageContext';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -28,12 +29,14 @@ function RootLayoutNav() {
     const inAuth = AUTH_SCREENS.includes(current ?? '');
     const inWorker = current === '(worker)';
     const onWorkerSetup = current === 'worker-signup';
+    const onLangSelect = current === 'language-select';
 
     if (!user && !inAuth && !onWorkerSetup) {
       router.replace('/login');
     } else if (user && inAuth) {
-      router.replace(user.role === 'worker' ? '/(worker)/jobs' : '/');
-    } else if (user && user.role === 'worker' && !inWorker && !onWorkerSetup) {
+      // After login → pick language first
+      router.replace('/language-select');
+    } else if (user && user.role === 'worker' && !inWorker && !onWorkerSetup && !onLangSelect) {
       router.replace('/(worker)/jobs');
     }
   }, [isReady, user, loading, segments]);
@@ -51,6 +54,7 @@ function RootLayoutNav() {
         }}
       >
         <Stack.Screen name="login" options={{ headerShown: false }} />
+        <Stack.Screen name="language-select" options={{ headerShown: false }} />
         <Stack.Screen name="signup" options={{ title: 'Account Banayein' }} />
         <Stack.Screen name="worker-signup" options={{ title: 'Worker Registration' }} />
         <Stack.Screen name="(customer)" options={{ headerShown: false }} />
@@ -73,8 +77,10 @@ export default function RootLayout() {
   }, []);
 
   return (
-    <AuthProvider>
-      <RootLayoutNav />
-    </AuthProvider>
+    <LanguageProvider>
+      <AuthProvider>
+        <RootLayoutNav />
+      </AuthProvider>
+    </LanguageProvider>
   );
 }
