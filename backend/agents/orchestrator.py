@@ -77,7 +77,7 @@ async def run_full_orchestration(
     ranked = chunno_result.get("ranked_providers", providers_raw)
 
     # ── Step 4: HIFAZAT — trust check ───────────────────────────────────
-    trust_result = await hifazat.assess_trust(ranked, user_id)
+    trust_result = await hifazat.assess_trust(ranked, user_id, intent=intent_raw)
     log = _extract_log(trust_result)
     if log:
         logs.append(log)

@@ -845,6 +845,11 @@ def reset_firebase_service_for_tests() -> None:
     _default_service = None
 
 
+def is_mock_mode() -> bool:
+    """Whether the active Firebase service is using the in-memory mock store."""
+    return get_firebase_service().is_mock
+
+
 # --- Legacy async API (unchanged signatures for callers) --------------------
 
 async def save_booking(data: dict) -> str:
@@ -1026,18 +1031,6 @@ async def get_provider_bookings(provider_id: str) -> list:
 
 async def update_booking(booking_id: str, data: dict) -> bool:
     return _doc_update("bookings", booking_id, {**data, "updated_at": _now_iso()})
-
-
-async def check_slot_conflict(provider_id: str, requested_time: str) -> bool:
-    active = ("confirmed", "en_route", "in_progress")
-    bookings = await list_bookings(provider_id=provider_id)
-    for b in bookings:
-        if b.get("status") not in active:
-            continue
-        slot = b.get("slot_time") or b.get("scheduled_time")
-        if slot == requested_time:
-            return True
-    return False
 
 
 async def update_booking_status(booking_id: str, status: str) -> None:

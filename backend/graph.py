@@ -1,7 +1,7 @@
 """
 LangGraph workflow for Haazir (hackathon prototype).
 
-Flow: START → Samajh → (optional) Dhundho → Chunno → END
+Flow: START → Samajh → (optional) Dhundho → Chunno → Hifazat → END
 
 * If Samajh sets ``clarification_needed`` and it is not an emergency → END (no Dhundho/Chunno).
 * Otherwise: Dhundho discovers providers, Chunno ranks them (8-factor score + Urdu reasons).
@@ -19,6 +19,7 @@ from langgraph.graph import END, START, StateGraph
 
 from agents.chunno import ChunnoAgent
 from agents.dhundho import DhundhoAgent
+from agents.hifazat import HifazatAgent
 from agents.samajh import SamajhAgent
 
 
@@ -37,11 +38,15 @@ class HaazirState(TypedDict, total=False):
     providers_ranked: list[dict[str, Any]]
     chunno_warnings: list[str]
     chunno_meta: dict[str, Any]
+    user_id: str
+    trust_scores: list[dict[str, Any]]
+    hifazat_meta: dict[str, Any]
 
 
 _samajh_agent = SamajhAgent()
 _dhundho_agent = DhundhoAgent()
 _chunno_agent = ChunnoAgent()
+_hifazat_agent = HifazatAgent()
 
 
 def _merge_location_into_intent(intent: dict[str, Any], user_location: str) -> dict[str, Any]:
@@ -158,11 +163,81 @@ async def _chunno_node(state: HaazirState) -> HaazirState:
     }
 
 
+async def _hifazat_node(state: HaazirState) -> HaazirState:
+    """Trust-screen ranked providers; filter BLOCK; attach per-provider assessments."""
+    ranked = list(state.get("providers_ranked") or [])
+    intent = dict(state.get("intent") or {})
+    user_id = (state.get("user_id") or "anonymous").strip() or "anonymous"
+
+    if not ranked:
+        return {
+            "trust_scores": [],
+            "hifazat_meta": {"skipped": True, "reason": "no_providers_to_assess"},
+            "logs": [
+                {
+                    "agent": "Hifazat",
+                    "status": "success",
+                    "decision": "No providers to assess",
+                    "reasoning": "Chunno returned an empty provider list",
+                    "confidence": 0.0,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+            ],
+        }
+
+    trust_result = await _hifazat_agent.assess_trust(ranked, user_id, intent=intent)
+    legacy_log = trust_result.pop("_log", None)
+    assessments = list(trust_result.get("assessments") or [])
+    trust_map = {a["provider_id"]: a for a in assessments}
+
+    enriched: list[dict[str, Any]] = []
+    for provider in ranked:
+        pid = str(provider.get("id", ""))
+        assessment = trust_map.get(pid, {})
+        row = dict(provider)
+        row["trust_assessment"] = assessment
+        if assessment.get("warnings"):
+            merged = list(row.get("warnings") or [])
+            for msg in assessment["warnings"]:
+                if msg and msg not in merged:
+                    merged.append(msg)
+            row["warnings"] = merged
+        enriched.append(row)
+
+    filtered = [
+        p
+        for p in enriched
+        if trust_map.get(str(p.get("id", "")), {}).get("recommended_action") != "BLOCK"
+    ]
+    all_blocked = len(filtered) == 0 and len(enriched) > 0
+    final_ranked = enriched if all_blocked else filtered
+
+    judge_logs: list[dict[str, Any]] = []
+    if legacy_log:
+        judge_logs.append(_judge_log_from_legacy("Hifazat", legacy_log))
+
+    blocked_count = sum(
+        1 for a in assessments if a.get("recommended_action") == "BLOCK"
+    )
+
+    return {
+        "providers_ranked": final_ranked,
+        "trust_scores": assessments,
+        "hifazat_meta": {
+            "assessed_count": len(assessments),
+            "blocked_count": blocked_count,
+            "all_blocked": all_blocked,
+        },
+        "logs": judge_logs,
+    }
+
+
 def _build_graph():
     workflow = StateGraph(HaazirState)
     workflow.add_node("samajh", _samajh_node)
     workflow.add_node("dhundho", _dhundho_node)
     workflow.add_node("chunno", _chunno_node)
+    workflow.add_node("hifazat", _hifazat_node)
     workflow.add_edge(START, "samajh")
     workflow.add_conditional_edges(
         "samajh",
@@ -170,7 +245,8 @@ def _build_graph():
         {"stop": END, "dhundho": "dhundho"},
     )
     workflow.add_edge("dhundho", "chunno")
-    workflow.add_edge("chunno", END)
+    workflow.add_edge("chunno", "hifazat")
+    workflow.add_edge("hifazat", END)
     return workflow.compile()
 
 
@@ -182,9 +258,10 @@ async def run_samajh_workflow(
     user_input: str,
     source: str = "text",
     user_location: str = "",
+    user_id: str = "anonymous",
 ) -> HaazirState:
     """
-    Samajh → Dhundho → Chunno when intent is actionable.
+    Samajh → Dhundho → Chunno → Hifazat when intent is actionable.
 
     ``user_location``: e.g. ``G-13, Islamabad`` for maps + city fallback.
     """
@@ -192,6 +269,7 @@ async def run_samajh_workflow(
         "user_input": user_input,
         "source": source,
         "user_location": (user_location or "").strip(),
+        "user_id": (user_id or "anonymous").strip() or "anonymous",
         "intent": {},
         "logs": [],
     }

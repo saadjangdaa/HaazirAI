@@ -196,6 +196,81 @@ class HifazatAgent:
             ),
         }
 
+    async def assess_trust(
+        self,
+        ranked_providers: list[dict],
+        user_id: str,
+        intent: dict | None = None,
+    ) -> dict[str, Any]:
+        """
+        Assess each provider; return orchestrator-compatible shape.
+
+        Optional ``intent`` supplies emergency override for graph/orchestrator callers.
+        """
+        start = _now()
+        intent = intent or {}
+        context = {
+            "emergency": bool(intent.get("emergency")),
+            "city_avg_price_per_hour": 800,
+        }
+
+        assessments: list[dict[str, Any]] = []
+        approved = 0
+        blocked = 0
+        warning_actions = 0
+
+        for provider in ranked_providers:
+            result = await self.assess_provider(provider, context)
+            trust_score = round(1.0 - float(result["provider_risk_score"]), 4)
+
+            warnings: list[str] = []
+            warning_msg = result.get("warning_message")
+            if warning_msg:
+                warnings.append(str(warning_msg))
+
+            action = result["recommended_action"]
+            if action == "BLOCK":
+                blocked += 1
+            elif action == "APPROVE":
+                approved += 1
+            else:
+                warning_actions += 1
+
+            assessments.append(
+                {
+                    "provider_id": result["provider_id"],
+                    "trust_score": trust_score,
+                    "risk_flags": result["risk_flags"],
+                    "recommended_action": action,
+                    "warnings": warnings,
+                }
+            )
+
+        total = len(assessments)
+        batch_confidence = (
+            round(sum(a["trust_score"] for a in assessments) / total, 4) if total else 1.0
+        )
+
+        return {
+            "assessments": assessments,
+            "_log": _make_log(
+                start=start,
+                input_summary=(
+                    f"HIFAZAT trust batch: {total} providers user_id={user_id!r} "
+                    f"emergency={context['emergency']}"
+                ),
+                output_summary=(
+                    f"approved={approved} blocked={blocked} "
+                    f"warnings_or_review={warning_actions}"
+                ),
+                decision_made=(
+                    f"Trust screening: {approved} approve, {warning_actions} caution, "
+                    f"{blocked} block"
+                ),
+                confidence=batch_confidence,
+            ),
+        }
+
     async def assess_customer(self, customer: dict, context: dict) -> dict[str, Any]:
         start = _now()
         risk = 0.0

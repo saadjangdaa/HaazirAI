@@ -152,6 +152,7 @@ _AGENT_URDU = {
     "Samajh": "سمجھ",
     "Dhundho": "ڈھونڈو",
     "Chunno": "چُنّو",
+    "Hifazat": "حفاظت",
 }
 
 
@@ -181,15 +182,16 @@ def _judge_logs_to_mobile_agent_logs(logs: list) -> list:
 @app.post("/api/request")
 async def handle_service_request(body: ServiceRequest):
     """
-    Samajh → Dhundho → Chunno via LangGraph.
+    Samajh → Dhundho → Chunno → Hifazat via LangGraph.
 
-    ``providers_ranked`` is sorted by Chunno (``ranking_score`` desc). Send ``user_location`` from mobile.
+    ``providers_ranked`` is Chunno-ranked then Hifazat-filtered (BLOCK removed). Send ``user_location`` from mobile.
     """
     request_id = new_request_id()
     final_state = await run_samajh_workflow(
         user_input=body.user_input.strip(),
         source="text",
         user_location=(body.user_location or "").strip(),
+        user_id=body.user_id,
     )
     intent = final_state.get("intent") or {}
     logs = final_state.get("logs") or []
@@ -197,6 +199,8 @@ async def handle_service_request(body: ServiceRequest):
     providers_discovered = final_state.get("providers") or []
     dh_meta = final_state.get("dhundho_meta") or {}
     chunno_warnings = final_state.get("chunno_warnings") or []
+    trust_scores = final_state.get("trust_scores") or []
+    hifazat_meta = final_state.get("hifazat_meta") or {}
     best_provider = providers_ranked[0] if providers_ranked else None
 
     _request_store[request_id] = {
@@ -222,6 +226,8 @@ async def handle_service_request(body: ServiceRequest):
         "fallback": dh_meta.get("fallback_message"),
         "dhundho_meta": dh_meta,
         "chunno_meta": final_state.get("chunno_meta") or {},
+        "trust_scores": trust_scores,
+        "hifazat_meta": hifazat_meta,
         "providers_discovered_count": len(providers_discovered),
     }
 
