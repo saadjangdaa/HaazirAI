@@ -1,6 +1,8 @@
 import { getApp, getApps, initializeApp } from 'firebase/app';
-import { getAuth, initializeAuth, inMemoryPersistence } from 'firebase/auth';
+import { getAuth, initializeAuth } from 'firebase/auth';
+import { getReactNativePersistence } from 'firebase/auth/react-native';
 import { getFirestore, initializeFirestore } from 'firebase/firestore';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const firebaseConfig = {
   apiKey: 'AIzaSyD2oRKslaA-6jqgfXfAFuNBYYwdpJHp-as',
@@ -25,7 +27,9 @@ export const db = getDb();
 
 function initAuth() {
   try {
-    return initializeAuth(app, { persistence: inMemoryPersistence });
+    return initializeAuth(app, {
+      persistence: getReactNativePersistence(AsyncStorage),
+    });
   } catch (e: unknown) {
     const code = (e as { code?: string })?.code;
     if (code === 'auth/already-initialized') return getAuth(app);

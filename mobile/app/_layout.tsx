@@ -6,12 +6,10 @@ import { Colors } from '../constants/theme';
 import { AuthProvider, useAuth, AuthUser } from '../context/AuthContext';
 import AuthSplash from '../components/AuthSplash';
 import { auth } from '../services/firebase';
-import { AuthProvider, useAuth } from '../context/AuthContext';
 import { LanguageProvider } from '../context/LanguageContext';
 
 SplashScreen.preventAutoHideAsync();
 
-/** Cold start must land on login — not a tab group or worker-signup. */
 export const unstable_settings = {
   initialRouteName: 'login',
 };
@@ -28,9 +26,14 @@ function isWorkerSignupPath(pathname: string): boolean {
   return pathname === '/worker-signup';
 }
 
+function isLangSelectPath(pathname: string): boolean {
+  return pathname === '/language-select';
+}
+
 /**
  * Single routing gate — runs only after Firebase auth + profile bootstrap (loading=false).
- * Firebase Auth session is the source of truth for "logged in".
+ * allowPostAuthRedirect=true means a fresh login just happened → show language picker.
+ * On cold start (session restored), skip language picker and go straight to home.
  */
 function AuthNavigationGuard() {
   const { user, loading, allowPostAuthRedirect } = useAuth();
@@ -43,12 +46,11 @@ function AuthNavigationGuard() {
     if (loading || !navigationState?.key) return;
 
     const firebaseUser = auth.currentUser;
-    const isAuthenticated =
-      !!firebaseUser && !!user && firebaseUser.uid === user.id;
+    const isAuthenticated = !!firebaseUser && !!user && firebaseUser.uid === user.id;
 
     let target: string | null = null;
 
-    if (!isAuthenticated || !allowPostAuthRedirect) {
+    if (!isAuthenticated) {
       if (!isAuthPath(pathname)) {
         target = '/login';
       }
@@ -56,31 +58,18 @@ function AuthNavigationGuard() {
       if (!isWorkerSignupPath(pathname)) {
         target = '/worker-signup';
       }
+    } else if (allowPostAuthRedirect) {
+      if (!isLangSelectPath(pathname)) {
+        target = '/language-select';
+      }
     } else {
       const home = homeRoute(user);
       if (isAuthPath(pathname) || isWorkerSignupPath(pathname)) {
         target = home;
       }
-  useEffect(() => {
-    if (!isReady || loading) return;
-
-    const current = segments[0] as string | undefined;
-    const inAuth = AUTH_SCREENS.includes(current ?? '');
-    const inWorker = current === '(worker)';
-    const onWorkerSetup = current === 'worker-signup';
-    const onLangSelect = current === 'language-select';
-
-    if (!user && !inAuth && !onWorkerSetup) {
-      router.replace('/login');
-    } else if (user && inAuth) {
-      // After login → pick language first
-      router.replace('/language-select');
-    } else if (user && user.role === 'worker' && !inWorker && !onWorkerSetup && !onLangSelect) {
-      router.replace('/(worker)/jobs');
     }
 
     if (!target || lastNav.current === target) return;
-
     lastNav.current = target;
     router.replace(target as '/login');
   }, [user, loading, allowPostAuthRedirect, pathname, router, navigationState?.key]);
@@ -120,17 +109,9 @@ function RootLayoutNav() {
         }}
       >
         <Stack.Screen name="login" options={{ headerShown: false }} />
-        <Stack.Screen
-          name="signup"
-          options={{ title: 'Account Banayein', headerBackVisible: false }}
-        />
-        <Stack.Screen
-          name="worker-signup"
-          options={{ title: 'Worker Registration', headerBackVisible: false }}
-        />
+        <Stack.Screen name="signup" options={{ title: 'Account Banayein', headerBackVisible: false }} />
+        <Stack.Screen name="worker-signup" options={{ title: 'Worker Registration', headerBackVisible: false }} />
         <Stack.Screen name="language-select" options={{ headerShown: false }} />
-        <Stack.Screen name="signup" options={{ title: 'Account Banayein' }} />
-        <Stack.Screen name="worker-signup" options={{ title: 'Worker Registration' }} />
         <Stack.Screen name="(customer)" options={{ headerShown: false }} />
         <Stack.Screen name="(worker)" options={{ headerShown: false }} />
         <Stack.Screen name="results" options={{ title: 'Providers Mila Diye' }} />
