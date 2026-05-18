@@ -9,7 +9,6 @@ import { Colors, Spacing, Radius, FontSize, Shadow } from '../../constants/theme
 import { submitRequest, formatApiError, pingApi, getApiBaseUrl, requireUserId } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import { useLang } from '../../context/LanguageContext';
-import { requestMicPermission, startRecording, stopAndTranscribe } from '../../services/voice';
 
 const QUICK_SERVICES = [
   { label: 'AC Technician', icon: '❄️' },
@@ -30,7 +29,6 @@ const RECENT_REQUESTS = [
 const CustomerHomeScreen = () => {
   const router = useRouter();
   const { user, ensureProfileSyncedBeforeRequest } = useAuth();
-  const { user } = useAuth();
   const { tr } = useLang();
   const insets = useSafeAreaInsets();
   const [input, setInput] = useState('');

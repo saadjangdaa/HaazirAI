@@ -22,13 +22,9 @@ for _path in (_REPO_ROOT, _BACKEND_DIR):
 from fastapi import HTTPException
 
 from backend.app import APP_INSTANCE_ID, app
-
-# Load config + logging first (single dotenv via config.py)
 from config import config
 from logging_config import logger
 
-from agents.orchestrator import run_bidding, run_dispute, run_provider_report
-from agents.pakka import PakkaAgent
 from graph import new_request_id, run_samajh_workflow
 from models.request import (
     ServiceRequest,
@@ -42,48 +38,14 @@ from models.request import (
     UserSyncRequest,
     BookingStatusUpdate,
 )
-from agents.orchestrator import run_full_orchestration, run_bidding, run_provider_report
-)
+from agents.orchestrator import run_bidding, run_provider_report
+from agents.pakka import PakkaAgent
+from services.firestore_schema import FORBIDDEN_USER_IDS
 from services.firebase import (
     FirebaseService,
     get_booking,
     save_review,
     set_firebase_service,
-    update_booking_status,
-)
-
-firebase: Optional[FirebaseService] = None
-
-_PROVIDERS_PATH = Path(__file__).parent / "data" / "providers.json"
-_request_store: dict = {}
-_providers_cache: list = []
-pakka_agent = PakkaAgent()
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Startup: validate config, init Firebase singleton for agents + routes."""
-    global firebase
-    if not config.validate():
-        logger.error("Configuration validation failed — exiting")
-        sys.exit(1)
-
-    cred_path = str(config.resolved_credentials_path())
-    firebase = FirebaseService(cred_path)
-    set_firebase_service(firebase)
-    app.state.firebase = firebase
-
-    logger.info("Haazir backend started — environment=%s firebase_mock=%s", config.ENVIRONMENT, firebase.is_mock)
-    yield
-    logger.info("Haazir backend shutdown")
-
-from models.request import ServiceRequest, BidRequest, BookingRequest, DisputeRequest, FeedbackRequest, VoiceRequest, TTSRequest, ConversationRequest
-from agents.orchestrator import run_full_orchestration, run_bidding, run_dispute, run_provider_report
-from agents.pakka import PakkaAgent
-from services.firestore_schema import FORBIDDEN_USER_IDS
-from services.firebase import (
-    save_review,
-    get_booking,
     list_bookings,
     get_user,
     sync_user_profile,
@@ -119,12 +81,6 @@ from services.push_notify import (
     notify_booking_created,
     notify_feedback_received,
     process_pending_notifications,
-
-app = FastAPI(
-    title="Haazir Dost API",
-    description="Pakistan's agentic home-services orchestrator",
-    version="1.0.0",
-    lifespan=lifespan,
 )
 from services.user_validation import (
     is_profile_complete,
@@ -134,14 +90,26 @@ from services.user_validation import (
     sanitize_worker_data,
 )
 
-_PROVIDERS_PATH = _BACKEND_DIR / "data" / "providers.json"
+# ── Module-level initialisation ───────────────────────────────────────────────
 
-# In-memory store for quick lookups during demo
+firebase: Optional[FirebaseService] = None
+_PROVIDERS_PATH = _BACKEND_DIR / "data" / "providers.json"
 _request_store: dict = {}
 _providers_cache: list = []
-
 pakka_agent = PakkaAgent()
 
+try:
+    if config.validate():
+        _cred_path = str(config.resolved_credentials_path())
+        firebase = FirebaseService(_cred_path)
+        set_firebase_service(firebase)
+        logger.info("Firebase initialized mock=%s env=%s", firebase.is_mock, config.ENVIRONMENT)
+    else:
+        logger.warning("Config validation failed — Firebase not initialized (mock mode)")
+except Exception as _fe:
+    logger.error("Firebase init error: %s", _fe)
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _require_firebase_uid(user_id: str) -> str:
     uid = (user_id or "").strip()
@@ -168,25 +136,51 @@ def _load_providers() -> list:
     return _providers_cache
 
 
+_AGENT_URDU = {
+    "Samajh": "سمجھ",
+    "Dhundho": "ڈھونڈو",
+    "Chunno": "چُنّو",
+}
+
+
+def _judge_logs_to_mobile_agent_logs(logs: list) -> list:
+    out = []
+    for entry in logs:
+        ts = entry.get("timestamp", "")
+        agent = entry.get("agent", "Samajh")
+        out.append({
+            "agent_name": agent.upper(),
+            "agent_name_urdu": _AGENT_URDU.get(agent, agent),
+            "start_time": ts,
+            "end_time": ts,
+            "input_summary": entry.get("reasoning", ""),
+            "output_summary": entry.get("decision", ""),
+            "decision_made": entry.get("decision", ""),
+            "confidence": float(entry.get("confidence", 0.0)),
+            "fallback_used": entry.get("status") == "failure",
+            "time_seconds": 0.0,
+        })
+    return out
+
+
+# ── Routes ────────────────────────────────────────────────────────────────────
+
 @app.post("/api/voice/transcribe")
 async def transcribe_voice(body: VoiceRequest):
     """Transcribe audio using Gemini 2.0 Flash. Supports Urdu, Roman Urdu, English, Sindhi."""
     from services.voice import transcribe_audio
-    result = await transcribe_audio(body.audio_base64, body.mime_type)
-    return result
+    return await transcribe_audio(body.audio_base64, body.mime_type)
 
 
 @app.post("/api/voice/tts")
 async def voice_tts(body: TTSRequest):
-    """Convert text to Urdu speech using Uplift AI. Auto-translates Roman Urdu/English to Urdu script."""
+    """Convert text to Urdu speech using Uplift AI."""
     from services.uplift_tts import text_to_speech
-    result = await text_to_speech(body.text, body.voice_id, body.translate)
-    return result
+    return await text_to_speech(body.text, body.voice_id, body.translate)
 
 
 @app.get("/health")
 async def health():
-    """Liveness + quick Firebase mode indicator for ops / mobile."""
     fb = getattr(app.state, "firebase", None) or firebase
     mode = "mock" if fb is None or fb.is_mock else "connected"
     return {
@@ -194,6 +188,8 @@ async def health():
         "timestamp": datetime.now().isoformat(),
         "service": "Haazir AI",
         "instance_id": APP_INSTANCE_ID,
+        "firebase": mode,
+        "environment": config.ENVIRONMENT,
         "features": {
             "dispute_repeat_allowed": True,
             "agent_logs_on_request": True,
@@ -201,20 +197,15 @@ async def health():
             "notification_dedupe_seconds": 90,
         },
     }
-        "firebase": mode,
-        "environment": config.ENVIRONMENT,
-    }
 
 
 @app.get("/test/firebase")
 async def test_firebase():
-    """Smoke-test Firestore (or mock store): list providers count."""
     fb = getattr(app.state, "firebase", None) or firebase
     if fb is None:
         raise HTTPException(status_code=503, detail="Firebase not initialized")
     try:
         providers = fb.get_all_providers()
-        logger.info("test_firebase: providers_count=%s mock=%s", len(providers), fb.is_mock)
         return {
             "status": "success",
             "firebase": "mock" if fb.is_mock else "connected",
@@ -225,100 +216,41 @@ async def test_firebase():
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-_AGENT_URDU = {
-    "Samajh": "سمجھ",
-    "Dhundho": "ڈھونڈو",
-    "Chunno": "چُنّو",
-}
-
-
-def _judge_logs_to_mobile_agent_logs(logs: list) -> list:
-    """Map judge-facing reasoning entries to the legacy shape used by the Expo AgentLogViewer."""
-    out = []
-    for entry in logs:
-        ts = entry.get("timestamp", "")
-        agent = entry.get("agent", "Samajh")
-        out.append(
-            {
-                "agent_name": agent.upper(),
-                "agent_name_urdu": _AGENT_URDU.get(agent, agent),
-                "start_time": ts,
-                "end_time": ts,
-                "input_summary": entry.get("reasoning", ""),
-                "output_summary": entry.get("decision", ""),
-                "decision_made": entry.get("decision", ""),
-                "confidence": float(entry.get("confidence", 0.0)),
-                "fallback_used": entry.get("status") == "failure",
-                "time_seconds": 0.0,
-            }
-        )
-    return out
-
-
 @app.post("/api/request")
 async def handle_service_request(body: ServiceRequest):
-    """Full Antigravity orchestration: Samajh → Dhundho → Chunno → Hifazat → Hisaab → Pakka."""
+    """Samajh → Dhundho → Chunno via LangGraph."""
     uid = _require_firebase_uid(body.user_id)
     await _require_complete_profile(uid)
-    result = await run_full_orchestration(
-        user_input=body.user_input,
-        user_location=body.user_location,
-        user_id=uid,
-    )
-    request_id = (result.get("request_id") or "").strip()
-    if not request_id:
-        raise HTTPException(status_code=500, detail="Orchestration did not return request_id")
-    logs = result.get("agent_logs") or []
 
-    await save_agent_logs(request_id, body.user_input, logs, user_id=uid)
-    """
-    Samajh → Dhundho → Chunno via LangGraph.
-
-    ``providers_ranked`` is sorted by Chunno (``ranking_score`` desc). Send ``user_location`` from mobile.
-    """
     request_id = new_request_id()
     final_state = await run_samajh_workflow(
         user_input=body.user_input.strip(),
         source="text",
         user_location=(body.user_location or "").strip(),
     )
+
     intent = final_state.get("intent") or {}
     logs = final_state.get("logs") or []
-    providers_ranked = final_state.get("providers_ranked") or []
-    providers_discovered = final_state.get("providers") or []
+    providers_ranked = list(final_state.get("providers_ranked") or [])
+    providers_discovered = list(final_state.get("providers") or [])
     dh_meta = final_state.get("dhundho_meta") or {}
     chunno_warnings = final_state.get("chunno_warnings") or []
+
+    if not providers_ranked:
+        providers_ranked = _load_providers()[:3]
+
     best_provider = providers_ranked[0] if providers_ranked else None
 
     _request_store[request_id] = {
-        "providers": result.get("providers_ranked", []),
-        "intent": result.get("extracted_intent", {}),
-        "user_id": uid,
         "user_input": body.user_input,
         "logs": logs,
         "intent": intent,
-        "user_id": body.user_id,
+        "user_id": uid,
         "providers": providers_ranked,
     }
 
-    booking = result.get("booking") or {}
-    booking_id = booking.get("booking_id")
-    if booking_id and uid:
-        await append_user_booking(uid, booking_id)
-        reminder_times = booking.get("reminder_times") or []
-        if reminder_times:
-            await schedule_booking_reminders(
-                booking_id,
-                uid,
-                reminder_times,
-                "Haazir AI reminder: booking {booking_id} is coming up soon.",
-            )
-        stored = await get_booking(booking_id)
-        if stored:
-            await notify_booking_created(stored)
-
-    return result
     agent_logs = _judge_logs_to_mobile_agent_logs(logs)
+    await save_agent_logs(request_id, body.user_input, logs, user_id=uid)
 
     return {
         "request_id": request_id,
@@ -348,9 +280,7 @@ async def trigger_bidding(body: BidRequest):
     else:
         providers = cached["providers"]
         intent = cached["intent"]
-
-    result = await run_bidding(body.request_id, providers, intent)
-    return result
+    return await run_bidding(body.request_id, providers, intent)
 
 
 @app.post("/api/book")
@@ -358,10 +288,10 @@ async def confirm_booking(body: BookingRequest):
     """PAKKA agent confirms a specific booking."""
     uid = _require_firebase_uid(body.user_id)
     await _require_complete_profile(uid)
+
     provider = await get_provider(body.provider_id)
     if not provider:
         from services.providers_integrity import format_provider_record
-
         all_providers = _load_providers()
         raw = next((p for p in all_providers if p.get("id") == body.provider_id), None)
         provider = format_provider_record(raw, body.provider_id) if raw else None
@@ -381,12 +311,11 @@ async def confirm_booking(body: BookingRequest):
     result = await pakka_agent.create_booking(intent, provider, pricing, uid)
     log = result.pop("_log", None)
     booking_id = result["booking_id"]
+
     await append_user_booking(uid, booking_id)
     if result.get("reminder_times"):
         await schedule_booking_reminders(
-            booking_id,
-            uid,
-            result["reminder_times"],
+            booking_id, uid, result["reminder_times"],
             "Haazir AI reminder: booking {booking_id} is coming up soon.",
         )
     updated = await set_booking_status(booking_id, "confirmed")
@@ -402,7 +331,7 @@ async def confirm_booking(body: BookingRequest):
 
 @app.post("/api/dispute")
 async def handle_dispute(body: DisputeRequest):
-    """JHAGRA agent resolves a dispute; new disputes/{id} every submit (repeats allowed)."""
+    """JHAGRA agent resolves a dispute."""
     uid = _require_firebase_uid(body.user_id)
     return await file_dispute(
         user_id=uid,
@@ -437,47 +366,35 @@ async def list_user_disputes(user_id: str):
 
 @app.get("/api/booking/{booking_id}")
 async def get_booking_status(booking_id: str):
-    """Fetch booking status + lifecycle tracking steps."""
     booking = await get_booking(booking_id)
     if not booking:
         raise HTTPException(status_code=404, detail=f"Booking {booking_id} not found")
-    enriched = await _enrich_booking(booking)
-    return enriched
+    return await _enrich_booking(booking)
 
 
 @app.get("/api/bookings/user/{user_id}")
 async def list_user_bookings(user_id: str):
-    """All bookings for Firebase Auth UID."""
     uid = _require_firebase_uid(user_id)
     rows = await list_bookings(user_id=uid)
     rows.sort(key=lambda b: b.get("created_at", ""), reverse=True)
-    out = []
-    for b in rows:
-        out.append(await _enrich_booking(b))
-    return {"bookings": out, "count": len(out)}
+    return {"bookings": [await _enrich_booking(b) for b in rows], "count": len(rows)}
 
 
 @app.get("/api/bookings/provider/{provider_id}")
 async def list_provider_bookings(provider_id: str, status: str = None):
-    """All bookings assigned to a provider (worker dashboard)."""
     rows = await list_bookings(provider_id=provider_id, status=status)
     rows.sort(key=lambda b: b.get("created_at", ""), reverse=True)
-    out = []
-    for b in rows:
-        out.append(await _enrich_booking(b))
-    return {"bookings": out, "count": len(out)}
+    return {"bookings": [await _enrich_booking(b) for b in rows], "count": len(rows)}
 
 
 @app.get("/api/bookings/worker/{user_id}")
 async def list_worker_bookings(user_id: str, status: str = None):
-    """Worker dashboard: bookings for users/{uid} linked provider_id."""
     uid = _require_firebase_uid(user_id)
     return await get_worker_bookings(uid, status=status)
 
 
 @app.get("/api/workers/{user_id}/earnings")
 async def worker_earnings(user_id: str):
-    """Earnings summary from completed bookings for worker's provider."""
     uid = _require_firebase_uid(user_id)
     data = await get_worker_bookings(uid)
     summary = summarize_worker_earnings(data.get("bookings") or [])
@@ -486,7 +403,6 @@ async def worker_earnings(user_id: str):
 
 @app.patch("/api/booking/{booking_id}/status")
 async def patch_booking_status(booking_id: str, body: BookingStatusUpdate):
-    """Update booking lifecycle state (triggers push on real change)."""
     return await set_booking_status(booking_id, body.status)
 
 
@@ -552,19 +468,6 @@ async def sync_user(body: UserSyncRequest):
     if body.role == "worker":
         await resolve_worker_provider_id(uid, persist=True)
     doc = await get_user(uid)
-        return {
-            "booking_id": booking_id,
-            "status": "confirmed",
-            "message": "Booking data retrieved (mock)",
-            "tracking_steps": [
-                {"step": "Booked", "done": True, "time": datetime.now().isoformat()},
-                {"step": "Confirmed", "done": True, "time": datetime.now().isoformat()},
-                {"step": "En Route", "done": False},
-                {"step": "Arrived", "done": False},
-                {"step": "In Progress", "done": False},
-                {"step": "Completed", "done": False},
-            ],
-        }
     return {
         "success": True,
         "user_id": uid,
@@ -579,7 +482,6 @@ async def get_user_profile(user_id: str):
     if not doc:
         raise HTTPException(status_code=404, detail="User not found")
     normalized = mirror_profile_root_fields({**doc})
-    # Persist fix if legacy doc had identity only in worker_data
     if normalized.get("phone") and not (doc.get("phone") or "").strip():
         await sync_user_profile(uid, normalized)
     return {**normalized, "profile_complete": is_profile_complete(normalized)}
@@ -587,7 +489,6 @@ async def get_user_profile(user_id: str):
 
 @app.get("/api/logs/{request_id}")
 async def get_agent_logs(request_id: str):
-    """Return agent trace logs from Firestore or in-memory cache."""
     rid = (request_id or "").strip()
     doc = await get_agent_logs_doc(rid)
     if doc:
@@ -619,61 +520,41 @@ async def get_agent_logs(request_id: str):
 
 @app.get("/api/provider/report/{provider_id}")
 async def get_provider_report(provider_id: str):
-    """REPORT agent generates daily income report for a provider."""
     all_providers = _load_providers()
     provider = next((p for p in all_providers if p["id"] == provider_id), None)
     if not provider:
         raise HTTPException(status_code=404, detail=f"Provider {provider_id} not found")
-    result = await run_provider_report(provider_id, provider)
-    return result
+    return await run_provider_report(provider_id, provider)
 
 
 @app.get("/api/providers")
 async def list_providers(city: str = None, service: str = None):
-    """List providers from Firestore, falling back to local JSON."""
     from services.providers_integrity import format_provider_record
-
     providers = await firestore_list_providers(city=city, service=service)
     if not providers:
-        providers = [
-            format_provider_record(p, p.get("id"))
-            for p in _load_providers()
-        ]
+        providers = [format_provider_record(p, p.get("id")) for p in _load_providers()]
         if city:
             providers = [p for p in providers if p["city"].lower() == city.lower()]
         if service:
             providers = [
-                p
-                for p in providers
+                p for p in providers
                 if service.lower() in (p.get("service") or "").lower()
-                or any(
-                    service.lower() in s.lower()
-                    for s in (p.get("specialization") or [])
-                )
+                or any(service.lower() in s.lower() for s in (p.get("specialization") or []))
             ]
     return {"providers": providers, "count": len(providers)}
 
 
 @app.post("/api/admin/seed-providers")
 async def seed_providers():
-    """Seed Firestore providers collection from backend/data/providers.json."""
     if os.getenv("ENVIRONMENT", "development") != "development":
         raise HTTPException(status_code=403, detail="Seed only allowed in development")
     count = await seed_providers_from_json(str(_PROVIDERS_PATH))
-    return {
-        "seeded": count,
-        "mock_mode": is_mock_mode(),
-        "message": "Providers written to Firestore (or mock DB)",
-    }
+    return {"seeded": count, "mock_mode": is_mock_mode(), "message": "Providers written to Firestore"}
 
 
 @app.post("/api/conversation")
 async def conversation(body: ConversationRequest):
-    """BAAT-CHEET: Multi-turn voice conversation with state machine.
-
-    Flow: intake → [SEARCH] auto-triggers orchestration → results injected →
-    agent presents providers → [BOOK] triggers booking.
-    """
+    """BAAT-CHEET: Multi-turn voice conversation with state machine."""
     from agents.conversation import run_conversation
     from services.uplift_tts import text_to_speech
 
@@ -684,23 +565,21 @@ async def conversation(body: ConversationRequest):
         user_name=body.user_name,
     )
 
-    # Auto-trigger orchestration when agent outputs [SEARCH: ...]
     if result.get("search_trigger"):
         trigger = result["search_trigger"]
         service = trigger.get("service", "service")
         location = trigger.get("location", "Islamabad")
         urgency = trigger.get("urgency", "medium")
 
-        orch_result = await run_full_orchestration(
+        orch = await run_samajh_workflow(
             user_input=f"Mujhe {service} chahiye, location: {location}, urgency: {urgency}",
+            source="text",
             user_location=location,
-            user_id=body.user_id,
         )
-        providers = orch_result.get("providers_ranked", [])[:3]
+        providers = list((orch.get("providers_ranked") or []))[:3]
         if not providers:
             providers = _load_providers()[:3]
 
-        # Feed results back — agent will now present options to user
         follow_up = await run_conversation(
             session_id=body.session_id,
             user_message="[system: search complete]",
@@ -710,9 +589,8 @@ async def conversation(body: ConversationRequest):
         result["response_text"] = follow_up["response_text"]
         result["phase"] = follow_up["phase"]
         result["providers"] = providers
-        result["request_id"] = orch_result.get("request_id")
+        result["request_id"] = new_request_id()
 
-    # Auto-confirm booking when agent outputs [BOOK: ...]
     if result.get("book_trigger"):
         trigger = result["book_trigger"]
         provider_id = trigger.get("provider_id", "")
@@ -730,12 +608,12 @@ async def conversation(body: ConversationRequest):
             "receipt": {
                 "service": provider.get("service", "Service"),
                 "location": f"{provider.get('area', '')}, {provider.get('city', 'Islamabad')}",
-                "scheduled_time": "2026-05-17 10:00",
+                "scheduled_time": "2026-05-19 10:00",
                 "estimated_price": f"Rs. {provider.get('base_rate', 2500):,}",
                 "payment_methods": [payment_method.title()],
             },
             "confirmation_message": (
-                f"{provider.get('name')} 17 May 2026, 10:00 AM pe {provider.get('city', 'Islamabad')} aayenge. "
+                f"{provider.get('name')} kal 10:00 AM pe {provider.get('city', 'Islamabad')} aayenge. "
                 f"Total estimate: Rs. {provider.get('base_rate', 2500):,}. Reference: {booking_id}"
             ),
             "reminders": [],
@@ -743,7 +621,6 @@ async def conversation(body: ConversationRequest):
         }
         result["phase"] = "done"
 
-    # Generate Uplift TTS audio for agent response
     audio_base64 = None
     if result.get("response_text"):
         try:
@@ -751,7 +628,7 @@ async def conversation(body: ConversationRequest):
             if tts.get("success"):
                 audio_base64 = tts["audio_base64"]
         except Exception as e:
-            print(f"[conversation] TTS error: {e}")
+            logger.warning("[conversation] TTS error: %s", e)
 
     result["audio_base64"] = audio_base64
     return result
@@ -759,7 +636,6 @@ async def conversation(body: ConversationRequest):
 
 @app.get("/api/admin/verify-firestore")
 async def verify_firestore():
-    """Step 1: audit active collections, UID rules, and document counts."""
     if os.getenv("ENVIRONMENT", "development") != "development":
         raise HTTPException(status_code=403, detail="Verify only allowed in development")
     return await verify_firestore_structure()
@@ -767,7 +643,6 @@ async def verify_firestore():
 
 @app.get("/api/admin/verify-users")
 async def verify_users():
-    """Step 2: audit users/{uid} integrity (roles, UID mapping, no workers collection)."""
     if os.getenv("ENVIRONMENT", "development") != "development":
         raise HTTPException(status_code=403, detail="Verify only allowed in development")
     return await verify_users_integrity()
@@ -775,7 +650,6 @@ async def verify_users():
 
 @app.post("/api/admin/repair-profile-roots")
 async def repair_profile_roots():
-    """Mirror identity fields from worker_data to users/{uid} root for all users."""
     if os.getenv("ENVIRONMENT", "development") != "development":
         raise HTTPException(status_code=403, detail="Repair only allowed in development")
     result = await repair_user_profile_roots()
@@ -785,7 +659,6 @@ async def repair_profile_roots():
 
 @app.post("/api/admin/cleanup-invalid-users")
 async def cleanup_invalid_users():
-    """Remove legacy users/{fake_id} documents (e.g. user_aapka_email_com)."""
     if os.getenv("ENVIRONMENT", "development") != "development":
         raise HTTPException(status_code=403, detail="Cleanup only allowed in development")
     result = await cleanup_invalid_user_documents()
@@ -795,7 +668,6 @@ async def cleanup_invalid_users():
 
 @app.get("/api/admin/verify-bookings")
 async def verify_bookings():
-    """Step 3: audit bookings lifecycle, UIDs, and user booking_history linkage."""
     if os.getenv("ENVIRONMENT", "development") != "development":
         raise HTTPException(status_code=403, detail="Verify only allowed in development")
     return await verify_bookings_integrity()
@@ -803,7 +675,6 @@ async def verify_bookings():
 
 @app.post("/api/admin/repair-booking-history")
 async def repair_booking_history():
-    """Sync users/{uid}.booking_history from all valid bookings."""
     if os.getenv("ENVIRONMENT", "development") != "development":
         raise HTTPException(status_code=403, detail="Repair only allowed in development")
     result = await repair_all_booking_history()
@@ -813,7 +684,6 @@ async def repair_booking_history():
 
 @app.get("/api/admin/verify-providers")
 async def verify_providers():
-    """Step 4: audit providers collection, ids, canonical fields, booking refs."""
     if os.getenv("ENVIRONMENT", "development") != "development":
         raise HTTPException(status_code=403, detail="Verify only allowed in development")
     return await verify_providers_integrity()
@@ -821,7 +691,6 @@ async def verify_providers():
 
 @app.get("/api/admin/verify-disputes")
 async def verify_disputes():
-    """Step 6: audit disputes collection, booking linkage, resolution fields."""
     if os.getenv("ENVIRONMENT", "development") != "development":
         raise HTTPException(status_code=403, detail="Verify only allowed in development")
     return await verify_disputes_integrity()
@@ -829,7 +698,6 @@ async def verify_disputes():
 
 @app.get("/api/admin/verify-agent-logs")
 async def verify_agent_logs():
-    """Step 7: audit agent_logs/{request_id} — user_input, timestamp, logs array."""
     if os.getenv("ENVIRONMENT", "development") != "development":
         raise HTTPException(status_code=403, detail="Verify only allowed in development")
     return await verify_agent_logs_integrity()
@@ -837,7 +705,6 @@ async def verify_agent_logs():
 
 @app.get("/api/admin/verify-notifications")
 async def verify_notifications():
-    """Step 8: audit notifications/{notif_id} and push_token coverage."""
     if os.getenv("ENVIRONMENT", "development") != "development":
         raise HTTPException(status_code=403, detail="Verify only allowed in development")
     return await verify_notifications_integrity()
@@ -845,7 +712,6 @@ async def verify_notifications():
 
 @app.post("/api/admin/process-notifications")
 async def process_notifications():
-    """Send due scheduled notifications (reminders)."""
     if os.getenv("ENVIRONMENT", "development") != "development":
         raise HTTPException(status_code=403, detail="Process only allowed in development")
     return await process_pending_notifications()
@@ -853,7 +719,6 @@ async def process_notifications():
 
 @app.post("/api/admin/cleanup-invalid-bookings")
 async def cleanup_invalid_bookings():
-    """Delete bookings with fake user_id values (legacy demo data)."""
     if os.getenv("ENVIRONMENT", "development") != "development":
         raise HTTPException(status_code=403, detail="Cleanup only allowed in development")
     result = await cleanup_bookings_with_invalid_user_id()
@@ -864,7 +729,6 @@ async def cleanup_invalid_bookings():
 
 @app.post("/api/admin/migrate-reviews")
 async def migrate_reviews():
-    """Move legacy reviews/* into bookings/* and delete the reviews collection."""
     if os.getenv("ENVIRONMENT", "development") != "development":
         raise HTTPException(status_code=403, detail="Migrate only allowed in development")
     result = await migrate_reviews_to_bookings()
@@ -874,7 +738,6 @@ async def migrate_reviews():
 
 @app.get("/api/routes")
 async def list_routes():
-    """Dev helper: list mounted API routes (same app instance as /health and /docs)."""
     routes = []
     for r in app.routes:
         if not hasattr(r, "methods") or not hasattr(r, "path"):
@@ -891,7 +754,6 @@ async def list_routes():
 
 @app.post("/api/feedback")
 async def submit_feedback(body: FeedbackRequest):
-    """Submit post-service rating + review."""
     _require_firebase_uid(body.user_id)
     if not 1 <= body.rating <= 5:
         raise HTTPException(status_code=400, detail="Rating must be between 1 and 5")
@@ -916,6 +778,8 @@ async def submit_feedback(body: FeedbackRequest):
     }
 
 
+# ── Sanity check ──────────────────────────────────────────────────────────────
+
 def _assert_routes_registered() -> None:
     paths = {getattr(r, "path", None) for r in app.routes}
     required = {"/health", "/api/routes", "/docs", "/openapi.json"}
@@ -934,7 +798,6 @@ if __name__ == "__main__":
         file=sys.stderr,
     )
     import uvicorn
-
     uvicorn.run(
         "backend.main:app",
         host=os.getenv("HOST", "0.0.0.0"),

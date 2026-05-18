@@ -17,14 +17,19 @@
         "android.permission.RECORD_AUDIO",
         "android.permission.MODIFY_AUDIO_SETTINGS",
         "android.permission.FOREGROUND_SERVICE",
-        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+        "android.permission.CAMERA",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
       ]
     },
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.haazir.ai",
       "infoPlist": {
-        "NSMicrophoneUsageDescription": "Haazir AI ko awaz sun'ne ke liye microphone chahiye"
+        "NSMicrophoneUsageDescription": "Haazir AI ko awaz sun'ne ke liye microphone chahiye",
+        "NSCameraUsageDescription": "CNIC verification ke liye camera chahiye",
+        "NSPhotoLibraryUsageDescription": "CNIC ki photo upload karne ke liye gallery chahiye"
       }
     },
     "web": {
@@ -32,6 +37,13 @@
     },
     "plugins": [
       "expo-router",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "CNIC verification ke liye gallery access chahiye",
+          "cameraPermission": "CNIC ki photo lene ke liye camera chahiye"
+        }
+      ],
       [
         "expo-build-properties",
         {

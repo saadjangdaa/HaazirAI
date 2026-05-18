@@ -6,15 +6,10 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../constants/theme';
-import { useAuth } from '../context/AuthContext';
+import { useAuth, formatAuthBootstrapError } from '../context/AuthContext';
+import { useLang, LANGUAGE_LABELS } from '../context/LanguageContext';
 import { formatAuthError } from '../utils/authErrors';
-import { formatAuthBootstrapError } from '../context/AuthContext';
-
-export default function LoginScreen() {
-  const router = useRouter();
-  const { signIn } = useAuth();
-import { useAuth, UserRole } from '../context/AuthContext';
-import { useLang, LANGUAGE_LABELS, Language } from '../context/LanguageContext';
+import type { Language } from '../constants/translations';
 
 const ALL_LANGS = Object.entries(LANGUAGE_LABELS) as [Language, string][];
 
@@ -26,7 +21,6 @@ export default function LoginScreen() {
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [role, setRole] = useState<UserRole>('customer');
   const [busy, setBusy] = useState(false);
   const [showLangPicker, setShowLangPicker] = useState(false);
 
@@ -39,14 +33,10 @@ export default function LoginScreen() {
     try {
       await signIn(email.trim(), password);
     } catch (e) {
-      const msg =
-        (e as { code?: string })?.code?.startsWith('auth/')
-          ? formatAuthError(e)
-          : formatAuthBootstrapError(e);
+      const msg = (e as { code?: string })?.code?.startsWith('auth/')
+        ? formatAuthError(e)
+        : formatAuthBootstrapError(e);
       Alert.alert('Login fail', msg);
-      await signIn(email.trim(), password, role);
-    } catch {
-      Alert.alert('Login fail', 'Email ya password galat hai');
     } finally {
       setBusy(false);
     }
@@ -61,7 +51,7 @@ export default function LoginScreen() {
         contentContainerStyle={[styles.scroll, { paddingTop: insets.top + Spacing.md, paddingBottom: insets.bottom + Spacing.lg }]}
         keyboardShouldPersistTaps="handled"
       >
-        {/* Language picker button */}
+        {/* Language picker */}
         <TouchableOpacity style={styles.langBtn} onPress={() => setShowLangPicker(true)}>
           <Text style={styles.langBtnText}>🌐 {LANGUAGE_LABELS[language]}</Text>
         </TouchableOpacity>
@@ -77,29 +67,6 @@ export default function LoginScreen() {
         <View style={styles.card}>
           <Text style={styles.heading}>{tr.welcome}</Text>
           <Text style={styles.sub}>{tr.loginSub}</Text>
-
-          {/* Role Selector */}
-          <Text style={styles.roleLabel}>{tr.iAm}</Text>
-          <View style={styles.roleRow}>
-            <TouchableOpacity
-              style={[styles.roleBtn, role === 'customer' && styles.roleBtnActive]}
-              onPress={() => setRole('customer')}
-            >
-              <Text style={styles.roleEmoji}>🏠</Text>
-              <Text style={[styles.roleBtnText, role === 'customer' && styles.roleBtnTextActive]}>
-                {tr.customer}
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.roleBtn, styles.roleBtnWorker, role === 'worker' && styles.roleBtnWorkerActive]}
-              onPress={() => setRole('worker')}
-            >
-              <Text style={styles.roleEmoji}>🔧</Text>
-              <Text style={[styles.roleBtnText, role === 'worker' && { color: Colors.warning }]}>
-                {tr.worker}
-              </Text>
-            </TouchableOpacity>
-          </View>
 
           <Text style={styles.label}>{tr.email}</Text>
           <TextInput
@@ -124,9 +91,9 @@ export default function LoginScreen() {
           />
 
           <TouchableOpacity
-            style={[styles.btn, role === 'worker' && styles.btnWorker, Shadow.primary]}
+            style={[styles.btn, Shadow.primary]}
             onPress={handleLogin}
-            disabled={busy}
+            disabled={busy || loading}
           >
             {busy ? (
               <ActivityIndicator color={Colors.background} />
@@ -141,20 +108,9 @@ export default function LoginScreen() {
             <View style={styles.dividerLine} />
           </View>
 
-          <TouchableOpacity
-            style={styles.secondaryBtn}
-            onPress={() => router.replace('/signup')}
-          >
-            <Text style={styles.secondaryBtnText}>Naya Account Banayein</Text>
-          </TouchableOpacity>
-        </View>
           <TouchableOpacity style={styles.secondaryBtn} onPress={() => router.push('/signup')}>
             <Text style={styles.secondaryBtnText}>{tr.signupBtn}</Text>
           </TouchableOpacity>
-        </View>
-
-        <View style={styles.demoHint}>
-          <Text style={styles.demoText}>Demo: koi bhi email/password use karein</Text>
         </View>
       </ScrollView>
 
@@ -198,35 +154,18 @@ const styles = StyleSheet.create({
   card: { backgroundColor: Colors.surface, borderRadius: Radius.xl, padding: Spacing.lg, borderWidth: 1, borderColor: Colors.border },
   heading: { fontSize: FontSize.xxl, fontWeight: '800', color: Colors.textPrimary, marginBottom: 4 },
   sub: { fontSize: FontSize.sm, color: Colors.textMuted, marginBottom: Spacing.md },
-  roleLabel: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.textSecondary, marginBottom: Spacing.sm },
-  roleRow: { flexDirection: 'row', gap: Spacing.sm, marginBottom: Spacing.md },
-  roleBtn: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md, padding: Spacing.sm,
-    borderWidth: 1.5, borderColor: Colors.border,
-  },
-  roleBtnActive: { borderColor: Colors.primary, backgroundColor: Colors.primaryDim },
-  roleBtnWorker: {},
-  roleBtnWorkerActive: { borderColor: Colors.warning, backgroundColor: '#FFFBEB' },
-  roleEmoji: { fontSize: 16 },
-  roleBtnText: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.textSecondary },
-  roleBtnTextActive: { color: Colors.primary },
   label: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.textSecondary, marginBottom: 6 },
   input: {
     backgroundColor: Colors.inputBg, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border,
     padding: Spacing.md, fontSize: FontSize.md, color: Colors.textPrimary, marginBottom: Spacing.md,
   },
   btn: { backgroundColor: Colors.primary, borderRadius: Radius.md, padding: Spacing.md, alignItems: 'center', marginTop: Spacing.sm },
-  btnWorker: { backgroundColor: Colors.warning },
   btnText: { color: Colors.background, fontSize: FontSize.md, fontWeight: '800' },
   dividerRow: { flexDirection: 'row', alignItems: 'center', marginVertical: Spacing.md },
   dividerLine: { flex: 1, height: 1, backgroundColor: Colors.border },
   dividerText: { color: Colors.textMuted, fontSize: FontSize.sm, marginHorizontal: Spacing.sm },
   secondaryBtn: { borderRadius: Radius.md, borderWidth: 1.5, borderColor: Colors.primary, padding: Spacing.md, alignItems: 'center' },
   secondaryBtnText: { color: Colors.primary, fontSize: FontSize.md, fontWeight: '700' },
-  demoHint: { marginTop: Spacing.lg, alignItems: 'center' },
-  demoText: { fontSize: FontSize.xs, color: Colors.textMuted, textAlign: 'center' },
-  // Modal
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   modalSheet: { backgroundColor: Colors.surface, borderTopLeftRadius: Radius.xl, borderTopRightRadius: Radius.xl, padding: Spacing.lg, paddingBottom: 40 },
   modalTitle: { fontSize: FontSize.lg, fontWeight: '800', color: Colors.textPrimary, marginBottom: Spacing.md, textAlign: 'center' },

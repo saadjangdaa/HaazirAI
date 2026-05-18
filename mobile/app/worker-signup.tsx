@@ -1,14 +1,9 @@
 import React, { useState } from 'react';
 import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  StyleSheet,
-  ScrollView,
-  Alert,
-  ActivityIndicator,
+  View, Text, TextInput, TouchableOpacity, StyleSheet,
+  ScrollView, Alert, ActivityIndicator, Image,
 } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../constants/theme';
@@ -24,20 +19,104 @@ const SPECIALIZATIONS = [
   { label: 'CCTV/Security', icon: '📷' },
   { label: 'Tutor', icon: '📚' },
   { label: 'Beautician', icon: '💄' },
+  { label: 'Welder', icon: '🔩' },
+  { label: 'Cleaner', icon: '🧹' },
 ];
 
 const CITIES = ['Islamabad', 'Rawalpindi', 'Lahore', 'Karachi', 'Peshawar', 'Multan', 'Faisalabad'];
+
+async function pickImage(label: string): Promise<string | null> {
+  const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+  if (status !== 'granted') {
+    Alert.alert('Permission chahiye', `${label} upload karne ke liye gallery access allow karein`);
+    return null;
+  }
+  const result = await ImagePicker.launchImageLibraryAsync({
+    mediaTypes: ImagePicker.MediaTypeOptions.Images,
+    allowsEditing: true,
+    quality: 0.7,
+    aspect: [16, 9],
+  });
+  if (result.canceled) return null;
+  return result.assets[0]?.uri ?? null;
+}
+
+async function takePhoto(label: string): Promise<string | null> {
+  const { status } = await ImagePicker.requestCameraPermissionsAsync();
+  if (status !== 'granted') {
+    Alert.alert('Permission chahiye', `Camera access allow karein`);
+    return null;
+  }
+  const result = await ImagePicker.launchCameraAsync({
+    allowsEditing: true,
+    quality: 0.7,
+    aspect: [16, 9],
+  });
+  if (result.canceled) return null;
+  return result.assets[0]?.uri ?? null;
+}
+
+function PhotoPicker({
+  label, uri, onPick,
+}: {
+  label: string;
+  uri: string | null;
+  onPick: (uri: string) => void;
+}) {
+  const handlePress = () => {
+    Alert.alert(label, 'Kahan se upload karein?', [
+      {
+        text: '📷 Camera',
+        onPress: async () => {
+          const u = await takePhoto(label);
+          if (u) onPick(u);
+        },
+      },
+      {
+        text: '🖼 Gallery',
+        onPress: async () => {
+          const u = await pickImage(label);
+          if (u) onPick(u);
+        },
+      },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
+
+  return (
+    <TouchableOpacity style={[styles.photoPicker, uri && styles.photoPickerDone]} onPress={handlePress}>
+      {uri ? (
+        <>
+          <Image source={{ uri }} style={styles.photoPreview} resizeMode="cover" />
+          <View style={styles.photoOverlay}>
+            <Text style={styles.photoOverlayText}>✓ {label}</Text>
+            <Text style={styles.photoChangeText}>Tap to change</Text>
+          </View>
+        </>
+      ) : (
+        <View style={styles.photoEmpty}>
+          <Text style={styles.photoEmptyIcon}>📋</Text>
+          <Text style={styles.photoEmptyLabel}>{label}</Text>
+          <Text style={styles.photoEmptySub}>Camera ya Gallery se</Text>
+        </View>
+      )}
+    </TouchableOpacity>
+  );
+}
 
 export default function WorkerSignupScreen() {
   const router = useRouter();
   const { completeWorkerSignup } = useAuth();
   const insets = useSafeAreaInsets();
+
   const [selectedSpecs, setSelectedSpecs] = useState<string[]>([]);
   const [selectedCities, setSelectedCities] = useState<string[]>([]);
   const [price, setPrice] = useState('');
   const [experience, setExperience] = useState('');
   const [cnic, setCnic] = useState('');
   const [phone, setPhone] = useState('');
+  const [cnicFront, setCnicFront] = useState<string | null>(null);
+  const [cnicBack, setCnicBack] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const toggleSpec = (s: string) =>
@@ -60,8 +139,20 @@ export default function WorkerSignupScreen() {
       Alert.alert('City chunein', 'Kahan kaam karte hain?');
       return;
     }
-    if (!cnic.trim() || !phone.trim()) {
-      Alert.alert('Details incomplete', 'CNIC aur phone number daalna zaroori hai');
+    if (!phone.trim()) {
+      Alert.alert('Phone number', 'Mobile number daalna zaroori hai');
+      return;
+    }
+    if (!cnic.trim()) {
+      Alert.alert('CNIC', 'CNIC number daalna zaroori hai');
+      return;
+    }
+    if (!cnicFront) {
+      Alert.alert('CNIC Front', 'CNIC front ki photo upload karein');
+      return;
+    }
+    if (!cnicBack) {
+      Alert.alert('CNIC Back', 'CNIC back ki photo upload karein');
       return;
     }
 
@@ -86,10 +177,14 @@ export default function WorkerSignupScreen() {
   };
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
+    <ScrollView
+      style={styles.root}
+      contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 32 }]}
+    >
       <Text style={styles.heading}>Worker Registration</Text>
-      <Text style={styles.sub}>Step 2 — skills, areas, aur verification details</Text>
+      <Text style={styles.sub}>Step 2 — skills, areas, aur verification</Text>
 
+      {/* Skills */}
       <Text style={styles.section}>Aapki Skills *</Text>
       <View style={styles.chipGrid}>
         {SPECIALIZATIONS.map(({ label, icon }) => {
@@ -107,6 +202,7 @@ export default function WorkerSignupScreen() {
         })}
       </View>
 
+      {/* Cities */}
       <Text style={styles.section}>Kahan Kaam Karte Hain? *</Text>
       <View style={styles.chipGrid}>
         {CITIES.map((c) => {
@@ -123,7 +219,8 @@ export default function WorkerSignupScreen() {
         })}
       </View>
 
-      <Text style={styles.label}>Phone Number *</Text>
+      {/* Phone */}
+      <Text style={styles.label}>Mobile Number *</Text>
       <TextInput
         style={styles.input}
         placeholder="03001234567"
@@ -134,6 +231,7 @@ export default function WorkerSignupScreen() {
         maxLength={15}
       />
 
+      {/* CNIC number */}
       <Text style={styles.label}>CNIC Number *</Text>
       <TextInput
         style={styles.input}
@@ -145,6 +243,22 @@ export default function WorkerSignupScreen() {
         maxLength={15}
       />
 
+      {/* CNIC Photos */}
+      <Text style={styles.section}>CNIC Photos *</Text>
+      <Text style={styles.sectionSub}>Identity verification ke liye zarori hai</Text>
+      <View style={styles.photoRow}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.photoLabel}>Front Side</Text>
+          <PhotoPicker label="CNIC Front" uri={cnicFront} onPick={setCnicFront} />
+        </View>
+        <View style={{ width: Spacing.sm }} />
+        <View style={{ flex: 1 }}>
+          <Text style={styles.photoLabel}>Back Side</Text>
+          <PhotoPicker label="CNIC Back" uri={cnicBack} onPick={setCnicBack} />
+        </View>
+      </View>
+
+      {/* Experience + Price */}
       <View style={styles.row}>
         <View style={{ flex: 1 }}>
           <Text style={styles.label}>Average Price (Rs)</Text>
@@ -171,6 +285,7 @@ export default function WorkerSignupScreen() {
         </View>
       </View>
 
+      {/* Trust card */}
       <View style={styles.trustCard}>
         <Text style={styles.trustTitle}>🛡️ Background Verification</Text>
         <Text style={styles.trustText}>
@@ -196,65 +311,58 @@ export default function WorkerSignupScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: Colors.background },
-  content: { padding: Spacing.md, paddingBottom: 48 },
+  content: { padding: Spacing.md },
   heading: { fontSize: FontSize.xl, fontWeight: '800', color: Colors.textPrimary, marginBottom: 4 },
   sub: { fontSize: FontSize.sm, color: Colors.textMuted, marginBottom: Spacing.lg },
-  section: {
-    fontSize: FontSize.md,
-    fontWeight: '700',
-    color: Colors.textPrimary,
-    marginBottom: Spacing.sm,
-    marginTop: Spacing.md,
-  },
+  section: { fontSize: FontSize.md, fontWeight: '700', color: Colors.textPrimary, marginBottom: 4, marginTop: Spacing.md },
+  sectionSub: { fontSize: FontSize.xs, color: Colors.textMuted, marginBottom: Spacing.sm },
   chipGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, marginBottom: Spacing.sm },
   chip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: Colors.surface,
-    borderRadius: Radius.full,
-    borderWidth: 1.5,
-    borderColor: Colors.border,
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: 6,
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: Colors.surface, borderRadius: Radius.full,
+    borderWidth: 1.5, borderColor: Colors.border,
+    paddingHorizontal: Spacing.sm, paddingVertical: 6,
   },
   chipActive: { backgroundColor: '#FFFBEB', borderColor: Colors.warning },
   chipIcon: { fontSize: 14 },
   chipText: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: '600' },
   chipTextActive: { color: Colors.warning },
-  label: {
-    fontSize: FontSize.sm,
-    fontWeight: '600',
-    color: Colors.textSecondary,
-    marginBottom: 6,
-    marginTop: Spacing.sm,
-  },
+  label: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.textSecondary, marginBottom: 6, marginTop: Spacing.sm },
   input: {
-    backgroundColor: Colors.inputBg,
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    padding: Spacing.md,
-    fontSize: FontSize.md,
-    color: Colors.textPrimary,
+    backgroundColor: Colors.inputBg, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border,
+    padding: Spacing.md, fontSize: FontSize.md, color: Colors.textPrimary,
   },
-  row: { flexDirection: 'row' },
+  row: { flexDirection: 'row', marginTop: Spacing.sm },
+  // CNIC photos
+  photoRow: { flexDirection: 'row', marginBottom: Spacing.sm },
+  photoLabel: { fontSize: FontSize.xs, fontWeight: '600', color: Colors.textSecondary, marginBottom: 6 },
+  photoPicker: {
+    height: 110, borderRadius: Radius.lg, borderWidth: 1.5, borderColor: Colors.border,
+    borderStyle: 'dashed', overflow: 'hidden', backgroundColor: Colors.surface,
+    justifyContent: 'center', alignItems: 'center',
+  },
+  photoPickerDone: { borderStyle: 'solid', borderColor: Colors.primary },
+  photoPreview: { width: '100%', height: '100%', position: 'absolute' },
+  photoOverlay: {
+    position: 'absolute', bottom: 0, left: 0, right: 0,
+    backgroundColor: 'rgba(0,0,0,0.55)', padding: 6, alignItems: 'center',
+  },
+  photoOverlayText: { color: '#fff', fontSize: FontSize.xs, fontWeight: '700' },
+  photoChangeText: { color: '#ccc', fontSize: 10, marginTop: 1 },
+  photoEmpty: { alignItems: 'center', gap: 4 },
+  photoEmptyIcon: { fontSize: 28 },
+  photoEmptyLabel: { fontSize: FontSize.xs, fontWeight: '700', color: Colors.textSecondary },
+  photoEmptySub: { fontSize: 10, color: Colors.textMuted },
+  // Trust card
   trustCard: {
-    backgroundColor: '#E0F2FE',
-    borderRadius: Radius.lg,
-    padding: Spacing.md,
-    marginVertical: Spacing.md,
-    borderWidth: 1,
-    borderColor: '#0284C733',
+    backgroundColor: '#E0F2FE', borderRadius: Radius.lg, padding: Spacing.md,
+    marginVertical: Spacing.md, borderWidth: 1, borderColor: '#0284C733',
   },
   trustTitle: { fontSize: FontSize.sm, fontWeight: '700', color: '#0369A1', marginBottom: 4 },
   trustText: { fontSize: FontSize.xs, color: '#0369A1', lineHeight: 18 },
   btn: {
-    backgroundColor: Colors.warning,
-    borderRadius: Radius.md,
-    padding: Spacing.md,
-    alignItems: 'center',
-    marginTop: Spacing.sm,
+    backgroundColor: Colors.warning, borderRadius: Radius.md, padding: Spacing.md,
+    alignItems: 'center', marginTop: Spacing.sm,
   },
   btnText: { color: Colors.background, fontSize: FontSize.md, fontWeight: '800' },
 });
