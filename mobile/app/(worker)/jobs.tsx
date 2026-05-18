@@ -1,34 +1,133 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View, Text, TouchableOpacity, ScrollView, StyleSheet, Switch,
+  ActivityIndicator, Alert, RefreshControl,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useFocusEffect } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../../constants/theme';
 import { useAuth } from '../../context/AuthContext';
-
-const ACTIVE_JOBS = [
-  { svc: 'AC Service', who: 'Fatima · G-10', time: '12:30 PM', status: 'En Route', price: 'Rs 1,200' },
-  { svc: 'Electrician', who: 'Bilal · F-7', time: '3:00 PM', status: 'Pending', price: 'Rs 800' },
-];
+import {
+  formatApiError,
+  getWorkerBookings,
+  requireUserId,
+  updateBookingStatus,
+  UserBooking,
+} from '../../services/api';
+import {
+  formatWorkerPrice,
+  formatWorkerTime,
+  isActiveWorkerStatus,
+  isOfferStatus,
+  WORKER_STATUS_LABEL,
+} from '../../utils/workerBookings';
 
 export default function WorkerJobsScreen() {
   const { user } = useAuth();
   const [online, setOnline] = useState(true);
-  const [accepted, setAccepted] = useState(false);
+  const [bookings, setBookings] = useState<UserBooking[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [acceptedId, setAcceptedId] = useState<string | null>(null);
   const [countdown, setCountdown] = useState(59);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    if (!user?.id) {
+      setBookings([]);
+      setLoading(false);
+      return;
+    }
+    try {
+      const uid = requireUserId(user);
+      const res = await getWorkerBookings(uid);
+      setBookings(res.bookings || []);
+    } catch (e) {
+      setBookings([]);
+      Alert.alert('Jobs load nahi hue', formatApiError(e));
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, [user?.id]);
+
+  useFocusEffect(
+    useCallback(() => {
+      setLoading(true);
+      load();
+    }, [load])
+  );
+
+  const offer = useMemo(
+    () => bookings.find((b) => isOfferStatus(b.status) && b.booking_id !== acceptedId),
+    [bookings, acceptedId]
+  );
+
+  const activeJobs = useMemo(
+    () =>
+      bookings.filter(
+        (b) =>
+          isActiveWorkerStatus(b.status) &&
+          b.booking_id !== offer?.booking_id &&
+          (!isOfferStatus(b.status) || b.booking_id === acceptedId)
+      ),
+    [bookings, offer, acceptedId]
+  );
 
   useEffect(() => {
-    if (accepted) return;
+    if (!offer || acceptedId) return;
+    setCountdown(59);
     const t = setInterval(() => setCountdown((s) => (s > 0 ? s - 1 : 0)), 1000);
     return () => clearInterval(t);
-  }, [accepted]);
+  }, [offer?.booking_id, acceptedId]);
 
-  const displayName = user?.name || 'Worker';
+  const handleAccept = async () => {
+    if (!offer?.booking_id) return;
+    setBusy(true);
+    try {
+      await updateBookingStatus(offer.booking_id, 'confirmed');
+      setAcceptedId(offer.booking_id);
+      await load();
+    } catch (e) {
+      Alert.alert('Accept failed', formatApiError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDecline = async () => {
+    if (!offer?.booking_id) return;
+    setBusy(true);
+    try {
+      await updateBookingStatus(offer.booking_id, 'cancelled');
+      setCountdown(0);
+      await load();
+    } catch (e) {
+      Alert.alert('Decline failed', formatApiError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const displayName = user?.username || user?.email?.split('@')[0] || 'Worker';
   const insets = useSafeAreaInsets();
 
+  if (loading && bookings.length === 0) {
+    return (
+      <View style={styles.center}>
+        <ActivityIndicator size="large" color={Colors.primary} />
+      </View>
+    );
+  }
+
   return (
-    <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
-      {/* Header */}
+    <ScrollView
+      style={styles.root}
+      contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
+      refreshControl={
+        <RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} />
+      }
+    >
       <View style={styles.header}>
         <View style={styles.headerLeft}>
           <View style={styles.avatarBox}><Text style={styles.avatarIcon}>🔧</Text></View>
@@ -58,8 +157,7 @@ export default function WorkerJobsScreen() {
         <Text style={[styles.statusText, { color: Colors.textMuted }]}>Aap Offline Hain — Online hojayein kaam pane ke liye</Text>
       )}
 
-      {/* New Job Notification */}
-      {online && !accepted && countdown > 0 && (
+      {online && offer && !acceptedId && countdown > 0 && (
         <View style={[styles.newJobCard, Shadow.card]}>
           <View style={styles.newJobHeader}>
             <View style={styles.newJobBadge}>
@@ -67,57 +165,73 @@ export default function WorkerJobsScreen() {
             </View>
             <Text style={styles.countdownText}>{countdown}s</Text>
           </View>
-          <Text style={styles.newJobTitle}>AC Repair (Complex ⚙️)</Text>
-          <Text style={styles.newJobMeta}>Ahmed · G-13 · 1.8km · Kal 10:00 AM</Text>
+          <Text style={styles.newJobTitle}>{offer.service || 'Service'}</Text>
+          <Text style={styles.newJobMeta}>{formatWorkerTime(offer)}</Text>
           <View style={styles.newJobPriceRow}>
             <Text style={styles.newJobPriceLabel}>Offered:</Text>
-            <Text style={styles.newJobPrice}>Rs 900</Text>
+            <Text style={styles.newJobPrice}>{formatWorkerPrice(offer.price)}</Text>
           </View>
           <View style={styles.newJobBtns}>
-            <TouchableOpacity style={[styles.acceptBtn, Shadow.primary]} onPress={() => setAccepted(true)}>
-              <Text style={styles.acceptBtnText}>✅ Accept</Text>
+            <TouchableOpacity
+              style={[styles.acceptBtn, Shadow.primary]}
+              onPress={handleAccept}
+              disabled={busy}
+            >
+              <Text style={styles.acceptBtnText}>{busy ? '...' : '✅ Accept'}</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.declineBtn} onPress={() => setCountdown(0)}>
+            <TouchableOpacity style={styles.declineBtn} onPress={handleDecline} disabled={busy}>
               <Text style={styles.declineBtnText}>❌ Decline</Text>
             </TouchableOpacity>
           </View>
         </View>
       )}
 
-      {accepted && (
+      {acceptedId && (
         <View style={[styles.acceptedCard, Shadow.card]}>
           <Text style={styles.acceptedText}>✅ Kaam Accept Ho Gaya!</Text>
-          <Text style={styles.acceptedMeta}>AC Repair · Ahmed · G-13 · Kal 10:00 AM</Text>
+          <Text style={styles.acceptedMeta}>
+            {bookings.find((b) => b.booking_id === acceptedId)?.service || 'Booking'} ·{' '}
+            {formatWorkerTime(bookings.find((b) => b.booking_id === acceptedId) || {})}
+          </Text>
         </View>
       )}
 
-      {/* Conflict warning */}
-      <View style={styles.warningCard}>
-        <Text style={styles.warningText}>
-          ⚠️ Ye slot aapke doosre kaam se overlap kar raha hai — 11 AM lein?
-        </Text>
-      </View>
-
-      {/* Active Jobs */}
-      <Text style={styles.sectionTitle}>Active Jobs</Text>
-      {ACTIVE_JOBS.map((job, i) => (
-        <View key={i} style={[styles.jobCard, Shadow.card]}>
-          <View style={styles.jobRow}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.jobSvc}>{job.svc}</Text>
-              <Text style={styles.jobMeta}>{job.who} · {job.time}</Text>
-            </View>
-            <View style={{ alignItems: 'flex-end' }}>
-              <View style={[styles.statusBadge, job.status === 'En Route' ? styles.statusGreen : styles.statusGray]}>
-                <Text style={[styles.statusBadgeText, { color: job.status === 'En Route' ? Colors.primary : Colors.textMuted }]}>
-                  {job.status}
-                </Text>
-              </View>
-              <Text style={styles.jobPrice}>{job.price}</Text>
-            </View>
-          </View>
+      {activeJobs.length > 1 && (
+        <View style={styles.warningCard}>
+          <Text style={styles.warningText}>
+            ⚠️ Aapke paas {activeJobs.length} active bookings hain — schedule check karein
+          </Text>
         </View>
-      ))}
+      )}
+
+      <Text style={styles.sectionTitle}>Active Jobs</Text>
+      {activeJobs.length === 0 ? (
+        <Text style={styles.emptyText}>Koi active job nahi — naye offers yahan dikhenge</Text>
+      ) : (
+        activeJobs.map((job) => {
+          const st = (job.status || 'pending').toLowerCase();
+          const label = WORKER_STATUS_LABEL[st] || st;
+          const enRoute = ['on_the_way', 'arrived', 'in_progress'].includes(st);
+          return (
+            <View key={job.booking_id} style={[styles.jobCard, Shadow.card]}>
+              <View style={styles.jobRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.jobSvc}>{job.service || 'Service'}</Text>
+                  <Text style={styles.jobMeta}>{formatWorkerTime(job)}</Text>
+                </View>
+                <View style={{ alignItems: 'flex-end' }}>
+                  <View style={[styles.statusBadge, enRoute ? styles.statusGreen : styles.statusGray]}>
+                    <Text style={[styles.statusBadgeText, { color: enRoute ? Colors.primary : Colors.textMuted }]}>
+                      {label}
+                    </Text>
+                  </View>
+                  <Text style={styles.jobPrice}>{formatWorkerPrice(job.price)}</Text>
+                </View>
+              </View>
+            </View>
+          );
+        })
+      )}
     </ScrollView>
   );
 }
@@ -125,6 +239,7 @@ export default function WorkerJobsScreen() {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: Colors.background },
   content: { padding: Spacing.md, paddingBottom: 48 },
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: Colors.background },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.sm },
   headerLeft: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
   avatarBox: { width: 40, height: 40, borderRadius: Radius.md, backgroundColor: '#FFFBEB', justifyContent: 'center', alignItems: 'center' },
@@ -155,6 +270,7 @@ const styles = StyleSheet.create({
   warningCard: { backgroundColor: '#FFFBEB', borderRadius: Radius.md, padding: Spacing.sm, marginBottom: Spacing.md, borderWidth: 1, borderColor: Colors.warning + '44' },
   warningText: { fontSize: FontSize.xs, color: Colors.warning },
   sectionTitle: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.textMuted, textTransform: 'uppercase', letterSpacing: 1, marginBottom: Spacing.sm },
+  emptyText: { fontSize: FontSize.sm, color: Colors.textMuted, marginBottom: Spacing.md },
   jobCard: { backgroundColor: Colors.cardBg, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.border, padding: Spacing.md, marginBottom: Spacing.sm },
   jobRow: { flexDirection: 'row', alignItems: 'center' },
   jobSvc: { fontSize: FontSize.md, fontWeight: '700', color: Colors.textPrimary },

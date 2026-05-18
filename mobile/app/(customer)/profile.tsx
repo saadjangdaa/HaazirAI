@@ -18,7 +18,7 @@ export default function CustomerProfileScreen() {
   const { user, signOut } = useAuth();
 
   const insets = useSafeAreaInsets();
-  const displayName = user?.name || 'Ahmed Khan';
+  const displayName = user?.username || user?.email?.split('@')[0] || 'User';
   const initial = displayName.charAt(0).toUpperCase();
 
   const handleLogout = () => {
@@ -38,7 +38,14 @@ export default function CustomerProfileScreen() {
           </View>
           <View style={{ flex: 1 }}>
             <Text style={styles.profileName}>{displayName}</Text>
-            <Text style={styles.profileMeta}>G-13, Islamabad · Member since 2024</Text>
+            <Text style={styles.profileMeta}>{user?.email}</Text>
+            {user?.phone ? <Text style={styles.profileMeta}>📱 {user.phone}</Text> : null}
+            {user?.cnic ? <Text style={styles.profileMeta}>🪪 CNIC ····{user.cnic.slice(-4)}</Text> : null}
+            {!user?.profileComplete ? (
+              <TouchableOpacity onPress={() => router.push('/signup')}>
+                <Text style={styles.completeLink}>Complete profile →</Text>
+              </TouchableOpacity>
+            ) : null}
             <View style={styles.loyalBadge}>
               <Text style={styles.loyalText}>Loyal Customer ⭐</Text>
             </View>
@@ -108,6 +115,7 @@ const styles = StyleSheet.create({
   avatarText: { fontSize: FontSize.xxl, fontWeight: '800', color: Colors.primary },
   profileName: { fontSize: FontSize.lg, fontWeight: '800', color: Colors.textPrimary },
   profileMeta: { fontSize: FontSize.xs, color: Colors.textMuted, marginTop: 2, marginBottom: Spacing.xs },
+  completeLink: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: '700', marginTop: 4 },
   loyalBadge: { backgroundColor: Colors.surfaceElevated, borderRadius: Radius.full, paddingHorizontal: 8, paddingVertical: 3, alignSelf: 'flex-start' },
   loyalText: { fontSize: FontSize.xs, fontWeight: '700', color: Colors.primary },
   statsCard: { backgroundColor: Colors.surface, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.border, padding: Spacing.md, marginBottom: Spacing.md },

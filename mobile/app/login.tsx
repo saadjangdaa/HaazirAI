@@ -7,10 +7,12 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
+import { formatAuthError } from '../utils/authErrors';
+import { formatAuthBootstrapError } from '../context/AuthContext';
 
 export default function LoginScreen() {
   const router = useRouter();
-  const { signIn, loading } = useAuth();
+  const { signIn } = useAuth();
   const insets = useSafeAreaInsets();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -24,8 +26,12 @@ export default function LoginScreen() {
     setBusy(true);
     try {
       await signIn(email.trim(), password);
-    } catch {
-      Alert.alert('Login fail', 'Email ya password galat hai');
+    } catch (e) {
+      const msg =
+        (e as { code?: string })?.code?.startsWith('auth/')
+          ? formatAuthError(e)
+          : formatAuthBootstrapError(e);
+      Alert.alert('Login fail', msg);
     } finally {
       setBusy(false);
     }
@@ -74,7 +80,7 @@ export default function LoginScreen() {
           <TouchableOpacity
             style={[styles.btn, Shadow.primary]}
             onPress={handleLogin}
-            disabled={busy || loading}
+            disabled={busy}
           >
             {busy ? (
               <ActivityIndicator color={Colors.background} />
@@ -91,16 +97,10 @@ export default function LoginScreen() {
 
           <TouchableOpacity
             style={styles.secondaryBtn}
-            onPress={() => router.push('/signup')}
+            onPress={() => router.replace('/signup')}
           >
             <Text style={styles.secondaryBtnText}>Naya Account Banayein</Text>
           </TouchableOpacity>
-        </View>
-
-        {/* Demo hint */}
-        <View style={styles.demoHint}>
-          <Text style={styles.demoText}>Demo: koi bhi email/password use karein</Text>
-          <Text style={styles.demoText}>Worker ke liye: worker@test.com → Signup se role chunein</Text>
         </View>
       </ScrollView>
     </KeyboardAvoidingView>

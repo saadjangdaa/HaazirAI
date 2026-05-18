@@ -1,12 +1,21 @@
 import React, { useState } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity, StyleSheet,
-  ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView, Alert,
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  StyleSheet,
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  Alert,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../constants/theme';
-import { useAuth, UserRole } from '../context/AuthContext';
+import { useAuth, UserRole, formatAuthBootstrapError } from '../context/AuthContext';
+import { formatAuthError } from '../utils/authErrors';
 
 export default function SignupScreen() {
   const router = useRouter();
@@ -32,9 +41,15 @@ export default function SignupScreen() {
       await signUp(email.trim(), password, name.trim(), role);
       if (role === 'worker') {
         router.replace('/worker-signup');
+      } else {
+        router.replace('/');
       }
-    } catch {
-      Alert.alert('Error', 'Account nahi ban saka, dobara koshish karein');
+    } catch (e) {
+      const msg =
+        (e as { code?: string })?.code?.startsWith('auth/')
+          ? formatAuthError(e)
+          : formatAuthBootstrapError(e);
+      Alert.alert('Error', msg);
     } finally {
       setBusy(false);
     }
@@ -49,7 +64,6 @@ export default function SignupScreen() {
         <Text style={styles.heading}>Account Banayein</Text>
         <Text style={styles.sub}>Haazir AI pe apna safar shuru karein</Text>
 
-        {/* Role Selector */}
         <Text style={styles.label}>Aap kaun hain?</Text>
         <View style={styles.roleRow}>
           <TouchableOpacity
@@ -57,7 +71,9 @@ export default function SignupScreen() {
             onPress={() => setRole('customer')}
           >
             <Text style={styles.roleEmoji}>🏠</Text>
-            <Text style={[styles.roleTitle, role === 'customer' && styles.roleTitleActive]}>Customer</Text>
+            <Text style={[styles.roleTitle, role === 'customer' && styles.roleTitleActive]}>
+              Customer
+            </Text>
             <Text style={styles.roleDesc}>Ghar ka kaam karwana hai</Text>
           </TouchableOpacity>
           <TouchableOpacity
@@ -65,7 +81,9 @@ export default function SignupScreen() {
             onPress={() => setRole('worker')}
           >
             <Text style={styles.roleEmoji}>🔧</Text>
-            <Text style={[styles.roleTitle, role === 'worker' && styles.roleTitleWorker]}>Worker</Text>
+            <Text style={[styles.roleTitle, role === 'worker' && styles.roleTitleWorker]}>
+              Worker
+            </Text>
             <Text style={styles.roleDesc}>Kaam dhoondna hai, kamai karni hai</Text>
           </TouchableOpacity>
         </View>
@@ -78,7 +96,6 @@ export default function SignupScreen() {
           </View>
         )}
 
-        {/* Fields */}
         <Text style={styles.label}>Poora Naam</Text>
         <TextInput
           style={styles.input}
@@ -124,7 +141,7 @@ export default function SignupScreen() {
           )}
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.loginLink} onPress={() => router.back()}>
+        <TouchableOpacity style={styles.loginLink} onPress={() => router.replace('/login')}>
           <Text style={styles.loginLinkText}>Pehle se account hai? Login karein</Text>
         </TouchableOpacity>
       </ScrollView>
@@ -135,17 +152,40 @@ export default function SignupScreen() {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: Colors.background },
   scroll: { flexGrow: 1, padding: Spacing.lg, paddingBottom: Spacing.xxl },
-  heading: { fontSize: FontSize.xxl, fontWeight: '800', color: Colors.textPrimary, marginBottom: 4, marginTop: Spacing.md },
+  heading: {
+    fontSize: FontSize.xxl,
+    fontWeight: '800',
+    color: Colors.textPrimary,
+    marginBottom: 4,
+    marginTop: Spacing.md,
+  },
   sub: { fontSize: FontSize.sm, color: Colors.textMuted, marginBottom: Spacing.lg },
-  label: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.textSecondary, marginBottom: 6, marginTop: Spacing.sm },
+  label: {
+    fontSize: FontSize.sm,
+    fontWeight: '600',
+    color: Colors.textSecondary,
+    marginBottom: 6,
+    marginTop: Spacing.sm,
+  },
   input: {
-    backgroundColor: Colors.inputBg, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border,
-    padding: Spacing.md, fontSize: FontSize.md, color: Colors.textPrimary, marginBottom: Spacing.sm,
+    backgroundColor: Colors.inputBg,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    padding: Spacing.md,
+    fontSize: FontSize.md,
+    color: Colors.textPrimary,
+    marginBottom: Spacing.sm,
   },
   roleRow: { flexDirection: 'row', gap: Spacing.sm, marginBottom: Spacing.sm },
   roleCard: {
-    flex: 1, backgroundColor: Colors.surface, borderRadius: Radius.lg, padding: Spacing.md,
-    alignItems: 'center', borderWidth: 1.5, borderColor: Colors.border,
+    flex: 1,
+    backgroundColor: Colors.surface,
+    borderRadius: Radius.lg,
+    padding: Spacing.md,
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: Colors.border,
   },
   roleCardActive: { borderColor: Colors.primary, backgroundColor: Colors.surfaceElevated },
   roleCardWorker: { borderColor: Colors.warning, backgroundColor: '#FFFBEB' },
@@ -154,9 +194,22 @@ const styles = StyleSheet.create({
   roleTitleActive: { color: Colors.primary },
   roleTitleWorker: { color: Colors.warning },
   roleDesc: { fontSize: FontSize.xs, color: Colors.textMuted, textAlign: 'center', marginTop: 2 },
-  workerNotice: { backgroundColor: '#FFFBEB', borderRadius: Radius.md, padding: Spacing.sm, marginBottom: Spacing.sm, borderWidth: 1, borderColor: Colors.warning + '66' },
+  workerNotice: {
+    backgroundColor: '#FFFBEB',
+    borderRadius: Radius.md,
+    padding: Spacing.sm,
+    marginBottom: Spacing.sm,
+    borderWidth: 1,
+    borderColor: Colors.warning + '66',
+  },
   workerNoticeText: { color: Colors.warning, fontSize: FontSize.xs, textAlign: 'center' },
-  btn: { backgroundColor: Colors.primary, borderRadius: Radius.md, padding: Spacing.md, alignItems: 'center', marginTop: Spacing.md },
+  btn: {
+    backgroundColor: Colors.primary,
+    borderRadius: Radius.md,
+    padding: Spacing.md,
+    alignItems: 'center',
+    marginTop: Spacing.md,
+  },
   btnWorker: { backgroundColor: Colors.warning },
   btnText: { color: Colors.background, fontSize: FontSize.md, fontWeight: '800' },
   loginLink: { marginTop: Spacing.lg, alignItems: 'center' },

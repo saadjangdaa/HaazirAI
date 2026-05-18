@@ -17,7 +17,7 @@ TIME_PREF_TO_SLOT = {
 class PakkaAgent:
 
     async def create_booking(
-        self, intent: dict, provider: dict, pricing: dict, user_id: str = "user_001"
+        self, intent: dict, provider: dict, pricing: dict, user_id: str
     ) -> dict:
         start = datetime.now()
 
@@ -80,7 +80,7 @@ class PakkaAgent:
             "scheduled_time": scheduled_time,
             "estimated_price": f"Rs. {total_price:,}",
             "payment_methods": ["JazzCash", "Easypaisa", "Cash"],
-            "status": "confirmed",
+            "status": "assigned",
             "emergency": is_emergency,
         }
 
@@ -105,11 +105,12 @@ class PakkaAgent:
         booking_data = {
             "booking_id": booking_id,
             "provider_id": provider_id,
+            "provider_name": provider_name,
             "user_id": user_id,
             "service": service,
             "scheduled_time": scheduled_time,
             "slot_time": scheduled_time,
-            "status": "confirmed",
+            "status": "assigned",
             "price": total_price,
             "reminder_sent": False,
             "emergency": is_emergency,

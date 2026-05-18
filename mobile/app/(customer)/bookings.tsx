@@ -1,112 +1,169 @@
-import React from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from 'react-native';
+import React, { useCallback, useState } from 'react';
+import {
+  View, Text, ScrollView, TouchableOpacity, StyleSheet,
+  ActivityIndicator, RefreshControl,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../../constants/theme';
+import { getUserBookings, UserBooking, formatApiError, requireUserId } from '../../services/api';
+import { useAuth } from '../../context/AuthContext';
 
-const BOOKINGS = [
-  {
-    svc: 'AC Repair',
-    who: 'Ali AC Tech',
-    when: '15 May, 10:00 AM',
-    status: 'En Route',
-    statusColor: Colors.primary,
-    statusBg: Colors.surfaceElevated,
-    price: 'Rs 900',
-    bookingId: 'HAZ-2024-0042',
-    active: true,
-  },
-  {
-    svc: 'Plumber',
-    who: 'Tariq Plumbing',
-    when: '12 May, 3:00 PM',
-    status: 'Completed ✅',
-    statusColor: Colors.textMuted,
-    statusBg: Colors.border,
-    price: 'Rs 600',
-    bookingId: 'HAZ-2024-0038',
-    active: false,
-  },
-  {
-    svc: 'Electrician',
-    who: 'City Fix',
-    when: '5 May, 11:00 AM',
-    status: 'Completed ✅',
-    statusColor: Colors.textMuted,
-    statusBg: Colors.border,
-    price: 'Rs 1,200',
-    bookingId: 'HAZ-2024-0031',
-    active: false,
-  },
-];
+const STATUS_LABEL: Record<string, string> = {
+  pending: 'Pending',
+  assigned: 'Provider assigned',
+  confirmed: 'Confirmed',
+  on_the_way: 'On the way',
+  arrived: 'Arrived',
+  in_progress: 'In progress',
+  completed: 'Completed',
+  cancelled: 'Cancelled',
+  disputed: 'Disputed',
+  refunded: 'Refunded',
+};
+
+function statusColors(status: string) {
+  const s = status.toLowerCase();
+  if (['completed', 'refunded'].includes(s)) {
+    return { color: Colors.success, bg: Colors.surfaceElevated };
+  }
+  if (['cancelled', 'disputed'].includes(s)) {
+    return { color: Colors.danger, bg: Colors.dangerDim };
+  }
+  if (['on_the_way', 'arrived', 'in_progress'].includes(s)) {
+    return { color: Colors.primary, bg: Colors.primaryDim };
+  }
+  return { color: Colors.warning, bg: Colors.surfaceElevated };
+}
+
+function isActive(status: string) {
+  return !['completed', 'cancelled', 'refunded', 'disputed'].includes(status.toLowerCase());
+}
 
 export default function BookingsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { user } = useAuth();
+  const [bookings, setBookings] = useState<UserBooking[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    if (!user?.id) {
+      setBookings([]);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const uid = requireUserId(user);
+      const rows = await getUserBookings(uid);
+      setBookings(rows);
+    } catch (e) {
+      setError(formatApiError(e));
+      setBookings([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [user?.id]);
+
+  useFocusEffect(
+    useCallback(() => {
+      load();
+    }, [load])
+  );
+
+  const activeCount = bookings.filter((b) => isActive(b.status)).length;
+  const totalSpent = bookings.reduce((sum, b) => sum + (Number(b.price) || 0), 0);
+
+  if (loading && bookings.length === 0) {
+    return (
+      <View style={styles.center}>
+        <ActivityIndicator color={Colors.primary} size="large" />
+        <Text style={styles.loadingText}>Bookings load ho rahi hain...</Text>
+      </View>
+    );
+  }
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
+    <ScrollView
+      style={styles.root}
+      contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
+      refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={Colors.primary} />}
+    >
       <Text style={styles.title}>Meri Bookings</Text>
 
-      {/* Summary strip */}
       <View style={styles.summaryRow}>
         <View style={styles.summaryItem}>
-          <Text style={[styles.summaryVal, { color: Colors.primary }]}>12</Text>
+          <Text style={[styles.summaryVal, { color: Colors.primary }]}>{bookings.length}</Text>
           <Text style={styles.summaryLabel}>Total</Text>
         </View>
         <View style={styles.summaryItem}>
-          <Text style={[styles.summaryVal, { color: Colors.warning }]}>1</Text>
+          <Text style={[styles.summaryVal, { color: Colors.warning }]}>{activeCount}</Text>
           <Text style={styles.summaryLabel}>Active</Text>
         </View>
         <View style={styles.summaryItem}>
-          <Text style={styles.summaryVal}>Rs 14k</Text>
+          <Text style={styles.summaryVal}>Rs {(totalSpent / 1000).toFixed(1)}k</Text>
           <Text style={styles.summaryLabel}>Spent</Text>
         </View>
-        <View style={styles.summaryItem}>
-          <Text style={[styles.summaryVal, { color: Colors.primary }]}>Rs 350</Text>
-          <Text style={styles.summaryLabel}>Saved</Text>
-        </View>
       </View>
 
-      {/* Booking cards */}
-      {BOOKINGS.map((b, i) => (
-        <View key={i} style={[styles.card, b.active && styles.cardActive, Shadow.card]}>
-          {b.active && (
-            <View style={styles.activeBadge}>
-              <View style={styles.activeDot} />
-              <Text style={styles.activeBadgeText}>Live</Text>
-            </View>
-          )}
-          <View style={styles.cardTop}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.cardSvc}>{b.svc}</Text>
-              <Text style={styles.cardWho}>{b.who} · {b.when}</Text>
-              <Text style={styles.cardId}>#{b.bookingId}</Text>
-            </View>
-            <View style={styles.cardRight}>
-              <View style={[styles.statusBadge, { backgroundColor: b.statusBg }]}>
-                <Text style={[styles.statusText, { color: b.statusColor }]}>{b.status}</Text>
+      {error && (
+        <TouchableOpacity style={styles.errorCard} onPress={load}>
+          <Text style={styles.errorText}>{error}</Text>
+          <Text style={styles.retryText}>Tap to retry</Text>
+        </TouchableOpacity>
+      )}
+
+      {!error && bookings.length === 0 && (
+        <View style={styles.emptyCard}>
+          <Text style={styles.emptyText}>Abhi koi booking nahi — home se service request karein.</Text>
+        </View>
+      )}
+
+      {bookings.map((b) => {
+        const sc = statusColors(b.status);
+        const active = isActive(b.status);
+        const label = STATUS_LABEL[b.status] || b.status;
+        return (
+          <View key={b.booking_id} style={[styles.card, active && styles.cardActive, Shadow.card]}>
+            {active && (
+              <View style={styles.activeBadge}>
+                <View style={styles.activeDot} />
+                <Text style={styles.activeBadgeText}>Live</Text>
               </View>
-              <Text style={styles.cardPrice}>{b.price}</Text>
+            )}
+            <View style={styles.cardTop}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.cardSvc}>{b.service || 'Service'}</Text>
+                <Text style={styles.cardWho}>
+                  {b.provider_name || 'Provider'} · {b.scheduled_time || 'TBD'}
+                </Text>
+                <Text style={styles.cardId}>#{b.booking_id}</Text>
+              </View>
+              <View style={styles.cardRight}>
+                <View style={[styles.statusBadge, { backgroundColor: sc.bg }]}>
+                  <Text style={[styles.statusText, { color: sc.color }]}>{label}</Text>
+                </View>
+                {b.price != null && (
+                  <Text style={styles.cardPrice}>Rs {Number(b.price).toLocaleString()}</Text>
+                )}
+              </View>
             </View>
+            {active && (
+              <TouchableOpacity
+                style={styles.trackBtn}
+                onPress={() =>
+                  router.push({ pathname: '/tracking', params: { bookingId: b.booking_id } })
+                }
+              >
+                <Text style={styles.trackBtnText}>Track karein →</Text>
+              </TouchableOpacity>
+            )}
           </View>
-          {b.active && (
-            <TouchableOpacity
-              style={styles.trackBtn}
-              onPress={() => router.push({ pathname: '/tracking', params: { bookingId: b.bookingId } })}
-            >
-              <Text style={styles.trackBtnText}>🛵 Track Live →</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-      ))}
-
-      {/* Empty state tip */}
-      <View style={styles.tipCard}>
-        <Text style={styles.tipText}>
-          💡 Haazir AI aapke saare bookings track karta hai — cancellation pe automatically naya provider dhundh leta hai.
-        </Text>
-      </View>
+        );
+      })}
     </ScrollView>
   );
 }
@@ -114,14 +171,30 @@ export default function BookingsScreen() {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: Colors.background },
   content: { padding: Spacing.md, paddingBottom: 48 },
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: Colors.background },
+  loadingText: { marginTop: Spacing.md, color: Colors.textMuted },
   title: { fontSize: FontSize.xxl, fontWeight: '800', color: Colors.textPrimary, marginBottom: Spacing.md },
-  summaryRow: { flexDirection: 'row', backgroundColor: Colors.surface, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.border, padding: Spacing.md, marginBottom: Spacing.md },
+  summaryRow: {
+    flexDirection: 'row', backgroundColor: Colors.surface, borderRadius: Radius.lg,
+    borderWidth: 1, borderColor: Colors.border, padding: Spacing.md, marginBottom: Spacing.md,
+  },
   summaryItem: { flex: 1, alignItems: 'center' },
   summaryVal: { fontSize: FontSize.lg, fontWeight: '800', color: Colors.textPrimary },
   summaryLabel: { fontSize: FontSize.xs, color: Colors.textMuted, marginTop: 2 },
+  errorCard: {
+    backgroundColor: Colors.dangerDim, borderRadius: Radius.md, padding: Spacing.md,
+    marginBottom: Spacing.md, borderWidth: 1, borderColor: Colors.danger,
+  },
+  errorText: { color: Colors.danger, fontSize: FontSize.sm },
+  retryText: { color: Colors.danger, fontSize: FontSize.xs, marginTop: 4, fontWeight: '700' },
+  emptyCard: {
+    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.lg, padding: Spacing.lg,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  emptyText: { color: Colors.textSecondary, fontSize: FontSize.sm, textAlign: 'center' },
   card: {
     backgroundColor: Colors.cardBg, borderRadius: Radius.xl, borderWidth: 1,
-    borderColor: Colors.border, padding: Spacing.md, marginBottom: Spacing.md, position: 'relative',
+    borderColor: Colors.border, padding: Spacing.md, marginBottom: Spacing.md,
   },
   cardActive: { borderColor: Colors.primary, backgroundColor: Colors.surfaceElevated },
   activeBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: Spacing.sm },
@@ -130,13 +203,14 @@ const styles = StyleSheet.create({
   cardTop: { flexDirection: 'row', alignItems: 'flex-start' },
   cardSvc: { fontSize: FontSize.md, fontWeight: '700', color: Colors.textPrimary },
   cardWho: { fontSize: FontSize.xs, color: Colors.textMuted, marginTop: 2 },
-  cardId: { fontSize: FontSize.xs, color: Colors.textMuted, marginTop: 2, fontFamily: 'monospace' },
+  cardId: { fontSize: FontSize.xs, color: Colors.textMuted, marginTop: 2 },
   cardRight: { alignItems: 'flex-end', gap: 6 },
   statusBadge: { borderRadius: Radius.full, paddingHorizontal: 8, paddingVertical: 3 },
   statusText: { fontSize: FontSize.xs, fontWeight: '700' },
   cardPrice: { fontSize: FontSize.md, fontWeight: '800', color: Colors.textPrimary },
-  trackBtn: { backgroundColor: Colors.primary, borderRadius: Radius.md, padding: Spacing.sm, alignItems: 'center', marginTop: Spacing.sm },
+  trackBtn: {
+    backgroundColor: Colors.primary, borderRadius: Radius.md, padding: Spacing.sm,
+    alignItems: 'center', marginTop: Spacing.sm,
+  },
   trackBtnText: { color: Colors.background, fontSize: FontSize.sm, fontWeight: '800' },
-  tipCard: { backgroundColor: Colors.surfaceElevated, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.primaryDim, padding: Spacing.md },
-  tipText: { fontSize: FontSize.sm, color: Colors.textSecondary, lineHeight: 20 },
 });

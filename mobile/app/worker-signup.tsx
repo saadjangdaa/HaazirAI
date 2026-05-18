@@ -1,12 +1,19 @@
 import React, { useState } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity, StyleSheet,
-  ScrollView, Alert, ActivityIndicator,
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  StyleSheet,
+  ScrollView,
+  Alert,
+  ActivityIndicator,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../constants/theme';
-import { useAuth } from '../context/AuthContext';
+import { useAuth, formatAuthBootstrapError } from '../context/AuthContext';
+import { formatCnicDisplay, normalizeCnic, normalizePkPhone } from '../utils/profileValidation';
 
 const SPECIALIZATIONS = [
   { label: 'AC Repair', icon: '❄️' },
@@ -34,40 +41,55 @@ export default function WorkerSignupScreen() {
   const [busy, setBusy] = useState(false);
 
   const toggleSpec = (s: string) =>
-    setSelectedSpecs((prev) => prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]);
+    setSelectedSpecs((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]));
 
   const toggleCity = (c: string) =>
-    setSelectedCities((prev) => prev.includes(c) ? prev.filter((x) => x !== c) : [...prev, c]);
+    setSelectedCities((prev) => (prev.includes(c) ? prev.filter((x) => x !== c) : [...prev, c]));
+
+  const handleCnicChange = (text: string) => {
+    const digits = text.replace(/\D/g, '').slice(0, 13);
+    setCnic(formatCnicDisplay(digits));
+  };
 
   const handleRegister = async () => {
     if (selectedSpecs.length === 0) {
-      Alert.alert('Specialization chunein', 'Kam az kam ek skill select karein'); return;
+      Alert.alert('Specialization chunein', 'Kam az kam ek skill select karein');
+      return;
     }
     if (selectedCities.length === 0) {
-      Alert.alert('City chunein', 'Kahan kaam karte hain?'); return;
+      Alert.alert('City chunein', 'Kahan kaam karte hain?');
+      return;
     }
     if (!cnic.trim() || !phone.trim()) {
-      Alert.alert('Details incomplete', 'CNIC aur phone number daalna zaroori hai'); return;
+      Alert.alert('Details incomplete', 'CNIC aur phone number daalna zaroori hai');
+      return;
     }
+
     setBusy(true);
-    completeWorkerSignup({
-      specializations: selectedSpecs,
-      areas: selectedCities,
-      pricePerService: Number(price) || 500,
-      experienceYears: Number(experience) || 1,
-      cnic: cnic.trim(),
-      phone: phone.trim(),
-    });
-    setBusy(false);
-    router.replace('/(worker)/jobs');
+    try {
+      await completeWorkerSignup({
+        specializations: selectedSpecs,
+        areas: selectedCities,
+        pricePerService: Number(price) || 500,
+        experienceYears: Number(experience) || 1,
+        cnic: normalizeCnic(cnic),
+        phone: normalizePkPhone(phone),
+        availability: true,
+        rating: 0,
+      });
+      router.replace('/(worker)/jobs');
+    } catch (e) {
+      Alert.alert('Registration failed', formatAuthBootstrapError(e));
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
     <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
-      <Text style={styles.heading}>Worker Profile Complete Karein</Text>
-      <Text style={styles.sub}>Ye details aapko customers se match karwane mein madad karein gi</Text>
+      <Text style={styles.heading}>Worker Registration</Text>
+      <Text style={styles.sub}>Step 2 — skills, areas, aur verification details</Text>
 
-      {/* Specializations */}
       <Text style={styles.section}>Aapki Skills *</Text>
       <View style={styles.chipGrid}>
         {SPECIALIZATIONS.map(({ label, icon }) => {
@@ -85,7 +107,6 @@ export default function WorkerSignupScreen() {
         })}
       </View>
 
-      {/* Service Areas */}
       <Text style={styles.section}>Kahan Kaam Karte Hain? *</Text>
       <View style={styles.chipGrid}>
         {CITIES.map((c) => {
@@ -102,29 +123,28 @@ export default function WorkerSignupScreen() {
         })}
       </View>
 
-      {/* Phone */}
       <Text style={styles.label}>Phone Number *</Text>
       <TextInput
         style={styles.input}
-        placeholder="03XX-XXXXXXX"
+        placeholder="03001234567"
         placeholderTextColor={Colors.textMuted}
         value={phone}
         onChangeText={setPhone}
         keyboardType="phone-pad"
+        maxLength={15}
       />
 
-      {/* CNIC */}
       <Text style={styles.label}>CNIC Number *</Text>
       <TextInput
         style={styles.input}
-        placeholder="XXXXX-XXXXXXX-X"
+        placeholder="12345-1234567-1"
         placeholderTextColor={Colors.textMuted}
         value={cnic}
-        onChangeText={setCnic}
-        keyboardType="numeric"
+        onChangeText={handleCnicChange}
+        keyboardType="number-pad"
+        maxLength={15}
       />
 
-      {/* Row: Price + Experience */}
       <View style={styles.row}>
         <View style={{ flex: 1 }}>
           <Text style={styles.label}>Average Price (Rs)</Text>
@@ -151,7 +171,6 @@ export default function WorkerSignupScreen() {
         </View>
       </View>
 
-      {/* Trust notice */}
       <View style={styles.trustCard}>
         <Text style={styles.trustTitle}>🛡️ Background Verification</Text>
         <Text style={styles.trustText}>
@@ -180,27 +199,62 @@ const styles = StyleSheet.create({
   content: { padding: Spacing.md, paddingBottom: 48 },
   heading: { fontSize: FontSize.xl, fontWeight: '800', color: Colors.textPrimary, marginBottom: 4 },
   sub: { fontSize: FontSize.sm, color: Colors.textMuted, marginBottom: Spacing.lg },
-  section: { fontSize: FontSize.md, fontWeight: '700', color: Colors.textPrimary, marginBottom: Spacing.sm, marginTop: Spacing.md },
+  section: {
+    fontSize: FontSize.md,
+    fontWeight: '700',
+    color: Colors.textPrimary,
+    marginBottom: Spacing.sm,
+    marginTop: Spacing.md,
+  },
   chipGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, marginBottom: Spacing.sm },
   chip: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    backgroundColor: Colors.surface, borderRadius: Radius.full,
-    borderWidth: 1.5, borderColor: Colors.border,
-    paddingHorizontal: Spacing.sm, paddingVertical: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: Colors.surface,
+    borderRadius: Radius.full,
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 6,
   },
   chipActive: { backgroundColor: '#FFFBEB', borderColor: Colors.warning },
   chipIcon: { fontSize: 14 },
   chipText: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: '600' },
   chipTextActive: { color: Colors.warning },
-  label: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.textSecondary, marginBottom: 6, marginTop: Spacing.sm },
+  label: {
+    fontSize: FontSize.sm,
+    fontWeight: '600',
+    color: Colors.textSecondary,
+    marginBottom: 6,
+    marginTop: Spacing.sm,
+  },
   input: {
-    backgroundColor: Colors.inputBg, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border,
-    padding: Spacing.md, fontSize: FontSize.md, color: Colors.textPrimary,
+    backgroundColor: Colors.inputBg,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    padding: Spacing.md,
+    fontSize: FontSize.md,
+    color: Colors.textPrimary,
   },
   row: { flexDirection: 'row' },
-  trustCard: { backgroundColor: '#E0F2FE', borderRadius: Radius.lg, padding: Spacing.md, marginVertical: Spacing.md, borderWidth: 1, borderColor: '#0284C733' },
+  trustCard: {
+    backgroundColor: '#E0F2FE',
+    borderRadius: Radius.lg,
+    padding: Spacing.md,
+    marginVertical: Spacing.md,
+    borderWidth: 1,
+    borderColor: '#0284C733',
+  },
   trustTitle: { fontSize: FontSize.sm, fontWeight: '700', color: '#0369A1', marginBottom: 4 },
   trustText: { fontSize: FontSize.xs, color: '#0369A1', lineHeight: 18 },
-  btn: { backgroundColor: Colors.warning, borderRadius: Radius.md, padding: Spacing.md, alignItems: 'center', marginTop: Spacing.sm },
+  btn: {
+    backgroundColor: Colors.warning,
+    borderRadius: Radius.md,
+    padding: Spacing.md,
+    alignItems: 'center',
+    marginTop: Spacing.sm,
+  },
   btnText: { color: Colors.background, fontSize: FontSize.md, fontWeight: '800' },
 });

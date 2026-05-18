@@ -159,7 +159,9 @@ async def _emergency_fast_track(
     best = providers_raw[0]
 
     pricing_result = await hisaab.calculate_price(intent, best)
-    _extract_log(pricing_result)
+    log = _extract_log(pricing_result)
+    if log:
+        logs.append(log)
 
     booking_result = await pakka.create_booking(intent, best, pricing_result, user_id)
     log = _extract_log(booking_result)
