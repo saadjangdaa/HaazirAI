@@ -1,5 +1,5 @@
 import { getApp, getApps, initializeApp } from 'firebase/app';
-import { getAuth, initializeAuth, inMemoryPersistence } from 'firebase/auth';
+import { getAuth } from 'firebase/auth';
 import { getFirestore, initializeFirestore } from 'firebase/firestore';
 
 const firebaseConfig = {
@@ -23,14 +23,4 @@ function getDb() {
 
 export const db = getDb();
 
-function initAuth() {
-  try {
-    return initializeAuth(app, { persistence: inMemoryPersistence });
-  } catch (e: unknown) {
-    const code = (e as { code?: string })?.code;
-    if (code === 'auth/already-initialized') return getAuth(app);
-    throw e;
-  }
-}
-
-export const auth = initAuth();
+export const auth = getAuth(app);

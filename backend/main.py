@@ -10,6 +10,12 @@ import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
+
+# Force UTF-8 on Windows so emoji log messages don't crash
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 from typing import Optional
 
 _BACKEND_DIR = Path(__file__).resolve().parent

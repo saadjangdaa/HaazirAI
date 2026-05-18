@@ -32,7 +32,7 @@ async function pickImage(label: string): Promise<string | null> {
     return null;
   }
   const result = await ImagePicker.launchImageLibraryAsync({
-    mediaTypes: ImagePicker.MediaTypeOptions.Images,
+    mediaTypes: ['images'] as ImagePicker.MediaType[],
     allowsEditing: true,
     quality: 0.7,
     aspect: [16, 9],
@@ -56,6 +56,21 @@ async function takePhoto(label: string): Promise<string | null> {
   return result.assets[0]?.uri ?? null;
 }
 
+async function pickFile(label: string): Promise<string | null> {
+  const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+  if (status !== 'granted') {
+    Alert.alert('Permission chahiye', `Files access allow karein`);
+    return null;
+  }
+  const result = await ImagePicker.launchImageLibraryAsync({
+    mediaTypes: ['images'] as ImagePicker.MediaType[],
+    allowsEditing: false,
+    quality: 1,
+  });
+  if (result.canceled) return null;
+  return result.assets[0]?.uri ?? null;
+}
+
 function PhotoPicker({
   label, uri, onPick,
 }: {
@@ -66,16 +81,23 @@ function PhotoPicker({
   const handlePress = () => {
     Alert.alert(label, 'Kahan se upload karein?', [
       {
-        text: '📷 Camera',
+        text: '📷 Camera se Photo',
         onPress: async () => {
           const u = await takePhoto(label);
           if (u) onPick(u);
         },
       },
       {
-        text: '🖼 Gallery',
+        text: '🖼 Gallery se Upload',
         onPress: async () => {
           const u = await pickImage(label);
+          if (u) onPick(u);
+        },
+      },
+      {
+        text: '📁 Files se Upload',
+        onPress: async () => {
+          const u = await pickFile(label);
           if (u) onPick(u);
         },
       },
@@ -97,7 +119,7 @@ function PhotoPicker({
         <View style={styles.photoEmpty}>
           <Text style={styles.photoEmptyIcon}>📋</Text>
           <Text style={styles.photoEmptyLabel}>{label}</Text>
-          <Text style={styles.photoEmptySub}>Camera ya Gallery se</Text>
+          <Text style={styles.photoEmptySub}>Camera / Gallery / Files</Text>
         </View>
       )}
     </TouchableOpacity>

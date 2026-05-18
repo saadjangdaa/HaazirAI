@@ -299,7 +299,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
       const fbUser = await waitForAuthUser(cred.user.uid);
       const username = nameToUsername(name, fbUser.uid);
-      const profile = await syncToBackend(fbUser, role, { username });
+
+      let profile: UserProfile | null = null;
+      try {
+        profile = await syncToBackend(fbUser, role, { username });
+      } catch (syncErr) {
+        if (__DEV__) console.warn('[Auth] Signup backend sync failed, proceeding with Firebase data:', syncErr);
+      }
+
       const mapped = mapProfileToAuthUser(fbUser, profile, role);
       if (mountedRef.current) {
         setUser(mapped);

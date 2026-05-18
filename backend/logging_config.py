@@ -30,6 +30,7 @@ LOGGING_CONFIG = {
             "class": "logging.StreamHandler",
             "formatter": "default",
             "level": config.LOG_LEVEL,
+            "stream": "ext://sys.stdout",
         },
         "file": {
             "class": "logging.FileHandler",

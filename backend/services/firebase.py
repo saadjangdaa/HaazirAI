@@ -36,7 +36,15 @@ from services.firestore_schema import (
 )
 
 _BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-load_dotenv(os.path.join(_BACKEND_ROOT, ".env"))
+
+# Collection name constants
+COL_USERS = "users"
+COL_PROVIDERS = "providers"
+COL_BOOKINGS = "bookings"
+COL_AGENT_LOGS = "agent_logs"
+COL_DISPUTES = "disputes"
+COL_REVIEWS = "reviews"
+COL_WAITLIST = "waitlist"
 
 FIREBASE_PROJECT_ID = os.getenv("FIREBASE_PROJECT_ID", "")
 _default_creds = os.path.join(_BACKEND_ROOT, "firebase-credentials.json")
@@ -47,6 +55,11 @@ FIREBASE_CREDENTIALS_PATH = (
     else os.path.normpath(os.path.join(_BACKEND_ROOT, _cred_env.lstrip("./")))
 )
 MOCK_MODE = not FIREBASE_PROJECT_ID or FIREBASE_PROJECT_ID == "your_firebase_project_id"
+
+
+def is_mock_mode() -> bool:
+    return MOCK_MODE
+
 
 COLLECTIONS = tuple(sorted(ACTIVE_COLLECTIONS))
 
