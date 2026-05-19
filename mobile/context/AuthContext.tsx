@@ -137,8 +137,11 @@ function mapProfileToAuthUser(fbUser: User, profile: UserProfile | null, roleHin
   };
 }
 
-async function fetchServerProfile(uid: string): Promise<UserProfile | null> {
-  return getUserProfile(uid);
+async function fetchServerProfile(
+  uid: string,
+  timeoutMs?: number
+): Promise<UserProfile | null> {
+  return getUserProfile(uid, timeoutMs);
 }
 
 async function syncToBackend(
@@ -206,25 +209,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const bootstrapFromFirebase = useCallback(
     async (fbUser: User, options: { sync: boolean; roleHint?: UserRole }) => {
-      let profile = await fetchServerProfile(fbUser.uid);
+      // Use a short timeout so a slow/down backend doesn't block the splash screen.
+      let profile = await fetchServerProfile(fbUser.uid, 8000);
 
       if (options.sync) {
-        profile = await syncToBackend(
-          fbUser,
-          profile?.role === 'worker' || profile?.role === 'customer'
-            ? profile.role
-            : options.roleHint ?? 'customer',
-          profile
-            ? {
-                ...(profile.username || profile.name
-                  ? { username: (profile.username || profile.name) as string }
-                  : {}),
-                ...(profile.phone ? { phone: profile.phone } : {}),
-                ...(profile.cnic ? { cnic: profile.cnic } : {}),
-              }
-            : undefined,
-          parseWorkerData(profile)
-        );
+        try {
+          profile = await syncToBackend(
+            fbUser,
+            profile?.role === 'worker' || profile?.role === 'customer'
+              ? profile.role
+              : options.roleHint ?? 'customer',
+            profile
+              ? {
+                  ...(profile.username || profile.name
+                    ? { username: (profile.username || profile.name) as string }
+                    : {}),
+                  ...(profile.phone ? { phone: profile.phone } : {}),
+                  ...(profile.cnic ? { cnic: profile.cnic } : {}),
+                }
+              : undefined,
+            parseWorkerData(profile)
+          );
+        } catch (syncErr) {
+          if (__DEV__) console.warn('[Auth] Bootstrap sync failed (using cached profile):', syncErr);
+        }
       }
 
       const mapped = mapProfileToAuthUser(

@@ -25,8 +25,10 @@ if (__DEV__) {
 client.interceptors.response.use(
   (res) => res,
   async (err: AxiosError) => {
-    const config = err.config as typeof err.config & { _retryCount?: number };
-    if (!config || (config._retryCount ?? 0) >= 2) return Promise.reject(err);
+    const config = err.config as typeof err.config & { _retryCount?: number; _noRetry?: boolean };
+    // Don't retry if explicitly disabled (e.g. bootstrap short-timeout requests)
+    // or if we've already retried twice.
+    if (!config || config._noRetry || (config._retryCount ?? 0) >= 2) return Promise.reject(err);
     const retryable =
       err.code === 'ECONNABORTED' ||
       err.code === 'ERR_NETWORK' ||
@@ -500,9 +502,16 @@ export async function syncUserProfile(body: {
   throw lastErr;
 }
 
-export async function getUserProfile(userId: string): Promise<UserProfile | null> {
+export async function getUserProfile(
+  userId: string,
+  timeoutMs = 45000
+): Promise<UserProfile | null> {
   try {
-    const { data } = await client.get(`/api/users/${userId}`);
+    const { data } = await client.get(`/api/users/${userId}`, {
+      timeout: timeoutMs,
+      // If caller passed a short timeout (bootstrap path), skip retries.
+      ...(timeoutMs < 45000 ? { _noRetry: true } as Record<string, unknown> : {}),
+    });
     return data;
   } catch {
     return null;
