@@ -1,7 +1,8 @@
-import { Audio } from 'expo-av';
+import { createAudioPlayer, setAudioModeAsync } from 'expo-audio';
+import type { AudioPlayer } from 'expo-audio/build/AudioModule.types';
 import * as FileSystem from 'expo-file-system/legacy';
 
-let _currentSound: Audio.Sound | null = null;
+let _currentPlayer: AudioPlayer | null = null;
 
 export async function playBase64Audio(base64: string, onDone?: () => void): Promise<void> {
   await stopSpeaking();
@@ -10,20 +11,20 @@ export async function playBase64Audio(base64: string, onDone?: () => void): Prom
     await FileSystem.writeAsStringAsync(uri, base64, {
       encoding: FileSystem.EncodingType.Base64,
     });
-    await Audio.setAudioModeAsync({
-      allowsRecordingIOS: false,
-      playsInSilentModeIOS: true,
+    await setAudioModeAsync({
+      allowsRecording: false,
+      playsInSilentMode: true,
     });
-    const { sound } = await Audio.Sound.createAsync({ uri });
-    _currentSound = sound;
-    sound.setOnPlaybackStatusUpdate((status) => {
-      if (status.isLoaded && status.didJustFinish) {
-        sound.unloadAsync();
-        _currentSound = null;
+    const player = createAudioPlayer({ uri });
+    _currentPlayer = player;
+    player.addListener('playbackStatusUpdate', (status) => {
+      if (status.didJustFinish) {
+        player.remove();
+        _currentPlayer = null;
         onDone?.();
       }
     });
-    await sound.playAsync();
+    player.play();
   } catch (e) {
     console.error('[voicePlayback] playBase64Audio error:', e);
     onDone?.();
@@ -31,13 +32,13 @@ export async function playBase64Audio(base64: string, onDone?: () => void): Prom
 }
 
 export async function stopSpeaking(): Promise<void> {
-  if (_currentSound) {
+  if (_currentPlayer) {
     try {
-      await _currentSound.stopAsync();
-      await _currentSound.unloadAsync();
+      _currentPlayer.pause();
+      _currentPlayer.remove();
     } catch {
       /* ignore */
     }
-    _currentSound = null;
+    _currentPlayer = null;
   }
 }

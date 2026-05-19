@@ -96,7 +96,7 @@ export default function VoiceConversationScreen() {
     let cancelled = false;
     (async () => {
       try {
-        const turn = await startConversation(sessionId.current, 'user_001', userName);
+        const turn = await startConversation(sessionId.current, user?.uid || 'anonymous', userName);
         if (!cancelled) playAgentTurn(turn);
       } catch (e) {
         if (!cancelled) {
@@ -125,7 +125,7 @@ export default function VoiceConversationScreen() {
         if (!text) { setUiState('idle'); return; }
         setMessages((prev) => [...prev, newMsg('user', text)]);
         setUiState('searching');
-        const turn = await sendMessage(sessionId.current, text, 'user_001', userName);
+        const turn = await sendMessage(sessionId.current, text, user?.uid || 'anonymous', userName);
         playAgentTurn(turn);
       } catch (e: any) {
         console.error('[conv] send error:', e);
