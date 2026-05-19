@@ -581,11 +581,16 @@ async def conversation(body: ConversationRequest):
         location = trigger.get("location", "Islamabad")
         urgency = trigger.get("urgency", "medium")
 
-        orch = await run_samajh_workflow(
-            user_input=f"Mujhe {service} chahiye, location: {location}, urgency: {urgency}",
-            source="text",
-            user_location=location,
-        )
+        orch: dict = {}
+        try:
+            orch = await run_samajh_workflow(
+                user_input=f"Mujhe {service} chahiye, location: {location}, urgency: {urgency}",
+                source="text",
+                user_location=location,
+            )
+        except Exception as _se:
+            logger.warning("[conversation] run_samajh_workflow failed: %s", _se)
+
         providers = list((orch.get("providers_ranked") or []))[:3]
         if not providers:
             providers = _load_providers()[:3]
