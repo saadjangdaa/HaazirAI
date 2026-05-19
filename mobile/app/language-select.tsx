@@ -29,11 +29,12 @@ const LANG_ICONS: Record<Language, string> = {
 
 export default function LanguageSelectScreen() {
   const router = useRouter();
-  const { user } = useAuth();
+  const { user, completeLanguageSelect } = useAuth();
   const { language, setLanguage } = useLang();
   const insets = useSafeAreaInsets();
 
   const handleContinue = () => {
+    completeLanguageSelect();
     router.replace(user?.role === 'worker' ? '/(worker)/jobs' : '/');
   };
 

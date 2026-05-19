@@ -30,7 +30,17 @@ export default function CustomerProfileScreen() {
   const handleLogout = () => {
     Alert.alert(tr.logout, tr.logoutConfirm, [
       { text: tr.cancel, style: 'cancel' },
-      { text: tr.logout, style: 'destructive', onPress: () => { signOut(); router.replace('/login'); } },
+      {
+        text: tr.logout,
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await signOut();
+          } finally {
+            router.replace('/login');
+          }
+        },
+      },
     ]);
   };
 

@@ -32,11 +32,11 @@ function isLangSelectPath(pathname: string): boolean {
 
 /**
  * Single routing gate — runs only after Firebase auth + profile bootstrap (loading=false).
- * allowPostAuthRedirect=true means a fresh login just happened → show language picker.
- * On cold start (session restored), skip language picker and go straight to home.
+ * hasSessionThisLaunch: user signed in this app session (not just Firebase storage restore).
+ * needsLanguagePicker: customer must complete language screen before home.
  */
 function AuthNavigationGuard() {
-  const { user, loading, allowPostAuthRedirect } = useAuth();
+  const { user, loading, hasSessionThisLaunch, needsLanguagePicker } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
   const navigationState = useRootNavigationState();
@@ -54,29 +54,48 @@ function AuthNavigationGuard() {
       if (!isAuthPath(pathname)) {
         target = '/login';
       }
+    } else if (!hasSessionThisLaunch) {
+      // Firebase restored from storage — require login this app session.
+      if (!isAuthPath(pathname) && !isWorkerSignupPath(pathname)) {
+        target = '/login';
+      }
+    } else if (needsLanguagePicker && user.role === 'customer') {
+      if (!isLangSelectPath(pathname)) {
+        target = '/language-select';
+      }
     } else if (user.role === 'worker' && !user.workerOnboarded) {
       if (!isWorkerSignupPath(pathname)) {
         target = '/worker-signup';
       }
-    } else if (allowPostAuthRedirect) {
-      if (!isLangSelectPath(pathname)) {
-        target = '/language-select';
+    } else if (user.role === 'worker') {
+      const home = homeRoute(user);
+      if (isAuthPath(pathname) || isLangSelectPath(pathname)) {
+        target = home;
       }
     } else {
       const home = homeRoute(user);
-      if (isAuthPath(pathname) || isWorkerSignupPath(pathname)) {
+      if (isAuthPath(pathname) || isLangSelectPath(pathname) || isWorkerSignupPath(pathname)) {
         target = home;
       }
     }
 
-    if (!target || lastNav.current === target) return;
+    // Skip only if we're already on the target route (not merely navigated there before).
+    if (!target || (lastNav.current === target && pathname === target)) return;
     lastNav.current = target;
     router.replace(target as '/login');
-  }, [user, loading, allowPostAuthRedirect, pathname, router, navigationState?.key]);
+  }, [user, loading, hasSessionThisLaunch, needsLanguagePicker, pathname, router, navigationState?.key]);
 
   useEffect(() => {
     if (loading) lastNav.current = null;
   }, [loading]);
+
+  useEffect(() => {
+    if (!user || !hasSessionThisLaunch) lastNav.current = null;
+  }, [user, hasSessionThisLaunch]);
+
+  useEffect(() => {
+    if (!needsLanguagePicker) lastNav.current = null;
+  }, [needsLanguagePicker]);
 
   return null;
 }
@@ -120,7 +139,6 @@ function RootLayoutNav() {
         <Stack.Screen name="feedback" options={{ title: 'Feedback Dein' }} />
         <Stack.Screen name="dispute" options={{ title: 'Complaint / Dispute' }} />
         <Stack.Screen name="logs" options={{ title: 'Agent Logs (Judges View)' }} />
-        <Stack.Screen name="voice-conversation" options={{ headerShown: false }} />
       </Stack>
       <AuthNavigationGuard />
     </>

@@ -12,6 +12,10 @@ import { playBase64Audio, stopSpeaking } from '../services/voicePlayback';
 import { startConversation, sendMessage, ConversationTurn, ConversationPhase, BookingResult } from '../services/conversationApi';
 import ProviderCard from '../components/ProviderCard';
 
+export const options = {
+  headerShown: false,
+};
+
 type Message = { id: string; role: 'user' | 'agent'; text: string };
 
 let _msgCounter = 0;

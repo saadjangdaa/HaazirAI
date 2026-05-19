@@ -41,9 +41,8 @@ export default function SignupScreen() {
       await signUp(email.trim(), password, name.trim(), role);
       if (role === 'worker') {
         router.replace('/worker-signup');
-      } else {
-        router.replace('/');
       }
+      // Customer: AuthNavigationGuard routes to /language-select after sign-up.
     } catch (e) {
       const code = (e as { code?: string })?.code;
       if (code === 'auth/email-already-in-use') {

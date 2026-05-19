@@ -146,7 +146,9 @@ const CustomerHomeScreen = () => {
       if (!syncedUser.profileComplete) {
         Alert.alert(
           'Profile incomplete',
-          'Booking se pehle username, mobile (03XXXXXXXXX) aur CNIC complete karein.',
+          syncedUser.role === 'worker'
+            ? 'Booking se pehle username, mobile (03XXXXXXXXX) aur CNIC complete karein.'
+            : 'Pehle apna naam profile mein complete karein (signup screen).',
           [{ text: 'Profile', onPress: () => router.push('/signup') }]
         );
         return;

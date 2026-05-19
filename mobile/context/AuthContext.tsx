@@ -60,8 +60,11 @@ export interface ProfileFields {
 interface AuthContextType {
   user: AuthUser | null;
   loading: boolean;
-  /** True only after explicit sign-in/sign-up this session — blocks cold-start auto-routing. */
-  allowPostAuthRedirect: boolean;
+  /** True after explicit sign-in/sign-up this app session (cleared on sign-out). */
+  hasSessionThisLaunch: boolean;
+  /** Customer must pick language once per login; cleared by completeLanguageSelect(). */
+  needsLanguagePicker: boolean;
+  completeLanguageSelect: () => void;
   signIn: (email: string, password: string) => Promise<AuthUser>;
   signUp: (email: string, password: string, name: string, role: UserRole) => Promise<AuthUser>;
   completeWorkerSignup: (data: WorkerData) => Promise<AuthUser>;
@@ -110,18 +113,38 @@ function nameToUsername(name: string, uid: string): string {
   return `u_${uid.slice(0, 8).toLowerCase()}`;
 }
 
+/** Backfill display name for legacy accounts (Firebase-only signup, partial server sync). */
+function deriveProfileUsername(fbUser: User, profile?: UserProfile | null): string {
+  const fromProfile = (profile?.username || profile?.name || '').trim();
+  if (fromProfile) return fromProfile;
+  const display = (fbUser.displayName || '').trim();
+  if (display) return nameToUsername(display, fbUser.uid);
+  const email = (fbUser.email || profile?.email || '').trim();
+  if (email.includes('@')) {
+    return nameToUsername(email.split('@')[0], fbUser.uid);
+  }
+  return nameToUsername('', fbUser.uid);
+}
+
 function mapProfileToAuthUser(fbUser: User, profile: UserProfile | null, roleHint?: UserRole): AuthUser {
   const role: UserRole =
     profile?.role === 'worker' || profile?.role === 'customer'
       ? profile.role
       : roleHint ?? 'customer';
 
-  const username = profile?.username || profile?.name || '';
+  const username = deriveProfileUsername(fbUser, profile);
   const phone = profile?.phone || '';
   const cnic = profile?.cnic || '';
+  const profileForCheck = {
+    ...(profile || {}),
+    username,
+    name: profile?.name || username,
+    email: profile?.email || fbUser.email || '',
+    role,
+  };
   const profileComplete =
     profile?.profile_complete === true ||
-    (profile ? isProfileComplete(profile) : false);
+    isProfileComplete(profileForCheck, role);
   const workerData = parseWorkerData(profile);
 
   return {
@@ -148,20 +171,20 @@ async function syncToBackend(
   fbUser: User,
   role: UserRole,
   fields?: Partial<ProfileFields>,
-  workerData?: WorkerData
+  workerData?: WorkerData,
+  cachedProfile?: UserProfile | null
 ): Promise<UserProfile> {
+  const existing =
+    cachedProfile !== undefined ? cachedProfile : await fetchServerProfile(fbUser.uid);
   const pushToken = await registerForPushNotifications();
   const body: Parameters<typeof syncUserProfile>[0] = {
     user_id: fbUser.uid,
-    email: fbUser.email || '',
+    email: (fbUser.email || existing?.email || '').trim(),
     role,
+    username: (fields?.username || deriveProfileUsername(fbUser, existing)).trim(),
     push_token: pushToken || undefined,
     provider_id: workerData?.providerId,
   };
-
-  if (fields?.username) {
-    body.username = fields.username;
-  }
   if (fields?.phone) {
     body.phone = fields.phone;
   }
@@ -203,7 +226,8 @@ async function syncToBackend(
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
-  const [allowPostAuthRedirect, setAllowPostAuthRedirect] = useState(false);
+  const [hasSessionThisLaunch, setHasSessionThisLaunch] = useState(false);
+  const [needsLanguagePicker, setNeedsLanguagePicker] = useState(false);
   const authOpRef = useRef(false);
   const mountedRef = useRef(true);
 
@@ -221,14 +245,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               : options.roleHint ?? 'customer',
             profile
               ? {
-                  ...(profile.username || profile.name
-                    ? { username: (profile.username || profile.name) as string }
-                    : {}),
                   ...(profile.phone ? { phone: profile.phone } : {}),
                   ...(profile.cnic ? { cnic: profile.cnic } : {}),
                 }
               : undefined,
-            parseWorkerData(profile)
+            parseWorkerData(profile),
+            profile
           );
         } catch (syncErr) {
           if (__DEV__) console.warn('[Auth] Bootstrap sync failed (using cached profile):', syncErr);
@@ -258,7 +280,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           await bootstrapFromFirebase(fbUser, { sync: true });
         } else if (mountedRef.current) {
           setUser(null);
-          setAllowPostAuthRedirect(false);
+          setHasSessionThisLaunch(false);
+          setNeedsLanguagePicker(false);
         }
       } catch (err) {
         console.error('[Auth] bootstrap failed:', err);
@@ -292,7 +315,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const cred = await signInWithEmailAndPassword(auth, email.trim(), password);
       const fbUser = await waitForAuthUser(cred.user.uid);
       const mapped = await bootstrapFromFirebase(fbUser, { sync: true });
-      if (mountedRef.current) setAllowPostAuthRedirect(true);
+      if (mountedRef.current) {
+        setHasSessionThisLaunch(true);
+        setNeedsLanguagePicker(mapped.role === 'customer');
+      }
       return mapped;
     });
   };
@@ -315,14 +341,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (__DEV__) console.warn('[Auth] Signup backend sync failed, proceeding with Firebase data:', syncErr);
       }
 
-      const mapped = mapProfileToAuthUser(fbUser, profile, role);
+      const mapped = mapProfileToAuthUser(
+        fbUser,
+        profile ?? { user_id: fbUser.uid, username, email: fbUser.email || email.trim(), role },
+        role
+      );
       if (mountedRef.current) {
         setUser(mapped);
-        setAllowPostAuthRedirect(true);
+        setHasSessionThisLaunch(true);
+        setNeedsLanguagePicker(role === 'customer');
       }
       return mapped;
     });
   };
+
+  const completeLanguageSelect = useCallback(() => {
+    setNeedsLanguagePicker(false);
+  }, []);
 
   const completeWorkerSignup = async (data: WorkerData): Promise<AuthUser> => {
     return runAuthOperation(async () => {
@@ -339,8 +374,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
       const mapped = mapProfileToAuthUser(fbUser, profile);
       setUser(mapped);
-      // Do NOT set allowPostAuthRedirect — worker-signup.tsx navigates directly
-      // to /(worker)/jobs, bypassing the language-select step.
+      if (mountedRef.current) {
+        setHasSessionThisLaunch(true);
+        setNeedsLanguagePicker(false);
+      }
       return mapped;
     });
   };
@@ -350,12 +387,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const current = user;
     const serverProfile = await fetchServerProfile(fbUser.uid);
 
-    const fields: Partial<ProfileFields> = {};
-    const username =
-      current?.username || serverProfile?.username || serverProfile?.name || '';
+    const fields: Partial<ProfileFields> = {
+      username: deriveProfileUsername(fbUser, serverProfile ?? {
+        username: current?.username,
+        name: current?.username,
+        email: current?.email,
+      } as UserProfile),
+    };
     const phone = current?.phone || serverProfile?.phone || '';
     const cnic = current?.cnic || serverProfile?.cnic || '';
-    if (username) fields.username = username;
     if (phone) fields.phone = phone;
     if (cnic) fields.cnic = cnic;
 
@@ -365,8 +405,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         (serverProfile?.role === 'worker' || serverProfile?.role === 'customer'
           ? serverProfile.role
           : 'customer')) as UserRole,
-      Object.keys(fields).length ? fields : undefined,
-      current?.workerData ?? parseWorkerData(serverProfile)
+      fields,
+      current?.workerData ?? parseWorkerData(serverProfile),
+      serverProfile
     );
     const mapped = mapProfileToAuthUser(fbUser, profile, current?.role);
     if (mountedRef.current) setUser(mapped);
@@ -374,9 +415,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [user]);
 
   const signOut = async (): Promise<void> => {
-    await firebaseSignOut(auth);
-    setUser(null);
-    setAllowPostAuthRedirect(false);
+    return runAuthOperation(async () => {
+      await firebaseSignOut(auth);
+      if (mountedRef.current) {
+        setUser(null);
+        setHasSessionThisLaunch(false);
+        setNeedsLanguagePicker(false);
+      }
+    });
   };
 
   return (
@@ -384,7 +430,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       value={{
         user,
         loading,
-        allowPostAuthRedirect,
+        hasSessionThisLaunch,
+        needsLanguagePicker,
+        completeLanguageSelect,
         signIn,
         signUp,
         completeWorkerSignup,
