@@ -58,6 +58,7 @@ class ConversationRequest(BaseModel):
     user_id: str = "user_001"
     user_name: Optional[str] = None
     providers: Optional[List[dict]] = None
+    history: Optional[List[dict]] = None  # [{role: user|assistant, content: str}]
 
 
 class UserSyncRequest(BaseModel):
