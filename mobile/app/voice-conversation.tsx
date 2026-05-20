@@ -9,6 +9,7 @@ import { Colors, Spacing, Radius, FontSize, Shadow } from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
 import { requestMicPermission, startRecording, stopAndTranscribe } from '../services/voiceRecord';
 import { playBase64Audio, stopSpeaking } from '../services/voicePlayback';
+import { speakText, stopSpeaking as stopSpeech } from '../services/voiceSpeech';
 import {
   startConversation, sendMessage, negotiateProviders, directBook, toBiddingResponse,
   ConversationTurn, ConversationPhase, BookingResult, NegotiatedBid, HistoryEntry,
@@ -120,6 +121,14 @@ export default function VoiceConversationScreen() {
         stopPulse();
         setUiState(turn.phase === 'done' ? 'done' : 'idle');
       });
+    } else if (agentText && agentText !== '...') {
+      // Fallback: no Uplift TTS key — use expo-speech (device TTS)
+      setUiState('speaking');
+      startPulse();
+      speakText(agentText, () => {
+        stopPulse();
+        setUiState(turn.phase === 'done' ? 'done' : 'idle');
+      });
     } else {
       setUiState(turn.phase === 'done' ? 'done' : 'idle');
     }
@@ -179,6 +188,7 @@ export default function VoiceConversationScreen() {
       }
     } else if (uiState === 'speaking') {
       await stopSpeaking();
+      stopSpeech();
       stopPulse();
       setUiState('idle');
     }
@@ -508,7 +518,7 @@ export default function VoiceConversationScreen() {
     <View style={[styles.container, { paddingTop: insets.top }]}>
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => { stopSpeaking(); router.back(); }} style={styles.backBtn}>
+        <TouchableOpacity onPress={() => { stopSpeaking(); stopSpeech(); router.back(); }} style={styles.backBtn}>
           <Text style={styles.backIcon}>←</Text>
         </TouchableOpacity>
         <View style={styles.headerCenter}>

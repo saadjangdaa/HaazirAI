@@ -203,24 +203,33 @@ def _mock_gemini_response(prompt: str, system_prompt: str = "") -> str:
         is_init = "user:" not in p_lower and "greet" in p_lower
         if is_init:
             return _GREETINGS[lang]
-        if any(svc in p_lower for svc in ["ac", "plumb", "electric", "tutor", "carpent",
-                                           "mechanic", "cook", "maid", "garden", "painter",
-                                           "beautician", "beaut"]):
+
+        # Extract only the last User: line so Fatima's own greeting
+        # ("AC, plumber, ya koi aur service?") doesn't poison service detection.
+        user_lines = [
+            line for line in prompt.splitlines()
+            if line.strip().lower().startswith("user:")
+        ]
+        user_text = user_lines[-1].split(":", 1)[-1].lower() if user_lines else p_lower
+
+        if any(svc in user_text for svc in ["ac", "plumb", "electric", "tutor", "carpent",
+                                             "mechanic", "cook", "maid", "garden", "painter",
+                                             "beautician", "beaut"]):
             if any(loc in p_lower for loc in ["g-", "dha", "f-", "islamabad", "karachi",
                                                "lahore", "sector", "clifton", "gulshan",
                                                "bahria", "gulberg"]):
                 svc = "AC_repair"
-                if "plumb" in p_lower or "nal" in p_lower: svc = "plumber"
-                elif "electric" in p_lower or "bijli" in p_lower: svc = "electrician"
-                elif "tutor" in p_lower or "teacher" in p_lower: svc = "tutor"
-                elif "mechanic" in p_lower or "car" in p_lower: svc = "mechanic"
-                elif "cook" in p_lower or "chef" in p_lower: svc = "cook"
-                elif "maid" in p_lower or "safai" in p_lower: svc = "maid"
-                elif "garden" in p_lower or "lawn" in p_lower: svc = "gardener"
-                elif "paint" in p_lower: svc = "painter"
-                elif "beaut" in p_lower or "salon" in p_lower: svc = "beautician"
+                if "plumb" in user_text or "nal" in user_text: svc = "plumber"
+                elif "electric" in user_text or "bijli" in user_text: svc = "electrician"
+                elif "tutor" in user_text or "teacher" in user_text: svc = "tutor"
+                elif "mechanic" in user_text or "car" in user_text: svc = "mechanic"
+                elif "cook" in user_text or "chef" in user_text: svc = "cook"
+                elif "maid" in user_text or "safai" in user_text: svc = "maid"
+                elif "garden" in user_text or "lawn" in user_text: svc = "gardener"
+                elif "paint" in user_text: svc = "painter"
+                elif "beaut" in user_text or "salon" in user_text: svc = "beautician"
                 loc = "Islamabad"
-                if "karachi" in p_lower or "clifton" in p_lower or "dha" in p_lower and "karachi" in p_lower: loc = "Karachi"
+                if "karachi" in p_lower or "clifton" in p_lower or ("dha" in p_lower and "karachi" in p_lower): loc = "Karachi"
                 elif "lahore" in p_lower or "gulberg" in p_lower: loc = "Lahore"
                 return f"[SEARCH: service={svc} location={loc} urgency=medium]\n{_SEARCH_CONFIRM[lang]}"
             return _ASK_LOCATION[lang]
