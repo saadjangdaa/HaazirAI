@@ -8,10 +8,12 @@ import json
 import os
 import sys
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from fastapi import FastAPI
 _BACKEND_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _BACKEND_DIR.parent
 
@@ -20,6 +22,7 @@ for _path in (_REPO_ROOT, _BACKEND_DIR):
         sys.path.insert(0, str(_path))
 
 from fastapi import HTTPException
+from fastapi.responses import JSONResponse
 
 from backend.app import APP_INSTANCE_ID, app
 
@@ -30,6 +33,8 @@ from logging_config import logger
 from agents.orchestrator import run_bidding, run_dispute, run_provider_report
 from agents.pakka import PakkaAgent
 from graph import new_request_id, run_samajh_workflow
+from orchestration.reporter import ReportGenerator, zip_bytes_to_api_payload
+from orchestration.storage import TraceStorage
 from models.request import (
     ServiceRequest,
     BidRequest,
@@ -42,8 +47,7 @@ from models.request import (
     UserSyncRequest,
     BookingStatusUpdate,
 )
-from agents.orchestrator import run_full_orchestration, run_bidding, run_provider_report
-)
+from agents.orchestrator import run_full_orchestration
 from services.firebase import (
     FirebaseService,
     get_booking,
@@ -119,7 +123,7 @@ from services.push_notify import (
     notify_booking_created,
     notify_feedback_received,
     process_pending_notifications,
-
+)
 app = FastAPI(
     title="Haazir Dost API",
     description="Pakistan's agentic home-services orchestrator",
@@ -200,7 +204,6 @@ async def health():
             "fcm_pipeline": True,
             "notification_dedupe_seconds": 90,
         },
-    }
         "firebase": mode,
         "environment": config.ENVIRONMENT,
     }
@@ -269,6 +272,13 @@ async def handle_service_request(body: ServiceRequest):
         user_location=body.user_location,
         user_id=uid,
     )
+    if result.get("trace"):
+        await TraceStorage.save_trace(
+            request_id=result.get("request_id", ""),
+            user_input=body.user_input,
+            trace_dict=result["trace"],
+            user_id=uid,
+        )
     request_id = (result.get("request_id") or "").strip()
     if not request_id:
         raise HTTPException(status_code=500, detail="Orchestration did not return request_id")
@@ -585,19 +595,6 @@ async def sync_user(body: UserSyncRequest):
     if body.role == "worker":
         await resolve_worker_provider_id(uid, persist=True)
     doc = await get_user(uid)
-        return {
-            "booking_id": booking_id,
-            "status": "confirmed",
-            "message": "Booking data retrieved (mock)",
-            "tracking_steps": [
-                {"step": "Booked", "done": True, "time": datetime.now().isoformat()},
-                {"step": "Confirmed", "done": True, "time": datetime.now().isoformat()},
-                {"step": "En Route", "done": False},
-                {"step": "Arrived", "done": False},
-                {"step": "In Progress", "done": False},
-                {"step": "Completed", "done": False},
-            ],
-        }
     return {
         "success": True,
         "user_id": uid,
@@ -648,6 +645,20 @@ async def get_agent_logs(request_id: str):
         "log_count": 0,
         "message": "Logs not found — run /api/request first",
     }
+
+
+@app.get("/api/report/{request_id}/zip")
+async def download_trace_report(request_id: str):
+    """Download orchestration trace package (json + markdown + per-agent logs)."""
+    rid = (request_id or "").strip()
+    if not rid:
+        raise HTTPException(status_code=400, detail="request_id is required")
+    trace = await TraceStorage.get_trace(rid)
+    if not trace:
+        raise HTTPException(status_code=404, detail="Trace not found for request_id")
+    zip_data = ReportGenerator.generate_zip_report(rid, trace)
+    payload = zip_bytes_to_api_payload(zip_data)
+    return JSONResponse(content={"request_id": rid, **payload})
 
 
 @app.get("/api/provider/report/{provider_id}")

@@ -19,6 +19,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+from dotenv import load_dotenv
+
 logger = logging.getLogger(__name__)
 
 from services.firestore_schema import (
@@ -49,6 +51,27 @@ FIREBASE_CREDENTIALS_PATH = (
 MOCK_MODE = not FIREBASE_PROJECT_ID or FIREBASE_PROJECT_ID == "your_firebase_project_id"
 
 COLLECTIONS = tuple(sorted(ACTIVE_COLLECTIONS))
+
+# Firestore collection names (FirebaseService mock store + legacy helpers)
+COL_USERS = "users"
+COL_PROVIDERS = "providers"
+COL_BOOKINGS = "bookings"
+COL_AGENT_LOGS = "agent_logs"
+COL_DISPUTES = "disputes"
+COL_REVIEWS = "reviews"
+COL_WAITLIST = "waitlist"
+
+_BLOCKING_BOOKING_STATUSES = frozenset(
+    {
+        "assigned",
+        "confirmed",
+        "on_the_way",
+        "arrived",
+        "in_progress",
+        "en_route",
+        "enroute",
+    }
+)
 
 
 def _utc_naive(dt: datetime) -> datetime:
@@ -482,19 +505,6 @@ class FirebaseService:
             logger.error("❌ update_provider_rating failed: %s", e)
             return False
 
-def _doc_set(collection: str, doc_id: str, data: dict, merge: bool = False) -> None:
-    if collection not in ACTIVE_COLLECTIONS:
-        raise ValueError(f"Collection '{collection}' is not in the active Firestore schema")
-    if MOCK_MODE:
-        existing = _mock_bucket(collection).get(doc_id, {})
-        _mock_bucket(collection)[doc_id] = {**existing, **data} if merge else {**data}
-        return
-    ref = _db.collection(collection).document(doc_id)
-    if merge:
-        ref.set(data, merge=True)
-    else:
-        ref.set(data)
-
     # ── Bookings ────────────────────────────────────────────────────────────
 
     def create_booking(self, booking_data: Dict[str, Any]) -> bool:
@@ -834,6 +844,110 @@ def _doc_set(collection: str, doc_id: str, data: dict, merge: bool = False) -> N
         return firestore.SERVER_TIMESTAMP
 
 
+# ── Module-level Firestore helpers (async API + schema-normalized writes) ─────
+
+_mock_db: Dict[str, Dict[str, Any]] = {name: {} for name in ACTIVE_COLLECTIONS}
+_mock_db["reviews"] = {}
+_mock_db["waitlist"] = {}
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _new_booking_id() -> str:
+    return f"HAZ-{datetime.now().strftime('%Y%m%d')}-{str(uuid.uuid4())[:6].upper()}"
+
+
+def _mock_bucket(collection: str) -> Dict[str, Any]:
+    """In-memory bucket; prefers FirebaseService._mock_store when singleton is mock."""
+    try:
+        svc = get_firebase_service()
+        if svc.is_mock:
+            if collection not in svc._mock_store:
+                svc._mock_store[collection] = {}
+            return svc._mock_store[collection]
+    except Exception:
+        pass
+    if collection not in _mock_db:
+        _mock_db[collection] = {}
+    return _mock_db[collection]
+
+
+def _doc_set(collection: str, doc_id: str, data: dict, merge: bool = False) -> None:
+    if collection not in ACTIVE_COLLECTIONS and collection not in ("reviews", "waitlist"):
+        raise ValueError(f"Collection '{collection}' is not in the active Firestore schema")
+    svc = get_firebase_service()
+    if svc.is_mock or MOCK_MODE:
+        bucket = _mock_bucket(collection)
+        if merge:
+            bucket[doc_id] = {**bucket.get(doc_id, {}), **data}
+        else:
+            bucket[doc_id] = {**data}
+        return
+    db = svc.db
+    if db is None:
+        bucket = _mock_bucket(collection)
+        bucket[doc_id] = {**bucket.get(doc_id, {}), **data} if merge else {**data}
+        return
+    ref = db.collection(collection).document(doc_id)
+    if merge:
+        ref.set(data, merge=True)
+    else:
+        ref.set(data)
+
+
+def _doc_get(collection: str, doc_id: str) -> Optional[dict]:
+    svc = get_firebase_service()
+    if svc.is_mock or MOCK_MODE:
+        return _mock_bucket(collection).get(doc_id)
+    db = svc.db
+    if db is None:
+        return _mock_bucket(collection).get(doc_id)
+    snap = db.collection(collection).document(doc_id).get()
+    if not snap.exists:
+        return None
+    out = dict(snap.to_dict() or {})
+    out["id"] = snap.id
+    return out
+
+
+def _doc_update(collection: str, doc_id: str, data: dict) -> bool:
+    existing = _doc_get(collection, doc_id) or {}
+    _doc_set(collection, doc_id, {**existing, **data}, merge=True)
+    return True
+
+
+def _doc_delete(collection: str, doc_id: str) -> bool:
+    svc = get_firebase_service()
+    if svc.is_mock or MOCK_MODE:
+        _mock_bucket(collection).pop(doc_id, None)
+        return True
+    db = svc.db
+    if db is None:
+        return False
+    db.collection(collection).document(doc_id).delete()
+    return True
+
+
+def _query_all(collection: str) -> List[dict]:
+    svc = get_firebase_service()
+    if svc.is_mock or MOCK_MODE:
+        return list(_mock_bucket(collection).values())
+    db = svc.db
+    if db is None:
+        return []
+    return [
+        {**(snap.to_dict() or {}), "id": snap.id}
+        for snap in db.collection(collection).stream()
+    ]
+
+
+def _get_db() -> Any:
+    """Firestore client from the process singleton (``None`` in mock mode)."""
+    return get_firebase_service().db
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Module singleton + async wrappers (Pakka / Dhundho / main / agents)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -884,11 +998,14 @@ async def get_booking(booking_id: str) -> Optional[dict]:
 
 async def list_booking_entries() -> List[tuple]:
     """Return (document_id, data) for every bookings/{booking_id} doc."""
-    if MOCK_MODE:
+    if get_firebase_service().is_mock:
+        return list(_mock_bucket("bookings").items())
+    db = _get_db()
+    if db is None:
         return list(_mock_bucket("bookings").items())
     return [
         (snap.id, snap.to_dict() or {})
-        for snap in _db.collection("bookings").stream()
+        for snap in db.collection("bookings").stream()
     ]
 
 
@@ -1086,11 +1203,14 @@ async def update_booking_status(booking_id: str, status: str) -> None:
 
 async def list_user_entries() -> List[tuple]:
     """Return (document_id, data) for every users/{uid} doc."""
-    if MOCK_MODE:
+    if get_firebase_service().is_mock:
+        return list(_mock_bucket("users").items())
+    db = _get_db()
+    if db is None:
         return list(_mock_bucket("users").items())
     return [
         (snap.id, snap.to_dict() or {})
-        for snap in _db.collection("users").stream()
+        for snap in db.collection("users").stream()
     ]
 
 
@@ -1153,11 +1273,14 @@ async def delete_booking(booking_id: str) -> bool:
 
 async def list_provider_entries() -> List[tuple]:
     """Return (document_id, data) for every providers/{provider_id} doc."""
-    if MOCK_MODE:
+    if get_firebase_service().is_mock:
+        return list(_mock_bucket("providers").items())
+    db = _get_db()
+    if db is None:
         return list(_mock_bucket("providers").items())
     return [
         (snap.id, snap.to_dict() or {})
-        for snap in _db.collection("providers").stream()
+        for snap in db.collection("providers").stream()
     ]
 
 
@@ -1324,7 +1447,7 @@ async def verify_users_integrity() -> Dict[str, Any]:
     extra_worker_collection = []
     if not MOCK_MODE:
         try:
-            for coll_ref in _db.collections():
+            for coll_ref in _get_db().collections():
                 if coll_ref.id in ("workers", "worker", "worker_profiles"):
                     extra_worker_collection.append(coll_ref.id)
         except Exception as exc:
@@ -1423,11 +1546,14 @@ async def delete_user(user_id: str) -> bool:
 
 async def list_dispute_entries() -> List[tuple]:
     """Return (document_id, data) for every disputes/{dispute_id} doc."""
-    if MOCK_MODE:
+    if get_firebase_service().is_mock:
+        return list(_mock_bucket("disputes").items())
+    db = _get_db()
+    if db is None:
         return list(_mock_bucket("disputes").items())
     return [
         (snap.id, snap.to_dict() or {})
-        for snap in _db.collection("disputes").stream()
+        for snap in db.collection("disputes").stream()
     ]
 
 
@@ -1510,11 +1636,14 @@ async def verify_disputes_integrity() -> Dict[str, Any]:
 
 async def list_agent_log_entries() -> List[tuple]:
     """Return (document_id, data) for every agent_logs/{request_id} doc."""
-    if MOCK_MODE:
+    if get_firebase_service().is_mock:
+        return list(_mock_bucket("agent_logs").items())
+    db = _get_db()
+    if db is None:
         return list(_mock_bucket("agent_logs").items())
     return [
         (snap.id, snap.to_dict() or {})
-        for snap in _db.collection("agent_logs").stream()
+        for snap in db.collection("agent_logs").stream()
     ]
 
 
@@ -1627,11 +1756,14 @@ async def mark_notification_sent(notif_id: str) -> bool:
 
 async def list_notification_entries() -> List[tuple]:
     """Return (document_id, data) for every notifications/{notif_id} doc."""
-    if MOCK_MODE:
+    if get_firebase_service().is_mock:
+        return list(_mock_bucket("notifications").items())
+    db = _get_db()
+    if db is None:
         return list(_mock_bucket("notifications").items())
     return [
         (snap.id, snap.to_dict() or {})
-        for snap in _db.collection("notifications").stream()
+        for snap in db.collection("notifications").stream()
     ]
 
 
@@ -1775,7 +1907,7 @@ async def migrate_reviews_to_bookings() -> Dict[str, Any]:
                 errors.append(str(exc))
         return {"migrated": migrated, "skipped": skipped, "errors": errors}
 
-    coll = _db.collection("reviews")
+    coll = _get_db().collection("reviews")
     for snap in coll.stream():
         rev = snap.to_dict() or {}
         bid = rev.get("booking_id")
@@ -1812,10 +1944,10 @@ async def verify_firestore_structure() -> Dict[str, Any]:
                 extra_root.append(name)
     else:
         for coll in COLLECTIONS:
-            for snap in _db.collection(coll).stream():
+            for snap in _get_db().collection(coll).stream():
                 store[coll][snap.id] = snap.to_dict() or {}
         try:
-            for coll_ref in _db.collections():
+            for coll_ref in _get_db().collections():
                 if coll_ref.id not in ACTIVE_COLLECTIONS:
                     extra_root.append(coll_ref.id)
         except Exception as exc:
