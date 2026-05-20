@@ -190,7 +190,6 @@ export default function VoiceConversationScreen() {
 
   // ── Negotiate ─────────────────────────────────────────────────────────────
   const handleNegotiate = async () => {
-    // Remove the actions card, add the initiation message right after where it was
     setChat((prev) => [
       ...prev.filter((i) => i.kind !== 'actions'),
       mk({ kind: 'text', role: 'agent', text: 'Moltol agent ko bhej rahi hun — woh providers se negotiate karenge. Thoda wait karein... 🤝' }),
@@ -198,13 +197,19 @@ export default function VoiceConversationScreen() {
     setUiState('negotiating');
     try {
       const res = await negotiateProviders(sessionId.current, user?.id || 'anonymous', providers);
-      const best = res.top_bids?.[0];
-      if (best) {
+      if (res.top_bids?.length) {
+        const biddingResult = toBiddingResponse(
+          requestId || 'req',
+          res.top_bids,
+          providers,
+          [],
+        );
+        const best = res.top_bids[0];
         const saved = (best.savings ?? 0) > 0 ? ` Rs. ${best.savings!.toLocaleString()} bachaye!` : '';
         setChat((prev) => [
           ...prev,
-          mk({ kind: 'text', role: 'agent', text: `Moltol complete! ${best.provider_name} Rs. ${best.bid_price.toLocaleString()} par agree ho gaye.${saved} ✅` }),
-          mk({ kind: 'negotiated', bid: best }),
+          mk({ kind: 'text', role: 'agent', text: `Moltol complete!${saved} Neeche se apna worker chunein aur confirm karein. ✅` }),
+          mk({ kind: 'bidding', result: biddingResult }),
         ]);
       } else {
         setChat((prev) => [...prev, mk({ kind: 'text', role: 'agent', text: 'Negotiate ka mauka nahi mila — seedha book kar sakte hain.' })]);
@@ -216,6 +221,18 @@ export default function VoiceConversationScreen() {
     }
     setUiState('idle');
   };
+
+  // ── Select bid from BiddingPanel ──────────────────────────────────────────
+  const handleSelectBid = useCallback((bid: Bid) => {
+    Alert.alert(
+      'Booking Confirm Karein',
+      `${bid.provider_name} ne Rs. ${bid.final_price.toLocaleString()} mein negotiate kar liya hai.\n\nIs worker ke saath booking karni hai?`,
+      [
+        { text: 'Nahi', style: 'cancel' },
+        { text: 'Haan, Book Karein ✅', onPress: () => handleDirectBook(bid.provider_id, bid.final_price) },
+      ],
+    );
+  }, []);
 
   // ── Direct book ───────────────────────────────────────────────────────────
   const handleDirectBook = async (providerId?: string, priceAccepted?: number) => {
