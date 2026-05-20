@@ -61,7 +61,7 @@ export default function VoiceConversationScreen() {
   const router = useRouter();
   const { user } = useAuth();
   const { isMockMode } = useMockData();
-  const { language } = useLang();
+  const { language, langReady } = useLang();
   const insets = useSafeAreaInsets();
   const voiceId = VOICE_IDS[language] ?? DEFAULT_VOICE_ID;
   const scrollRef = useRef<ScrollView>(null);
@@ -125,12 +125,13 @@ export default function VoiceConversationScreen() {
     }
   }, [startPulse, stopPulse]);
 
-  // ── Initial greeting ──────────────────────────────────────────────────────
+  // ── Initial greeting — wait for langReady so language is loaded from storage ──
   useEffect(() => {
+    if (!langReady) return;
     let cancelled = false;
     (async () => {
       try {
-        const turn = await startConversation(sessionId.current, user?.id || 'user_001', userName, voiceId);
+        const turn = await startConversation(sessionId.current, user?.id || 'user_001', userName, voiceId, language);
         if (!cancelled) playAgentTurn(turn);
       } catch {
         if (!cancelled) {
@@ -140,7 +141,7 @@ export default function VoiceConversationScreen() {
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [langReady]);
 
   // ── Auto-scroll ───────────────────────────────────────────────────────────
   useEffect(() => {
@@ -158,8 +159,8 @@ export default function VoiceConversationScreen() {
         setChat((prev) => [...prev, mk({ kind: 'text', role: 'user', text })]);
         setHistory((prev) => [...prev, { role: 'user', content: text }]);
         setUiState('searching');
-        const currentHistory = history.concat({ role: 'user', content: text });
-        const turn = await sendMessage(sessionId.current, text, user?.id || 'anonymous', userName, currentHistory, voiceId);
+        // Send history BEFORE current message — backend appends it itself (avoid duplication on session restore)
+        const turn = await sendMessage(sessionId.current, text, user?.id || 'anonymous', userName, history, voiceId, language);
         playAgentTurn(turn);
       } catch (e: any) {
         Alert.alert('Error', e?.message || 'Masla hua — dobara try karein');
@@ -192,8 +193,8 @@ export default function VoiceConversationScreen() {
     setHistory((prev) => [...prev, { role: 'user', content: text }]);
     setUiState('searching');
     try {
-      const currentHistory = history.concat({ role: 'user', content: text });
-      const turn = await sendMessage(sessionId.current, text, user?.id || 'anonymous', userName, currentHistory);
+      // Send history BEFORE current message — backend appends it itself (avoid duplication on session restore)
+      const turn = await sendMessage(sessionId.current, text, user?.id || 'anonymous', userName, history);
       playAgentTurn(turn);
     } catch (e: any) {
       Alert.alert('Error', e?.message || 'Masla hua — dobara try karein');
