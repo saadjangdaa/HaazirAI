@@ -41,6 +41,9 @@ async def text_to_speech(text: str, voice_id: str = VOICE_URDU_FEMALE, translate
 
     try:
         urdu_text = await _translate_to_urdu(text) if translate else text
+        # Guard: if Gemini mock/failure returned JSON instead of Urdu script, use original text
+        if not urdu_text or urdu_text.strip().startswith('{'):
+            urdu_text = text
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
