@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, Modal } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, Modal, Switch } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../../constants/theme';
 import { useAuth } from '../../context/AuthContext';
 import { useLang, LANGUAGE_LABELS } from '../../context/LanguageContext';
+import { useMockData } from '../../context/MockDataContext';
 import type { Language } from '../../constants/translations';
 
 const ALL_LANGS = Object.entries(LANGUAGE_LABELS) as [Language, string][];
@@ -20,6 +21,7 @@ export default function WorkerProfileScreen() {
   const router = useRouter();
   const { user, signOut } = useAuth();
   const { tr, language, setLanguage } = useLang();
+  const { isMockMode, toggleMockMode } = useMockData();
   const [availability, setAvailability] = useState([true, true, true, true, true, true, false]);
   const [showLangPicker, setShowLangPicker] = useState(false);
 
@@ -29,7 +31,17 @@ export default function WorkerProfileScreen() {
   const handleLogout = () => {
     Alert.alert(tr.logout, tr.logoutConfirm, [
       { text: tr.cancel, style: 'cancel' },
-      { text: tr.logout, style: 'destructive', onPress: () => { signOut(); router.replace('/login'); } },
+      {
+        text: tr.logout,
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await signOut();
+          } finally {
+            router.replace('/login');
+          }
+        },
+      },
     ]);
   };
 
@@ -125,6 +137,28 @@ export default function WorkerProfileScreen() {
             <Text style={[styles.statVal, { color: Colors.primary }]}>4.8⭐</Text>
             <Text style={styles.statLabel}>Rating</Text>
           </View>
+        </View>
+      </View>
+
+      {/* Demo Mode Toggle */}
+      <View style={[styles.card, Shadow.card, isMockMode && { borderColor: Colors.warning, backgroundColor: '#FFFBEB' }]}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.md }}>
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.cardTitle, { marginBottom: 2 }, isMockMode && { color: Colors.warning }]}>
+              🎭 Demo Mode
+            </Text>
+            <Text style={{ fontSize: FontSize.xs, color: Colors.textMuted }}>
+              {isMockMode
+                ? 'Worker: Mohammad Rashid · 3 jobs · earnings active'
+                : 'Judges ke liye sample worker data on karein'}
+            </Text>
+          </View>
+          <Switch
+            value={isMockMode}
+            onValueChange={toggleMockMode}
+            trackColor={{ false: Colors.border, true: Colors.warning }}
+            thumbColor={isMockMode ? Colors.textInverse : Colors.textMuted}
+          />
         </View>
       </View>
 

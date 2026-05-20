@@ -12,6 +12,7 @@ import {
   resolveUserId,
 } from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import { useMockData } from '../context/MockDataContext';
 
 const DISPUTE_TYPES = [
   { id: 'no_show', label: 'Provider Nahi Aaya', icon: '🚫' },
@@ -22,10 +23,26 @@ const DISPUTE_TYPES = [
   { id: 'refund_request', label: 'Refund Chahiye', icon: '💸' },
 ];
 
+const MOCK_RESOLUTION: DisputeResolution = {
+  booking_id: 'HAZ-MOCK-003',
+  dispute_type: 'quality_complaint',
+  dispute_id: 'DSP-MOCK-9F3A',
+  dispute_status: 'resolved',
+  resolution:
+    'JHAGRA agent ne faisle kiya: Provider Rashid Hussain ko 2 din mein wapas bheja jaega service dobara karne ke liye — bilkul free. Provider ki profile pe warning flag lag gaya hai.',
+  refund_amount: 0,
+  provider_penalty: 'Warning issued — 3rd complaint in 30 days would result in suspension.',
+  case_summary:
+    'Customer ne incomplete electrician job report ki. Provider history check ki gayi: 1 previous complaint in 60 days. Re-service grant ki gayi.',
+  escalated_to_human: false,
+};
+
 export default function DisputeScreen() {
   const router = useRouter();
   const { user } = useAuth();
-  const { bookingId } = useLocalSearchParams<{ bookingId: string }>();
+  const { isMockMode } = useMockData();
+  const { bookingId: rawBookingId } = useLocalSearchParams<{ bookingId: string }>();
+  const bookingId = isMockMode ? 'HAZ-MOCK-003' : rawBookingId;
   const [disputeType, setDisputeType] = useState('');
   const [description, setDescription] = useState('');
   const [loading, setLoading] = useState(false);
@@ -34,9 +51,22 @@ export default function DisputeScreen() {
   const handleSubmit = async () => {
     if (!disputeType) { Alert.alert('Complaint ka type chunein'); return; }
     if (!description.trim()) { Alert.alert('Thoda detail mein batayein'); return; }
+
+    if (isMockMode) {
+      setLoading(true);
+      await new Promise((r) => setTimeout(r, 1200));
+      setResolution(MOCK_RESOLUTION);
+      setLoading(false);
+      return;
+    }
+
     const bid = (bookingId || '').trim();
     if (!bid) {
-      Alert.alert('Booking chahiye', 'Pehle My Bookings se booking select karein.');
+      Alert.alert(
+        'Booking ID missing',
+        'Tracking screen se dobara try karein, ya Bookings tab se kisi active booking ko open karein.',
+        [{ text: 'Bookings Dekhein', onPress: () => router.push('/(customer)/bookings') }, { text: 'OK', style: 'cancel' }]
+      );
       return;
     }
     setLoading(true);

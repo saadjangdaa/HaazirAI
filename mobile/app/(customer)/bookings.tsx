@@ -8,6 +8,8 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../../constants/theme';
 import { getUserBookings, UserBooking, formatApiError, requireUserId } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
+import { useMockData } from '../../context/MockDataContext';
+import { MOCK_CUSTOMER_BOOKINGS } from '../../data/mockData';
 
 const STATUS_LABEL: Record<string, string> = {
   pending: 'Pending',
@@ -44,11 +46,18 @@ export default function BookingsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
+  const { isMockMode } = useMockData();
   const [bookings, setBookings] = useState<UserBooking[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
+    if (isMockMode) {
+      setBookings(MOCK_CUSTOMER_BOOKINGS);
+      setLoading(false);
+      setError(null);
+      return;
+    }
     if (!user?.id) {
       setBookings([]);
       setLoading(false);
@@ -66,7 +75,7 @@ export default function BookingsScreen() {
     } finally {
       setLoading(false);
     }
-  }, [user?.id]);
+  }, [user?.id, isMockMode]);
 
   useFocusEffect(
     useCallback(() => {
