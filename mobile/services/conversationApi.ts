@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { BiddingResponse, Bid } from './api';
 
 const BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:8080';
 
@@ -36,17 +37,24 @@ export interface ConversationTurn {
   booking_result?: BookingResult;
 }
 
+export interface HistoryEntry {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
 export async function sendMessage(
   session_id: string,
   user_text: string,
   user_id = 'user_001',
   user_name?: string,
+  history?: HistoryEntry[],
 ): Promise<ConversationTurn> {
   const { data } = await axios.post(`${BASE_URL}/api/conversation`, {
     session_id,
     user_text,
     user_id,
     user_name,
+    history: history || [],
   });
   return data;
 }
@@ -56,7 +64,7 @@ export async function startConversation(
   user_id = 'user_001',
   user_name?: string,
 ): Promise<ConversationTurn> {
-  return sendMessage(session_id, '__init__', user_id, user_name);
+  return sendMessage(session_id, '__init__', user_id, user_name, []);
 }
 
 function _localNegotiate(providers: any[]): { top_bids: NegotiatedBid[]; recommendation: string; total_savings: number } {
@@ -104,6 +112,41 @@ export async function negotiateProviders(
     }
     throw e;
   }
+}
+
+export function toBiddingResponse(
+  requestId: string,
+  topBids: NegotiatedBid[],
+  providers: any[],
+  negotiationLog: string[],
+): BiddingResponse {
+  const bids: Bid[] = topBids.map((nb) => {
+    const matched = providers.find((p) => (p.id || p.provider_id) === nb.provider_id);
+    return {
+      provider_id: nb.provider_id,
+      provider_name: nb.provider_name,
+      bid_price: nb.original_bid_price ?? nb.bid_price,
+      final_price: nb.bid_price,
+      eta_minutes: nb.eta_minutes ?? matched?.eta_minutes ?? 20,
+      rating: nb.composite_score ?? matched?.rating ?? 4.0,
+      message: matched?.review || `${nb.provider_name} ke saath best deal!`,
+      negotiated: (nb.savings ?? 0) > 0,
+    };
+  });
+
+  const recommendedBid = bids.reduce((best, b) =>
+    b.final_price < best.final_price ? b : best, bids[0]);
+
+  const log =
+    negotiationLog.length > 0
+      ? negotiationLog
+      : bids.map((b) =>
+          b.negotiated
+            ? `  ✅ ${b.provider_name}: Rs. ${b.final_price.toLocaleString()} par agree`
+            : `  ❌ ${b.provider_name}: negotiate nahi hua`
+        );
+
+  return { request_id: requestId, bids, recommended_bid: recommendedBid, negotiation_log: log };
 }
 
 export async function directBook(
