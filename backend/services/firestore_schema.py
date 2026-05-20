@@ -182,17 +182,22 @@ def normalize_dispute(data: Dict[str, Any], dispute_id: Optional[str] = None) ->
     uid = require_firebase_uid(uid_raw) if uid_raw else ""
     dtype = normalize_dispute_type(data.get("type") or data.get("dispute_type"))
     status = (data.get("status") or "open").lower()
+    desc = (data.get("customer_message") or data.get("description") or "").strip()
     out: Dict[str, Any] = {
         "dispute_id": did,
         "booking_id": (data.get("booking_id") or "").strip(),
         "user_id": uid or "",
+        "worker_id": (data.get("worker_id") or "").strip(),
         "type": dtype,
         "dispute_type": dtype,
         "status": status,
         "resolution": data.get("resolution", ""),
-        "description": data.get("description", ""),
+        "description": desc,
+        "customer_message": desc,
         "created_at": data.get("created_at", ""),
     }
+    if data.get("worker_response") is not None:
+        out["worker_response"] = data["worker_response"]
     if data.get("refund_amount") is not None:
         out["refund_amount"] = int(data.get("refund_amount") or 0)
     if data.get("provider_penalty"):

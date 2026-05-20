@@ -8,17 +8,23 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import CustomerSidebar from '../../components/CustomerSidebar';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '../../constants/theme';
 import { useAuth } from '../../context/AuthContext';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import {
+  DisputeRecord,
   DisputeResolution,
   formatApiError,
+  finalizeDispute,
   getUserBookings,
+  getUserDisputes,
   isLoginRelatedError,
   resolveUserId,
   submitDispute,
+  UserBooking,
 } from '../../services/api';
 import { useMockData } from '../../context/MockDataContext';
 import { MOCK_CUSTOMER_BOOKINGS, MOCK_DISPUTES, MockDispute } from '../../data/mockData';
+import { isDisputeAwaitingResolution } from '../../utils/disputeStatus';
+import { isDisputeEligibleStatus } from '../../utils/disputeEligibility';
 
 const DISPUTE_TYPES = [
   { id: 'noshow', label: 'Provider No-Show', icon: '😤' },
@@ -27,18 +33,36 @@ const DISPUTE_TYPES = [
   { id: 'incomplete', label: 'Job Not Completed', icon: '⏰' },
 ];
 
+const TYPE_LABEL: Record<string, string> = {
+  no_show: 'No-show',
+  quality_complaint: 'Quality',
+  price_disagreement: 'Price',
+  rude_behavior: 'Behavior',
+  overrun: 'Overrun',
+  cancellation: 'Cancellation',
+  refund_request: 'Refund',
+  noshow: 'No-show',
+  quality: 'Quality',
+  price: 'Price',
+  incomplete: 'Incomplete',
+};
+
 const AGENT_STEPS = [
   'Masla samjha gaya',
-  'Case details review ho rahe hain',
-  'Resolution tayar ki ja rahi hai',
+  'Worker ka jawab',
+  'HIFAZAT + JHAGRA review',
 ];
 
-function StatusBadge({ status }: { status: MockDispute['status'] }) {
-  const cfg = {
+function StatusBadge({ status }: { status: string }) {
+  const key = (status || 'open').toLowerCase();
+  const cfgMap: Record<string, { bg: string; color: string; label: string }> = {
     open: { bg: Colors.dangerDim, color: Colors.danger, label: 'Open' },
+    under_review: { bg: Colors.surfaceElevated, color: Colors.warning, label: 'Review' },
     resolved: { bg: Colors.primaryDim, color: Colors.primary, label: 'Resolved' },
+    escalated: { bg: Colors.dangerDim, color: Colors.danger, label: 'Escalated' },
     closed: { bg: Colors.border, color: Colors.textMuted, label: 'Closed' },
-  }[status];
+  };
+  const cfg = cfgMap[key] || cfgMap.open;
   return (
     <View style={[styles.badge, { backgroundColor: cfg.bg }]}>
       <Text style={[styles.badgeText, { color: cfg.color }]}>{cfg.label}</Text>
@@ -77,7 +101,7 @@ function pickBookingForDispute(
   }
   const eligible = bookings.filter((b) => {
     const s = (b.status || '').toLowerCase();
-    return b.booking_id && !['cancelled', 'refunded'].includes(s);
+    return b.booking_id && isDisputeEligibleStatus(s);
   });
   if (!eligible.length) return null;
   return [...eligible].sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))[0];
@@ -104,18 +128,69 @@ export default function DisputesScreen() {
 
   // History
   const [disputes, setDisputes] = useState<MockDispute[]>([]);
-  const [closingId, setClosingId] = useState<string | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [finalizingId, setFinalizingId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // Pulse animation for agent shield
   const pulse = useRef(new Animated.Value(1)).current;
 
-  useEffect(() => {
+  const mapDisputeRow = (d: DisputeRecord, bookings: UserBooking[]): MockDispute => {
+    const booking = bookings.find((b) => b.booking_id === d.booking_id);
+    const st = (d.status || 'open').toLowerCase();
+    return {
+      id: d.dispute_id,
+      bookingId: d.booking_id,
+      service: booking?.service || 'Service',
+      providerName: booking?.provider_name || 'Provider',
+      type: d.type,
+      typeLabel: TYPE_LABEL[d.type] || d.type,
+      description: d.customer_message || d.description || '',
+      status: (
+        ['open', 'under_review', 'resolved', 'escalated', 'closed'].includes(st)
+          ? st
+          : 'open'
+      ) as MockDispute['status'],
+      resolution: d.resolution,
+      refundAmount: d.refund_amount,
+      createdAt: d.created_at || '',
+    };
+  };
+
+  const loadHistory = useCallback(async () => {
     if (isMockMode) {
       setDisputes(MOCK_DISPUTES);
+      return;
     }
-  }, [isMockMode]);
+    if (!user?.id) {
+      setDisputes([]);
+      return;
+    }
+    setHistoryLoading(true);
+    try {
+      const uid = await resolveUserId(user);
+      if (!uid) return;
+      const [rows, bookings] = await Promise.all([
+        getUserDisputes(uid),
+        getUserBookings(uid),
+      ]);
+      setDisputes(rows.map((r) => mapDisputeRow(r, bookings)));
+    } catch (e) {
+      if (!isLoginRelatedError(formatApiError(e))) {
+        Alert.alert('Disputes load nahi hue', formatApiError(e));
+      }
+      setDisputes([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [user?.id, isMockMode]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (tab === 'history') loadHistory();
+    }, [tab, loadHistory])
+  );
 
   useEffect(() => {
     if (!agentActive) return;
@@ -195,24 +270,40 @@ export default function DisputesScreen() {
     }
   };
 
-  const handleCloseDispute = (id: string) => {
-    Alert.alert('Dispute Band Karein?', 'Kya aap yeh dispute close karna chahte hain?', [
-      { text: 'Nahi', style: 'cancel' },
-      {
-        text: 'Haan, Band Karein',
-        style: 'destructive',
-        onPress: () => {
-          setClosingId(id);
-          setTimeout(() => {
-            setDisputes((prev) => prev.map((d) => d.id === id ? { ...d, status: 'closed' } : d));
-            setClosingId(null);
-          }, 600);
-        },
-      },
-    ]);
+  const handleFinalize = async (id: string) => {
+    if (isMockMode) {
+      setDisputes((prev) =>
+        prev.map((d) =>
+          d.id === id
+            ? {
+                ...d,
+                status: 'resolved',
+                resolution: 'Demo: JHAGRA ne faisla diya — provider ko warning.',
+                refundAmount: 0,
+              }
+            : d
+        )
+      );
+      return;
+    }
+    if (!user?.id) return;
+    setFinalizingId(id);
+    try {
+      const uid = await resolveUserId(user);
+      if (!uid) return;
+      const result = await finalizeDispute({ disputeId: id, userId: uid });
+      setResolution(result);
+      setDisputeId(id);
+      setAgentActive(true);
+      await loadHistory();
+    } catch (e) {
+      Alert.alert('Error', formatApiError(e));
+    } finally {
+      setFinalizingId(null);
+    }
   };
 
-  const openCount = disputes.filter((d) => d.status === 'open').length;
+  const openCount = disputes.filter((d) => ['open', 'under_review'].includes(d.status)).length;
 
   // ── Agent Active Screen ───────────────────────────────────────────────
   if (agentActive) {
@@ -227,8 +318,16 @@ export default function DisputesScreen() {
             </View>
           </Animated.View>
 
-          <Text style={styles.agentHeading}>Hifazat Agent kaam par hai!</Text>
-          <Text style={styles.agentSub}>Aapka dispute jaldi resolve ho jaega</Text>
+          <Text style={styles.agentHeading}>
+            {resolution && isDisputeAwaitingResolution(resolution)
+              ? 'Shikayat Darj Ho Gayi'
+              : 'Hifazat Agent kaam par hai!'}
+          </Text>
+          <Text style={styles.agentSub}>
+            {resolution && isDisputeAwaitingResolution(resolution)
+              ? 'Worker ko jawab dene ka moqa — phir review'
+              : 'Aapka dispute jaldi resolve ho jaega'}
+          </Text>
 
           {disputeId && (
             <View style={styles.disputeIdBox}>
@@ -257,19 +356,31 @@ export default function DisputesScreen() {
             })}
           </View>
 
-          {/* Resolution if available */}
           {resolution && (
             <View style={styles.resolutionBox}>
-              <Text style={styles.resolutionHeading}>Hifazat Agent ka Faisla</Text>
-              <Text style={styles.resolutionText}>{resolution.resolution}</Text>
-              {(resolution.refund_amount || 0) > 0 && (
-                <View style={styles.refundBadge}>
-                  <Text style={styles.refundText}>Refund: Rs {resolution.refund_amount?.toLocaleString()}</Text>
-                </View>
+              {isDisputeAwaitingResolution(resolution) ? (
+                <>
+                  <Text style={styles.resolutionHeading}>Agla Qadam</Text>
+                  <Text style={styles.resolutionText}>
+                    {resolution.message || resolution.case_summary}
+                  </Text>
+                </>
+              ) : (
+                <>
+                  <Text style={styles.resolutionHeading}>JHAGRA ka Faisla</Text>
+                  <Text style={styles.resolutionText}>{resolution.resolution}</Text>
+                  {(resolution.refund_amount || 0) > 0 && (
+                    <View style={styles.refundBadge}>
+                      <Text style={styles.refundText}>
+                        Refund: Rs {resolution.refund_amount?.toLocaleString()}
+                      </Text>
+                    </View>
+                  )}
+                  {resolution.case_summary ? (
+                    <Text style={styles.summaryText}>{resolution.case_summary}</Text>
+                  ) : null}
+                </>
               )}
-              {resolution.case_summary ? (
-                <Text style={styles.summaryText}>{resolution.case_summary}</Text>
-              ) : null}
             </View>
           )}
 
@@ -279,6 +390,17 @@ export default function DisputesScreen() {
           >
             <Text style={styles.historyBtnText}>Purane Disputes Dekhein</Text>
           </TouchableOpacity>
+          {disputeId && resolution && isDisputeAwaitingResolution(resolution) && (
+            <TouchableOpacity
+              style={[styles.finalizeBtn, { marginBottom: Spacing.sm }]}
+              onPress={() => handleFinalize(disputeId)}
+              disabled={!!finalizingId}
+            >
+              {finalizingId === disputeId
+                ? <ActivityIndicator color={Colors.textInverse} size="small" />
+                : <Text style={styles.finalizeBtnText}>JHAGRA Faisla Lein (jab worker jawab de)</Text>}
+            </TouchableOpacity>
+          )}
           <TouchableOpacity
             style={styles.newAgainBtn}
             onPress={() => {
@@ -408,7 +530,13 @@ export default function DisputesScreen() {
       {/* ── HISTORY TAB ── */}
       {tab === 'history' && (
         <>
-          {disputes.length === 0 ? (
+          {historyLoading && (
+            <View style={styles.loadingRow}>
+              <ActivityIndicator color={Colors.primary} />
+              <Text style={styles.loadingText}>Disputes load ho rahe hain...</Text>
+            </View>
+          )}
+          {!historyLoading && disputes.length === 0 ? (
             <View style={styles.emptyState}>
               <Text style={styles.emptyIcon}>📋</Text>
               <Text style={styles.emptyTitle}>Koi dispute nahi</Text>
@@ -450,9 +578,9 @@ export default function DisputesScreen() {
                       <Text style={styles.disputeDescLabel}>Aapki Shikayat:</Text>
                       <Text style={styles.disputeDesc}>{d.description}</Text>
 
-                      {d.status === 'resolved' && d.resolution && (
+                      {(d.status === 'resolved' || d.status === 'escalated') && d.resolution && (
                         <View style={styles.resolvedBox}>
-                          <Text style={styles.resolvedLabel}>✅ Hifazat Agent ka Faisla:</Text>
+                          <Text style={styles.resolvedLabel}>✅ JHAGRA ka Faisla:</Text>
                           <Text style={styles.resolvedText}>{d.resolution}</Text>
                           {(d.refundAmount || 0) > 0 && (
                             <Text style={styles.resolvedRefund}>Refund: Rs {d.refundAmount?.toLocaleString()}</Text>
@@ -462,16 +590,22 @@ export default function DisputesScreen() {
 
                       <Text style={styles.disputeIdSmall}>ID: {d.id}</Text>
 
-                      {d.status === 'open' && (
+                      {d.status === 'under_review' && (
                         <TouchableOpacity
-                          style={styles.closeBtn}
-                          onPress={() => handleCloseDispute(d.id)}
-                          disabled={closingId === d.id}
+                          style={styles.finalizeBtn}
+                          onPress={() => handleFinalize(d.id)}
+                          disabled={finalizingId === d.id}
                         >
-                          {closingId === d.id
-                            ? <ActivityIndicator size="small" color={Colors.danger} />
-                            : <Text style={styles.closeBtnText}>Dispute Close Karein</Text>}
+                          {finalizingId === d.id
+                            ? <ActivityIndicator size="small" color={Colors.textInverse} />
+                            : <Text style={styles.finalizeBtnText}>JHAGRA Faisla Lein</Text>}
                         </TouchableOpacity>
+                      )}
+
+                      {d.status === 'open' && (
+                        <Text style={styles.waitWorkerText}>
+                          Worker ka jawab pending — phir &quot;JHAGRA Faisla&quot; available hoga.
+                        </Text>
                       )}
                     </View>
                   )}
@@ -670,9 +804,10 @@ const styles = StyleSheet.create({
   resolvedText: { fontSize: FontSize.sm, color: Colors.textPrimary, lineHeight: 20 },
   resolvedRefund: { fontSize: FontSize.sm, fontWeight: '800', color: Colors.primary, marginTop: 4 },
   disputeIdSmall: { fontSize: FontSize.xs, color: Colors.textMuted, marginBottom: Spacing.sm },
-  closeBtn: {
-    borderRadius: Radius.md, borderWidth: 1.5, borderColor: Colors.danger,
+  finalizeBtn: {
+    borderRadius: Radius.md, backgroundColor: Colors.primary,
     paddingVertical: 10, alignItems: 'center',
   },
-  closeBtnText: { color: Colors.danger, fontWeight: '700', fontSize: FontSize.sm },
+  finalizeBtnText: { color: Colors.textInverse, fontWeight: '700', fontSize: FontSize.sm },
+  waitWorkerText: { fontSize: FontSize.xs, color: Colors.textMuted, marginTop: Spacing.sm, fontStyle: 'italic' },
 });

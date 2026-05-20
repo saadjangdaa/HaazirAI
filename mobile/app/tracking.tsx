@@ -6,7 +6,10 @@ import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '../constants/theme';
-import { getBookingStatus, updateBookingStatus, formatApiError, BookingStatus } from '../services/api';
+import {
+  getBookingStatus, getDisputeEligibility, updateBookingStatus, formatApiError, BookingStatus,
+} from '../services/api';
+import { isDisputeEligibleStatus } from '../utils/disputeEligibility';
 
 const DEMO_ADVANCE = ['confirmed', 'on_the_way', 'arrived', 'in_progress', 'completed'];
 
@@ -25,6 +28,7 @@ export default function TrackingScreen() {
   const [status, setStatus] = useState<BookingStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [advancing, setAdvancing] = useState(false);
+  const [canFileDispute, setCanFileDispute] = useState(false);
 
   const load = useCallback(async () => {
     if (!bookingId) return;
@@ -40,6 +44,25 @@ export default function TrackingScreen() {
   }, [bookingId]);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    if (!bookingId || !status?.status) {
+      setCanFileDispute(false);
+      return;
+    }
+    const s = status.status.toLowerCase();
+    if (isDisputeEligibleStatus(s)) {
+      setCanFileDispute(true);
+      return;
+    }
+    if (s === 'confirmed') {
+      getDisputeEligibility(bookingId)
+        .then((r) => setCanFileDispute(r.eligible))
+        .catch(() => setCanFileDispute(false));
+      return;
+    }
+    setCanFileDispute(false);
+  }, [bookingId, status?.status]);
 
   const handleAdvance = async () => {
     if (!bookingId || !status) return;
@@ -166,17 +189,18 @@ export default function TrackingScreen() {
           </TouchableOpacity>
         )}
 
-        {/* Actions */}
-        <View style={styles.actionRow}>
-          <TouchableOpacity
-            style={styles.disputeBtn}
-            onPress={() => router.push({ pathname: '/dispute', params: { bookingId } })}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="alert-circle-outline" size={16} color={Colors.danger} />
-            <Text style={styles.disputeBtnText}>Complaint</Text>
-          </TouchableOpacity>
-        </View>
+        {canFileDispute && (
+          <View style={styles.actionRow}>
+            <TouchableOpacity
+              style={styles.disputeBtn}
+              onPress={() => router.push({ pathname: '/dispute', params: { bookingId } })}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="alert-circle-outline" size={16} color={Colors.danger} />
+              <Text style={styles.disputeBtnText}>Complaint</Text>
+            </TouchableOpacity>
+          </View>
+        )}
       </ScrollView>
     </View>
   );

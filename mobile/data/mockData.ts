@@ -183,7 +183,7 @@ export interface MockDispute {
   type: string;
   typeLabel: string;
   description: string;
-  status: 'open' | 'resolved' | 'closed';
+  status: 'open' | 'under_review' | 'resolved' | 'escalated' | 'closed';
   createdAt: string;
   resolution?: string;
   refundAmount?: number;

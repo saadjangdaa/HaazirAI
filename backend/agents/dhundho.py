@@ -37,37 +37,14 @@ def _load_providers() -> List[dict]:
 
 
 def _service_matches(intent_service: str, provider: dict) -> bool:
-    """Match SAMAJH service_type strings to provider.service + specialization."""
-    s = (intent_service or "").lower().strip()
-    p_service = (provider.get("service") or "").lower()
-    specs = [x.lower() for x in provider.get("specialization", [])]
-    blob = p_service + " " + " ".join(specs)
+    """Strict category match (legacy name kept for tests)."""
+    from services.service_categories import (
+        intent_category,
+        provider_matches_category,
+    )
 
-    def has(*words: str) -> bool:
-        return any(w in blob for w in words)
-
-    if "technician" in s and "ac" in s:
-        return has("ac", "climate", "cooling", "gas", "split", "technician")
-    if any(k in s for k in ["ac", "air condition", "cooling", "gas refill", "split", "inverter"]):
-        return has("ac", "climate", "cooling", "gas", "split")
-    if "technician" in s:
-        return has("technician", "repair", "service") or bool(blob.strip())
-    if "plumb" in s or "pipe" in s or "drain" in s or "tap" in s or "nal" in s:
-        return has("plumb", "pipe", "drain", "sanitary", "bathroom", "kitchen", "water")
-    if "electric" in s or "wiring" in s or "bijli" in s or "ups" in s:
-        return has("electric", "wiring", "switch", "fault", "ups")
-    if "tutor" in s or "teacher" in s or "math" in s or "science" in s:
-        return has("tutor", "teacher", "math", "science", "academic")
-    if "beaut" in s or "salon" in s or "hair" in s or "makeup" in s:
-        return has("beaut", "salon", "hair", "makeup", "thread")
-    if "carpent" in s or "wood" in s or "furniture" in s:
-        return has("carpent", "wood", "furniture")
-    if "paint" in s or "wall" in s or "rang" in s:
-        return has("paint", "wall")
-
-    if s and (s in p_service or p_service in s):
-        return True
-    return any(s in sp or sp in s for sp in specs if s)
+    category = intent_category({"service_type": intent_service})
+    return provider_matches_category(provider, category)
 
 
 async def _resolve_availability(
@@ -124,9 +101,11 @@ class DhundhoAgent:
         start = datetime.now()
         all_providers = _load_providers()
 
+        from services.service_categories import intent_category
+
         service_type = intent.get("service_type", "")
+        normalized_category = intent_category(intent)
         city = intent.get("city", "Islamabad")
-        service_type = intent.get("service_type", "").lower()
 
         from services.firebase import list_providers as firestore_list_providers
         from services.providers_integrity import format_provider_record
@@ -158,7 +137,9 @@ class DhundhoAgent:
         pool = list(all_providers)
         count_stage("all_db", len(pool))
 
-        after_service = [p for p in pool if _service_matches(service_type, p)]
+        from services.service_categories import filter_providers_by_category
+
+        after_service = filter_providers_by_category(pool, normalized_category)
         count_stage("after_service_match", len(after_service))
 
         after_city = [p for p in after_service if (p.get("city") or "").lower() == (city or "").lower()]
@@ -184,6 +165,7 @@ class DhundhoAgent:
         count_stage("with_distance_sorted", len(with_distance))
 
         filters_applied = [
+            f"normalized_category={normalized_category!r}",
             f"service_type~match({service_type!r})",
             f"city={city}",
             f"job_complexity={complexity} → provider.complexity_level in {allowed_complexities}",

@@ -37,6 +37,8 @@ from models.request import (
     BidRequest,
     BookingRequest,
     DisputeRequest,
+    DisputeRespondRequest,
+    DisputeFinalizeRequest,
     FeedbackRequest,
     VoiceRequest,
     TTSRequest,
@@ -87,7 +89,14 @@ from services.firebase import (
 from services.users_integrity import normalize_role
 from services.worker_service import get_worker_bookings, resolve_worker_provider_id, summarize_worker_earnings
 from services.booking_service import set_booking_status, _enrich_booking
-from services.dispute_service import file_dispute
+from services.dispute_config import dispute_instant_resolve_enabled
+from services.dispute_service import (
+    file_dispute,
+    finalize_dispute,
+    list_worker_disputes,
+    respond_to_dispute,
+)
+from services.dispute_eligibility import NO_SHOW_GRACE_HOURS, assess_dispute_eligibility
 from services.push_notify import (
     notify_booking_created,
     notify_feedback_received,
@@ -151,27 +160,37 @@ def _load_providers() -> list:
 
 
 def _fallback_ranked_providers(intent: dict, limit: int = 8) -> list:
-    """When Dhundho/Chunno return empty, still show matching technicians from seed data."""
-    from agents.dhundho import _service_matches
+    """When Dhundho/Chunno return empty, only inject providers in the SAME service category."""
     from services.providers_integrity import format_provider_record
+    from services.service_categories import filter_providers_by_category, intent_category
 
     intent = intent or {}
-    service_type = (intent.get("service_type") or "").strip()
+    category = intent_category(intent)
+    if not category:
+        return []
+
     city = (intent.get("city") or "Islamabad").strip()
-    pool = [_load_providers()]
-    if service_type:
-        matched = [p for p in pool if _service_matches(service_type, p)]
-        if matched:
-            pool = matched
+    pool = [format_provider_record(p, p.get("id")) for p in _load_providers()]
+    pool = filter_providers_by_category(pool, category)
     if city:
         same_city = [p for p in pool if (p.get("city") or "").lower() == city.lower()]
         if same_city:
             pool = same_city
-    ranked = [format_provider_record(p, p.get("id")) for p in pool[:limit]]
+    ranked = pool[:limit]
     for i, p in enumerate(ranked):
         p.setdefault("ranking_score", 1.0 - i * 0.05)
         p.setdefault("ranking_reason_urdu", "Aapki request ke liye qareeb technician")
     return ranked
+
+
+def _safeguard_providers_ranked(intent: dict, providers_ranked: list) -> list:
+    """Final API guard: drop providers that do not match intent category."""
+    from services.service_categories import filter_providers_by_category, intent_category
+
+    category = intent_category(intent or {})
+    if not category:
+        return []
+    return filter_providers_by_category(list(providers_ranked or []), category)
 
 
 _AGENT_URDU = {
@@ -230,6 +249,12 @@ async def health():
         "environment": config.ENVIRONMENT,
         "features": {
             "dispute_repeat_allowed": True,
+            "dispute_two_sided": not dispute_instant_resolve_enabled(),
+            "dispute_instant_resolve": dispute_instant_resolve_enabled(),
+            "dispute_worker_respond": True,
+            "hifazat_dispute_eval": True,
+            "hifazat_feedback_trust": True,
+            "dispute_finalize_jhagra": True,
             "agent_logs_on_request": True,
             "fcm_pipeline": True,
             "notification_dedupe_seconds": 90,
@@ -276,6 +301,8 @@ async def handle_service_request(body: ServiceRequest):
 
     if not providers_ranked:
         providers_ranked = _fallback_ranked_providers(intent)
+
+    providers_ranked = _safeguard_providers_ranked(intent, providers_ranked)
 
     best_provider = providers_ranked[0] if providers_ranked else None
 
@@ -369,7 +396,7 @@ async def confirm_booking(body: BookingRequest):
 
 @app.post("/api/dispute")
 async def handle_dispute(body: DisputeRequest):
-    """JHAGRA agent resolves a dispute."""
+    """File a dispute (default: open two-sided lifecycle; instant JHAGRA if DISPUTE_INSTANT_RESOLVE=true)."""
     uid = _require_firebase_uid(body.user_id)
     return await file_dispute(
         user_id=uid,
@@ -402,12 +429,58 @@ async def list_user_disputes(user_id: str):
     return {"user_id": uid, "disputes": await list_disputes_for_user(uid)}
 
 
+@app.get("/api/disputes/worker/{user_id}")
+async def list_worker_disputes_route(user_id: str, status: Optional[str] = None):
+    """Worker dashboard — disputes against linked provider (default: all statuses; use status=open)."""
+    uid = _require_firebase_uid(user_id)
+    return await list_worker_disputes(uid, status=status)
+
+
+@app.post("/api/dispute/{dispute_id}/respond")
+async def respond_to_dispute_route(dispute_id: str, body: DisputeRespondRequest):
+    """Worker response — open → under_review (does not modify booking)."""
+    uid = _require_firebase_uid(body.user_id)
+    return await respond_to_dispute(
+        worker_uid=uid,
+        dispute_id=dispute_id,
+        message=body.message,
+    )
+
+
+@app.post("/api/dispute/{dispute_id}/finalize")
+async def finalize_dispute_route(dispute_id: str, body: DisputeFinalizeRequest):
+    """Phase E — JHAGRA final resolution after HIFAZAT review (under_review)."""
+    uid = _require_firebase_uid(body.user_id)
+    return await finalize_dispute(user_id=uid, dispute_id=dispute_id)
+
+
 @app.get("/api/booking/{booking_id}")
 async def get_booking_status(booking_id: str):
     booking = await get_booking(booking_id)
     if not booking:
         raise HTTPException(status_code=404, detail=f"Booking {booking_id} not found")
     return await _enrich_booking(booking)
+
+
+@app.get("/api/booking/{booking_id}/dispute-eligibility")
+async def get_booking_dispute_eligibility(booking_id: str):
+    """Phase A — whether customer can file a dispute (read-only; no auto-cancel)."""
+    bid = (booking_id or "").strip()
+    if not bid:
+        raise HTTPException(status_code=400, detail="booking_id is required")
+    booking = await get_booking(bid)
+    if not booking:
+        raise HTTPException(status_code=404, detail=f"Booking {bid} not found")
+    check = assess_dispute_eligibility(booking)
+    return {
+        "booking_id": bid,
+        "eligible": check.eligible,
+        "reason": check.reason,
+        "message": check.message,
+        "booking_status": check.booking_status,
+        "would_auto_cancel": check.would_auto_cancel,
+        "no_show_grace_hours": NO_SHOW_GRACE_HOURS,
+    }
 
 
 @app.get("/api/bookings/user/{user_id}")
@@ -1009,13 +1082,46 @@ async def submit_feedback(body: FeedbackRequest):
     booking = await get_booking(body.booking_id)
     status = (booking.get("status") or "").lower() if booking else ""
     if booking and status != "completed":
-        await set_booking_status(body.booking_id, "completed")
+        booking = await set_booking_status(body.booking_id, "completed")
     elif booking:
         await notify_feedback_received(booking, body.provider_id, body.rating)
+
+    hifazat_result: dict = {}
+    trust_applied: dict = {}
+    try:
+        from agents.hifazat import HifazatAgent
+        from services.trust_service import apply_feedback_trust, build_feedback_payload
+
+        booking = booking or await get_booking(body.booking_id) or {}
+        payload = await build_feedback_payload(
+            booking=booking,
+            rating=body.rating,
+            review=body.review,
+            tags=body.tags or [],
+        )
+        hifazat_result = await HifazatAgent().process_feedback(payload)
+        trust_applied = await apply_feedback_trust(
+            hifazat_result,
+            provider_id=body.provider_id,
+            customer_id=body.user_id,
+        )
+    except Exception as exc:
+        print(f"[HIFAZAT] feedback trust failed: {exc}")
+
+    msg = f"Shukriya! Aapka feedback submit ho gaya. Rating: {body.rating}/5"
+    if hifazat_result.get("provider_message"):
+        msg = str(hifazat_result["provider_message"])
+
     return {
         "success": True,
         "review_id": review_id,
-        "message": f"Shukriya! Aapka feedback submit ho gaya. Rating: {body.rating}/5",
+        "message": msg,
+        "hifazat": {
+            "severity": hifazat_result.get("severity"),
+            "action_taken": hifazat_result.get("action_taken"),
+            "trust_point_change": hifazat_result.get("trust_point_change"),
+        },
+        "trust_applied": trust_applied,
     }
 
 

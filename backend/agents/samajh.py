@@ -19,6 +19,8 @@ Return STRICT JSON ONLY — no markdown fences, no commentary, no keys other tha
 If confidence_score >= 0.75, return exactly this shape:
 {
   "service_type": "Human-readable service e.g. AC Repair, Plumber, Electrician",
+  "normalized_category": "Canonical slug: ac_technician | plumber | electrician | tutor | beautician | carpenter | painter",
+  "keywords": ["short", "tokens", "from", "user", "request"],
   "location": "Area/neighborhood as stated or best guess, e.g. DHA Phase 6",
   "city": "Karachi | Lahore | Islamabad | Rawalpindi | unknown",
   "time_preference": "now | today | tomorrow_morning | tomorrow_afternoon | this_week | flexible",
@@ -436,9 +438,10 @@ class SamajhAgent:
 
         # Clean internal keys before returning to API (graph / FastAPI strip these)
         public = {k: v for k, v in intent.items() if not k.startswith("_")}
+        from services.service_categories import enrich_intent
+
+        intent_for_api = enrich_intent(public, user_input)
         trace = log
-        # keep _fallback_used on public? No — store only in internal; graph returns public intent
-        intent_for_api = public
         return intent_for_api, trace, {"fallback_used": fallback_used}
 
     async def extract_intent(self, user_input: str) -> dict[str, Any]:

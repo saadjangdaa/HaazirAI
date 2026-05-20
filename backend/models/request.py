@@ -32,6 +32,15 @@ class DisputeRequest(BaseModel):
     evidence_url: Optional[str] = None
 
 
+class DisputeRespondRequest(BaseModel):
+    user_id: str
+    message: str
+
+
+class DisputeFinalizeRequest(BaseModel):
+    user_id: str
+
+
 class FeedbackRequest(BaseModel):
     booking_id: str
     user_id: str

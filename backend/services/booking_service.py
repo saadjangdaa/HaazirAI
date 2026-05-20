@@ -32,6 +32,13 @@ async def set_booking_status(booking_id: str, new_status: str) -> dict:
 
     await update_booking(booking_id, update_fields)
     updated = await get_booking(booking_id)
+    if new_status == "completed" and updated:
+        try:
+            from services.trust_service import on_booking_completed
+
+            await on_booking_completed(updated)
+        except Exception as e:
+            print(f"[Trust] on_booking_completed failed: {e}")
     try:
         await notify_booking_status_change(updated, old_status, new_status)
     except Exception as e:
