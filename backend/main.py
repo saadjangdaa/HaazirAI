@@ -200,6 +200,27 @@ def _filter_providers_by_service(providers: list, intent: dict) -> list:
     return filtered if filtered else providers
 
 
+# Maps common misspellings / non-English words Gemini might use to canonical English service names
+_SERVICE_ALIASES: dict[str, str] = {
+    "mechanic": "mechanic", "car mechanic": "mechanic", "auto mechanic": "mechanic",
+    "مکينک": "mechanic", "مکینک": "mechanic",
+    "plumber": "plumber", "پلمبر": "plumber", "نلساز": "plumber",
+    "electrician": "electrician", "الیکٹریشن": "electrician", "بجلی": "electrician",
+    "ac repair": "AC repair", "ac": "AC repair", "اے سی": "AC repair",
+    "tutor": "tutor", "ٹیوٹر": "tutor", "استاد": "tutor",
+    "carpenter": "carpenter", "بڑھئی": "carpenter",
+    "beautician": "beautician", "بیوٹیشن": "beautician",
+}
+
+def _normalize_service(service: str) -> str:
+    """Map any service string (including non-English) to a canonical English service name."""
+    s = (service or "").strip().lower()
+    for alias, canonical in _SERVICE_ALIASES.items():
+        if alias.lower() in s:
+            return canonical
+    return service  # return as-is if no alias matched
+
+
 _AGENT_URDU = {
     "Samajh": "سمجھ",
     "Dhundho": "ڈھونڈو",
@@ -688,7 +709,7 @@ async def conversation(body: ConversationRequest):
 
     if result.get("search_trigger"):
         trigger = result["search_trigger"]
-        service = trigger.get("service", "service")
+        service = _normalize_service(trigger.get("service", "service"))
         location = trigger.get("location", "Islamabad")
         urgency = trigger.get("urgency", "medium")
 

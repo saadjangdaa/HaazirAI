@@ -161,6 +161,7 @@ export const MOCK_WORKER_BOOKINGS: UserBooking[] = [
     status: 'completed',
     price: 1500,
     created_at: '2025-05-17T09:00:00Z',
+    tracking_steps: [],
   },
   {
     booking_id: 'HAZ-WRK-H02',
@@ -172,6 +173,7 @@ export const MOCK_WORKER_BOOKINGS: UserBooking[] = [
     status: 'completed',
     price: 2800,
     created_at: '2025-05-15T05:00:00Z',
+    tracking_steps: [],
   },
 ];
 
