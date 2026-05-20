@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  ActivityIndicator, Animated, Easing, Alert, TextInput, KeyboardAvoidingView, Platform,
+  ActivityIndicator, Animated, Easing, Alert, TextInput, KeyboardAvoidingView, Platform, Linking,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -10,10 +10,12 @@ import { useAuth } from '../context/AuthContext';
 import { requestMicPermission, startRecording, stopAndTranscribe } from '../services/voiceRecord';
 import { playBase64Audio, stopSpeaking } from '../services/voicePlayback';
 import {
-  startConversation, sendMessage, negotiateProviders, directBook,
-  ConversationTurn, ConversationPhase, BookingResult, NegotiatedBid,
+  startConversation, sendMessage, negotiateProviders, directBook, toBiddingResponse,
+  ConversationTurn, ConversationPhase, BookingResult, NegotiatedBid, HistoryEntry,
 } from '../services/conversationApi';
+import { BiddingResponse, Bid } from '../services/api';
 import ProviderCard from '../components/ProviderCard';
+import BiddingPanel from '../components/BiddingPanel';
 
 export const options = { headerShown: false };
 
@@ -22,7 +24,8 @@ type ChatItem =
   | { id: string; kind: 'text'; role: 'user' | 'agent'; text: string }
   | { id: string; kind: 'providers'; items: any[] }
   | { id: string; kind: 'actions' }
-  | { id: string; kind: 'negotiated'; bid: NegotiatedBid };
+  | { id: string; kind: 'negotiated'; bid: NegotiatedBid }
+  | { id: string; kind: 'bidding'; result: BiddingResponse };
 
 let _idCtr = 0;
 function mk<T extends Omit<ChatItem, 'id'>>(item: T): ChatItem {
@@ -51,9 +54,10 @@ export default function VoiceConversationScreen() {
   const scrollRef = useRef<ScrollView>(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const sessionId = useRef(generateSessionId());
-  const userName = user?.name || '';
+  const userName = user?.username || (user as any)?.name || '';
 
   const [chat, setChat] = useState<ChatItem[]>([]);
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [uiState, setUiState] = useState<UIState>('greeting');
   const [phase, setPhase] = useState<ConversationPhase>('intake');
   const [providers, setProviders] = useState<any[]>([]);
@@ -80,6 +84,9 @@ export default function VoiceConversationScreen() {
   const playAgentTurn = useCallback((turn: ConversationTurn) => {
     setPhase(turn.phase);
     const agentText = turn.response_text?.trim() || '...';
+
+    // Record agent response in history for session recovery
+    setHistory((prev) => [...prev, { role: 'assistant', content: agentText }]);
 
     const additions: ChatItem[] = [mk({ kind: 'text', role: 'agent', text: agentText })];
 
@@ -110,7 +117,7 @@ export default function VoiceConversationScreen() {
     let cancelled = false;
     (async () => {
       try {
-        const turn = await startConversation(sessionId.current, user?.uid || 'user_001', userName);
+        const turn = await startConversation(sessionId.current, user?.id || 'user_001', userName);
         if (!cancelled) playAgentTurn(turn);
       } catch {
         if (!cancelled) {
@@ -136,8 +143,10 @@ export default function VoiceConversationScreen() {
         const { text } = await stopAndTranscribe();
         if (!text) { setUiState('idle'); return; }
         setChat((prev) => [...prev, mk({ kind: 'text', role: 'user', text })]);
+        setHistory((prev) => [...prev, { role: 'user', content: text }]);
         setUiState('searching');
-        const turn = await sendMessage(sessionId.current, text, user?.uid || 'anonymous', userName);
+        const currentHistory = history.concat({ role: 'user', content: text });
+        const turn = await sendMessage(sessionId.current, text, user?.id || 'anonymous', userName, currentHistory);
         playAgentTurn(turn);
       } catch (e: any) {
         Alert.alert('Error', e?.message || 'Masla hua — dobara try karein');
@@ -167,9 +176,11 @@ export default function VoiceConversationScreen() {
     if (!text || uiState === 'done') return;
     setTextInput('');
     setChat((prev) => [...prev, mk({ kind: 'text', role: 'user', text })]);
+    setHistory((prev) => [...prev, { role: 'user', content: text }]);
     setUiState('searching');
     try {
-      const turn = await sendMessage(sessionId.current, text, user?.uid || 'anonymous', userName);
+      const currentHistory = history.concat({ role: 'user', content: text });
+      const turn = await sendMessage(sessionId.current, text, user?.id || 'anonymous', userName, currentHistory);
       playAgentTurn(turn);
     } catch (e: any) {
       Alert.alert('Error', e?.message || 'Masla hua — dobara try karein');
@@ -186,7 +197,7 @@ export default function VoiceConversationScreen() {
     ]);
     setUiState('negotiating');
     try {
-      const res = await negotiateProviders(sessionId.current, user?.uid || 'anonymous', providers);
+      const res = await negotiateProviders(sessionId.current, user?.id || 'anonymous', providers);
       const best = res.top_bids?.[0];
       if (best) {
         const saved = (best.savings ?? 0) > 0 ? ` Rs. ${best.savings!.toLocaleString()} bachaye!` : '';
@@ -208,7 +219,7 @@ export default function VoiceConversationScreen() {
 
   // ── Direct book ───────────────────────────────────────────────────────────
   const handleDirectBook = async (providerId?: string, priceAccepted?: number) => {
-    const uid = user?.uid;
+    const uid = user?.id;
     if (!uid) { Alert.alert('Login Karein', 'Booking ke liye pehle login karein'); return; }
     const top = providers.find((p) => p.id === providerId) || providers[0];
     const pid = providerId || top?.id;
