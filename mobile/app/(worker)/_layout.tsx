@@ -7,7 +7,7 @@ export default function WorkerLayout() {
     <Tabs
       tabBar={(props) => <FloatingTabBar {...props} />}
       screenOptions={{
-        headerStyle: { backgroundColor: Colors.workerAccent, shadowColor: 'transparent', elevation: 0 },
+        headerStyle: { backgroundColor: Colors.primary, shadowColor: 'transparent', elevation: 0 },
         headerTintColor: Colors.textInverse,
         headerTitleStyle: { color: Colors.textInverse, fontWeight: FontWeight.bold, fontSize: FontSize.lg },
         contentStyle: { backgroundColor: Colors.background },
@@ -23,7 +23,7 @@ export default function WorkerLayout() {
       />
       <Tabs.Screen
         name="route"
-        options={{ title: 'Bhai' }}
+        options={{ title: 'Route' }}
       />
       <Tabs.Screen
         name="profile"

@@ -138,6 +138,7 @@ function RootLayoutNav() {
         <Stack.Screen name="language-select" options={{ headerShown: false }} />
         <Stack.Screen name="(customer)" options={{ headerShown: false }} />
         <Stack.Screen name="(worker)" options={{ headerShown: false }} />
+        <Stack.Screen name="nearby" options={{ headerShown: false }} />
         <Stack.Screen name="results" options={{ title: 'Providers Mila Diye' }} />
         <Stack.Screen name="booking" options={{ title: 'Booking Confirm Karein' }} />
         <Stack.Screen name="tracking" options={{ title: 'Service Progress' }} />

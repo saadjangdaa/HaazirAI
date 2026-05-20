@@ -174,6 +174,75 @@ export const MOCK_WORKER_BOOKINGS: UserBooking[] = [
   },
 ];
 
+export interface MockDispute {
+  id: string;
+  bookingId: string;
+  service: string;
+  providerName: string;
+  type: string;
+  typeLabel: string;
+  description: string;
+  status: 'open' | 'resolved' | 'closed';
+  createdAt: string;
+  resolution?: string;
+  refundAmount?: number;
+}
+
+export const MOCK_DISPUTES: MockDispute[] = [
+  {
+    id: 'DSP-MOCK-9F3A',
+    bookingId: 'HAZ-MOCK-003',
+    service: 'Electrician',
+    providerName: 'Rashid Hussain',
+    type: 'quality',
+    typeLabel: 'Quality Complaint',
+    description: 'Electrician ne kaam adhoora chor diya — wire connection nahi ki aur chale gaye.',
+    status: 'resolved',
+    createdAt: '2025-05-20T08:00:00Z',
+    resolution:
+      'JHAGRA agent ne faisle kiya: Provider Rashid Hussain 2 din mein wapas aega service dobara karne ke liye — bilkul free. Provider ki profile pe warning flag lag gaya.',
+  },
+  {
+    id: 'DSP-MOCK-B22C',
+    bookingId: 'HAZ-MOCK-002',
+    service: 'Plumber',
+    providerName: 'Aslam Khan',
+    type: 'price',
+    typeLabel: 'Price Disagreement',
+    description: 'Provider ne pehle Rs 800 mein karna kaha tha lekin baad mein 1200 maang raha hai.',
+    status: 'open',
+    createdAt: '2025-05-19T11:00:00Z',
+  },
+];
+
+export interface NearbyWorker {
+  id: string;
+  name: string;
+  service: string;
+  rating: number;
+  reviews: number;
+  priceMin: number;
+  priceMax: number;
+  distanceKm: number;
+  available: boolean;
+  verified: boolean;
+  completedJobs: number;
+  area: string;
+}
+
+export const MOCK_NEARBY_WORKERS: NearbyWorker[] = [
+  { id: 'w1', name: 'Muhammad Tariq', service: 'AC Repair', rating: 4.9, reviews: 132, priceMin: 1500, priceMax: 3500, distanceKm: 0.8, available: true, verified: true, completedJobs: 247, area: 'Gulshan-e-Iqbal' },
+  { id: 'w2', name: 'Aslam Khan', service: 'Plumber', rating: 4.7, reviews: 89, priceMin: 600, priceMax: 1500, distanceKm: 1.2, available: true, verified: true, completedJobs: 183, area: 'North Nazimabad' },
+  { id: 'w3', name: 'Rashid Hussain', service: 'Electrician', rating: 4.8, reviews: 211, priceMin: 800, priceMax: 2500, distanceKm: 1.5, available: true, verified: true, completedJobs: 312, area: 'DHA Phase 2' },
+  { id: 'w4', name: 'Farhan Ahmed', service: 'Tutor', rating: 4.6, reviews: 54, priceMin: 500, priceMax: 1200, distanceKm: 2.1, available: false, verified: true, completedJobs: 98, area: 'Clifton' },
+  { id: 'w5', name: 'Zubair Malik', service: 'Carpenter', rating: 4.5, reviews: 67, priceMin: 1000, priceMax: 4000, distanceKm: 2.4, available: true, verified: false, completedJobs: 74, area: 'Gulshan-e-Iqbal' },
+  { id: 'w6', name: 'Imran Baig', service: 'Electrician', rating: 4.4, reviews: 43, priceMin: 700, priceMax: 2000, distanceKm: 3.0, available: true, verified: true, completedJobs: 56, area: 'Nazimabad' },
+  { id: 'w7', name: 'Khalid Rehman', service: 'AC Repair', rating: 4.7, reviews: 98, priceMin: 1200, priceMax: 3000, distanceKm: 3.3, available: true, verified: true, completedJobs: 189, area: 'PECHS' },
+  { id: 'w8', name: 'Sajid Mehmood', service: 'Plumber', rating: 4.3, reviews: 31, priceMin: 500, priceMax: 1200, distanceKm: 4.1, available: false, verified: false, completedJobs: 42, area: 'Malir' },
+  { id: 'w9', name: 'Bilal Hassan', service: 'Beautician', rating: 4.9, reviews: 77, priceMin: 1500, priceMax: 5000, distanceKm: 1.8, available: true, verified: true, completedJobs: 134, area: 'Defence' },
+  { id: 'w10', name: 'Naeem Siddiqui', service: 'Carpenter', rating: 4.6, reviews: 52, priceMin: 900, priceMax: 3500, distanceKm: 2.7, available: true, verified: true, completedJobs: 88, area: 'Gulberg' },
+];
+
 export const MOCK_WORKER_EARNINGS: WorkerEarningsSummary = {
   today_total: 4300,
   today_jobs: 2,

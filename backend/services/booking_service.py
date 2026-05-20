@@ -1,4 +1,6 @@
 """Booking status transitions with lifecycle validation + push on change."""
+from datetime import datetime, timezone
+
 from fastapi import HTTPException
 
 from services.booking_lifecycle import build_tracking_steps, can_transition
@@ -24,7 +26,11 @@ async def set_booking_status(booking_id: str, new_status: str) -> dict:
     if old_status == new_status:
         return await _enrich_booking(booking)
 
-    await update_booking(booking_id, {"status": new_status})
+    update_fields: dict = {"status": new_status}
+    if new_status == "completed":
+        update_fields["completed_at"] = datetime.now(timezone.utc).isoformat()
+
+    await update_booking(booking_id, update_fields)
     updated = await get_booking(booking_id)
     try:
         await notify_booking_status_change(updated, old_status, new_status)

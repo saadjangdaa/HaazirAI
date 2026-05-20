@@ -10,6 +10,8 @@ import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '../consta
 import { useAuth, UserRole, formatAuthBootstrapError } from '../context/AuthContext';
 import { formatAuthError } from '../utils/authErrors';
 
+const CITIES = ['Islamabad', 'Rawalpindi', 'Lahore', 'Karachi', 'Faisalabad', 'Multan', 'Peshawar', 'Quetta'];
+
 export default function SignupScreen() {
   const router = useRouter();
   const { signUp } = useAuth();
@@ -18,6 +20,8 @@ export default function SignupScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [role, setRole] = useState<UserRole>('customer');
+  const [cnic, setCnic] = useState('');
+  const [city, setCity] = useState('');
   const [busy, setBusy] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
@@ -32,7 +36,7 @@ export default function SignupScreen() {
     }
     setBusy(true);
     try {
-      await signUp(email.trim(), password, name.trim(), role);
+      await signUp(email.trim(), password, name.trim(), role, cnic.trim() || undefined, city || undefined);
       if (role === 'worker') router.replace('/worker-signup');
     } catch (e) {
       const code = (e as { code?: string })?.code;
@@ -151,6 +155,38 @@ export default function SignupScreen() {
           </TouchableOpacity>
         </View>
 
+        {role === 'customer' && (
+          <>
+            <Text style={styles.label}>CNIC <Text style={styles.optional}>(optional)</Text></Text>
+            <View style={styles.inputWrapper}>
+              <Ionicons name="card-outline" size={18} color={Colors.textMuted} style={styles.inputIcon} />
+              <TextInput
+                style={styles.input}
+                placeholder="12345-1234567-1"
+                placeholderTextColor={Colors.textMuted}
+                value={cnic}
+                onChangeText={setCnic}
+                keyboardType="numeric"
+                maxLength={15}
+              />
+            </View>
+
+            <Text style={styles.label}>Aapka Shehar</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: Spacing.xs }} contentContainerStyle={{ gap: Spacing.xs, paddingVertical: 4 }}>
+              {CITIES.map((c) => (
+                <TouchableOpacity
+                  key={c}
+                  style={[styles.cityChip, city === c && styles.cityChipActive]}
+                  onPress={() => setCity(c)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={[styles.cityChipText, city === c && styles.cityChipTextActive]}>{c}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </>
+        )}
+
         <TouchableOpacity
           style={[styles.btn, role === 'worker' && styles.btnWorker, Shadow.primary]}
           onPress={handleSignup}
@@ -246,4 +282,14 @@ const styles = StyleSheet.create({
   loginLink: { marginTop: Spacing.lg, alignItems: 'center', paddingVertical: Spacing.sm },
   loginLinkText: { color: Colors.textMuted, fontSize: FontSize.sm },
   loginLinkAccent: { color: Colors.primary, fontWeight: FontWeight.bold },
+
+  optional: { color: Colors.textMuted, fontWeight: FontWeight.regular as 'normal', fontSize: FontSize.xs },
+  cityChip: {
+    paddingHorizontal: Spacing.md, paddingVertical: 8,
+    borderRadius: Radius.full, borderWidth: 1.5,
+    borderColor: Colors.border, backgroundColor: Colors.inputBg,
+  },
+  cityChipActive: { borderColor: Colors.primary, backgroundColor: Colors.primaryLight },
+  cityChipText: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: FontWeight.semibold },
+  cityChipTextActive: { color: Colors.primary, fontWeight: FontWeight.bold },
 });

@@ -24,7 +24,7 @@ export default function CustomerLayout() {
       />
       <Tabs.Screen
         name="disputes"
-        options={{ title: 'Bhai' }}
+        options={{ title: 'Disputes' }}
       />
       <Tabs.Screen
         name="profile"

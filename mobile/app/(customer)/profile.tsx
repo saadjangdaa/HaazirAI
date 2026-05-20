@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, Modal, Switch } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, Modal, Switch, Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../../constants/theme';
@@ -56,21 +56,23 @@ export default function CustomerProfileScreen() {
     return () => { cancelled = true; };
   }, [user?.id, isMockMode]);
 
+  const doLogout = async () => {
+    try { await signOut(); } finally { router.replace('/login'); }
+  };
+
   const handleLogout = () => {
+    if (Platform.OS === 'web') {
+      doLogout();
+      return;
+    }
     Alert.alert(tr.logout, tr.logoutConfirm, [
       { text: tr.cancel, style: 'cancel' },
-      {
-        text: tr.logout,
-        style: 'destructive',
-        onPress: async () => {
-          try { await signOut(); } finally { router.replace('/login'); }
-        },
-      },
+      { text: tr.logout, style: 'destructive', onPress: doLogout },
     ]);
   };
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
+    <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 110 }]}>
 
       {/* Demo Mode Banner */}
       {isMockMode && (

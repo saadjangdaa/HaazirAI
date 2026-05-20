@@ -301,6 +301,7 @@ export interface UserProfile {
   display_name?: string;
   phone?: string;
   cnic?: string;
+  city?: string;
   role?: 'customer' | 'worker';
   profile_complete?: boolean;
   push_token?: string;

@@ -41,6 +41,11 @@ const CustomerHomeScreen = () => {
   const [apiWakingUp, setApiWakingUp] = useState(false);
   const [recentRequests, setRecentRequests] = useState<string[]>([]);
 
+  // Pre-fill location from the customer's city saved at signup.
+  useEffect(() => {
+    if (user?.city && !location) setLocation(user.city);
+  }, [user?.city]);
+
   useEffect(() => {
     let mounted = true;
     let retryTimer: ReturnType<typeof setTimeout>;
@@ -216,24 +221,6 @@ const CustomerHomeScreen = () => {
           </View>
         </View>
 
-        {/* Search bar in header */}
-        <View style={styles.searchBar}>
-          <Ionicons name="search-outline" size={18} color={Colors.textMuted} />
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Kya chahiye? (Urdu ya English)"
-            placeholderTextColor={Colors.textMuted}
-            value={input}
-            onChangeText={setInput}
-            returnKeyType="search"
-            onSubmitEditing={handleSubmit}
-          />
-          {input.length > 0 && (
-            <TouchableOpacity onPress={() => setInput('')}>
-              <Ionicons name="close-circle" size={18} color={Colors.textMuted} />
-            </TouchableOpacity>
-          )}
-        </View>
       </View>
 
       <ScrollView style={styles.body} contentContainerStyle={styles.bodyContent} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
@@ -309,11 +296,27 @@ const CustomerHomeScreen = () => {
               <Ionicons name="hardware-chip-outline" size={22} color={Colors.primary} />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.agentCardTitle}>4 AI Agents Active</Text>
-              <Text style={styles.agentCardText}>SAMAJH · DHUNDHO · CHUNNO · HISAAB milkar aapka best provider chunte hain</Text>
+              <Text style={styles.agentCardTitle}>6 AI Agents Active</Text>
+              <Text style={styles.agentCardText}>SAMJHO · CHUNNO · DHUNDHO · PAKKA · MOLTOL · HIFAZAT milkar aapka best provider chunte hain</Text>
             </View>
           </View>
         </View>
+
+        {/* Nearby workers card */}
+        <TouchableOpacity style={[styles.nearbyCard, Shadow.sm]} onPress={() => router.push('/nearby')} activeOpacity={0.85}>
+          <View style={styles.nearbyCardLeft}>
+            <View style={styles.nearbyIconBox}>
+              <Ionicons name="people-outline" size={22} color={Colors.textInverse} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.nearbyCardTitle}>Nearby Workers</Text>
+              <Text style={styles.nearbyCardText}>{user?.city || 'Aapke shehar'} mein available workers dekhein aur seedha book karein</Text>
+            </View>
+          </View>
+          <View style={styles.nearbyArrow}>
+            <Ionicons name="chevron-forward" size={18} color={Colors.primary} />
+          </View>
+        </TouchableOpacity>
 
         {/* Recent requests */}
         {recentRequests.length > 0 && (
@@ -330,16 +333,11 @@ const CustomerHomeScreen = () => {
         )}
 
         {/* Submit */}
-        {loading ? (
+        {loading && (
           <View style={styles.loadingCard}>
             <ActivityIndicator size="large" color={Colors.primary} />
             <Text style={styles.loadingMsg}>{agentMsg}</Text>
           </View>
-        ) : (
-          <TouchableOpacity style={[styles.submitBtn, Shadow.primary]} onPress={handleSubmit} activeOpacity={0.85}>
-            <Ionicons name="search" size={18} color={Colors.textInverse} style={{ marginRight: 8 }} />
-            <Text style={styles.submitText}>Haazir Karo!</Text>
-          </TouchableOpacity>
         )}
 
         <TouchableOpacity style={styles.logsLink} onPress={() => router.push('/logs')}>
@@ -463,6 +461,27 @@ const styles = StyleSheet.create({
   },
   agentCardTitle: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: Colors.primary, marginBottom: 2 },
   agentCardText: { fontSize: FontSize.xs, color: Colors.textMuted, lineHeight: 16 },
+
+  // Nearby card
+  nearbyCard: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: Colors.surface, borderRadius: Radius.xl,
+    padding: Spacing.md, marginBottom: Spacing.lg,
+    borderWidth: 1.5, borderColor: Colors.primary,
+  },
+  nearbyCardLeft: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
+  nearbyIconBox: {
+    width: 44, height: 44, borderRadius: 22,
+    backgroundColor: Colors.primary,
+    justifyContent: 'center', alignItems: 'center',
+  },
+  nearbyCardTitle: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: Colors.primary, marginBottom: 2 },
+  nearbyCardText: { fontSize: FontSize.xs, color: Colors.textMuted, lineHeight: 16 },
+  nearbyArrow: {
+    width: 30, height: 30, borderRadius: 15,
+    backgroundColor: Colors.primaryLight,
+    justifyContent: 'center', alignItems: 'center',
+  },
 
   // Recent
   recentItem: {

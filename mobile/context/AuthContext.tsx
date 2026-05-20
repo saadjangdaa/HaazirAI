@@ -46,6 +46,7 @@ export interface AuthUser {
   username: string;
   phone: string;
   cnic: string;
+  city: string;
   role: UserRole;
   profileComplete: boolean;
   workerOnboarded: boolean;
@@ -56,6 +57,7 @@ export interface ProfileFields {
   username: string;
   phone: string;
   cnic: string;
+  city?: string;
 }
 
 interface AuthContextType {
@@ -67,7 +69,7 @@ interface AuthContextType {
   needsLanguagePicker: boolean;
   completeLanguageSelect: () => void;
   signIn: (email: string, password: string) => Promise<AuthUser>;
-  signUp: (email: string, password: string, name: string, role: UserRole) => Promise<AuthUser>;
+  signUp: (email: string, password: string, name: string, role: UserRole, cnic?: string, city?: string) => Promise<AuthUser>;
   completeWorkerSignup: (data: WorkerData) => Promise<AuthUser>;
   /** Await POST /api/users/sync before booking/request flows — returns fresh server profile. */
   ensureProfileSyncedBeforeRequest: () => Promise<AuthUser>;
@@ -78,7 +80,7 @@ const AuthContext = createContext<AuthContextType>({} as AuthContextType);
 
 async function writeUserToFirestore(
   uid: string,
-  data: { email: string; username: string; name: string; role: UserRole; displayName?: string }
+  data: { email: string; username: string; name: string; role: UserRole; displayName?: string; cnic?: string; city?: string }
 ): Promise<void> {
   try {
     const ref = doc(db, 'users', uid);
@@ -97,6 +99,8 @@ async function writeUserToFirestore(
         role: data.role,
         profile_complete: true,
         last_login: serverTimestamp(),
+        ...(data.cnic ? { cnic: data.cnic } : {}),
+        ...(data.city ? { city: data.city } : {}),
         ...(snap.exists() ? {} : { created_at: serverTimestamp(), booking_history: [] }),
       },
       { merge: true }
@@ -146,9 +150,11 @@ function nameToUsername(name: string, uid: string): string {
 
 /** Backfill display name for legacy accounts (Firebase-only signup, partial server sync). */
 function deriveProfileUsername(fbUser: User, profile?: UserProfile | null): string {
-  const fromProfile = (profile?.display_name || profile?.username || profile?.name || '').trim();
+  // Prefer already-slugified username/name fields; display_name may contain spaces/caps
+  const fromProfile = (profile?.username || profile?.name || '').trim();
   if (fromProfile) return fromProfile;
-  const display = (fbUser.displayName || '').trim();
+  // Fall back to display_name or Firebase displayName, but always slugify first
+  const display = (profile?.display_name || fbUser.displayName || '').trim();
   if (display) return nameToUsername(display, fbUser.uid);
   const email = (fbUser.email || profile?.email || '').trim();
   if (email.includes('@')) {
@@ -166,6 +172,7 @@ function mapProfileToAuthUser(fbUser: User, profile: UserProfile | null, roleHin
   const username = deriveProfileUsername(fbUser, profile);
   const phone = profile?.phone || '';
   const cnic = profile?.cnic || '';
+  const city = profile?.city || '';
   const profileForCheck = {
     ...(profile || {}),
     username,
@@ -184,6 +191,7 @@ function mapProfileToAuthUser(fbUser: User, profile: UserProfile | null, roleHin
     username,
     phone,
     cnic,
+    city,
     role,
     profileComplete,
     workerOnboarded: isWorkerOnboarded(profile, role),
@@ -221,6 +229,9 @@ async function syncToBackend(
   }
   if (fields?.cnic) {
     body.cnic = fields.cnic;
+  }
+  if (fields?.city) {
+    body.city = fields.city;
   }
 
   if (workerData) {
@@ -373,7 +384,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     email: string,
     password: string,
     name: string,
-    role: UserRole
+    role: UserRole,
+    cnic?: string,
+    city?: string
   ): Promise<AuthUser> => {
     return runAuthOperation(async () => {
       const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
@@ -387,18 +400,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         name: username,
         displayName: name.trim(),
         role,
+        cnic: cnic?.trim() || undefined,
+        city: city?.trim() || undefined,
       });
 
       let profile: UserProfile | null = null;
       try {
-        profile = await syncToBackend(fbUser, role, { username });
+        profile = await syncToBackend(fbUser, role, {
+          username,
+          ...(cnic?.trim() ? { cnic: cnic.trim() } : {}),
+          ...(city?.trim() ? { city: city.trim() } : {}),
+        });
       } catch (syncErr) {
         if (__DEV__) console.warn('[Auth] Signup backend sync failed, proceeding with Firebase data:', syncErr);
       }
 
       const mapped = mapProfileToAuthUser(
         fbUser,
-        profile ?? { user_id: fbUser.uid, username, display_name: name.trim(), email: fbUser.email || email.trim(), role },
+        profile ?? { user_id: fbUser.uid, username, display_name: name.trim(), email: fbUser.email || email.trim(), role, cnic: cnic?.trim() || '', city: city?.trim() || '' },
         role
       );
       if (mountedRef.current) {
@@ -417,8 +436,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const completeWorkerSignup = async (data: WorkerData): Promise<AuthUser> => {
     return runAuthOperation(async () => {
       const fbUser = requireCurrentUser();
+      // Always slugify username — user.username may be a raw display name with spaces/caps
+      const rawName = user?.username || fbUser.displayName || fbUser.email?.split('@')[0] || '';
       const fields: ProfileFields = {
-        username: user?.username || '',
+        username: nameToUsername(rawName, fbUser.uid),
         phone: data.phone || user?.phone || '',
         cnic: data.cnic || user?.cnic || '',
       };

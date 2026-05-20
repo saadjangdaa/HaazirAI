@@ -132,20 +132,20 @@ export default function WorkerJobsScreen() {
   if (loading && bookings.length === 0) {
     return (
       <View style={styles.center}>
-        <ActivityIndicator size="large" color={Colors.workerAccent} />
+        <ActivityIndicator size="large" color={Colors.primary} />
       </View>
     );
   }
 
   return (
     <View style={styles.root}>
-      <StatusBar barStyle="light-content" backgroundColor={Colors.workerAccent} />
+      <StatusBar barStyle="light-content" backgroundColor={Colors.primary} />
 
       {/* Header */}
       <View style={[styles.header, { paddingTop: insets.top + Spacing.sm }]}>
         <View style={styles.headerLeft}>
           <View style={styles.avatarCircle}>
-            <Ionicons name="construct" size={20} color={Colors.workerAccent} />
+            <Ionicons name="construct" size={20} color={Colors.primary} />
           </View>
           <View>
             <Text style={styles.headerName}>{displayName}</Text>
@@ -176,7 +176,7 @@ export default function WorkerJobsScreen() {
       <ScrollView
         style={styles.body}
         contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={Colors.workerAccent} />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={Colors.primary} />}
         showsVerticalScrollIndicator={false}
       >
         {/* Status banner */}
@@ -292,12 +292,12 @@ export default function WorkerJobsScreen() {
                     activeOpacity={0.8}
                   >
                     {isAdvancing ? (
-                      <ActivityIndicator size="small" color={Colors.workerAccent} />
+                      <ActivityIndicator size="small" color={Colors.primary} />
                     ) : (
                       <>
-                        <Ionicons name={nextStep.icon as any} size={14} color={Colors.workerAccent} />
+                        <Ionicons name={nextStep.icon as any} size={14} color={Colors.primary} />
                         <Text style={styles.advanceBtnText}>{nextStep.label}</Text>
-                        <Ionicons name="chevron-forward" size={14} color={Colors.workerAccent} />
+                        <Ionicons name="chevron-forward" size={14} color={Colors.primary} />
                       </>
                     )}
                   </TouchableOpacity>
@@ -354,7 +354,7 @@ const styles = StyleSheet.create({
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: Colors.background },
 
   header: {
-    backgroundColor: Colors.workerAccent,
+    backgroundColor: Colors.primary,
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     paddingHorizontal: Spacing.md, paddingBottom: Spacing.md,
   },
@@ -397,27 +397,27 @@ const styles = StyleSheet.create({
 
   newJobCard: {
     backgroundColor: Colors.surface, borderRadius: Radius.xl,
-    borderWidth: 2, borderColor: Colors.workerAccent,
+    borderWidth: 2, borderColor: Colors.primary,
     padding: Spacing.md, marginBottom: Spacing.md,
   },
   newJobHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.sm },
   newJobBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
-    backgroundColor: Colors.workerAccent, borderRadius: Radius.full,
+    backgroundColor: Colors.primary, borderRadius: Radius.full,
     paddingHorizontal: Spacing.sm, paddingVertical: 4,
   },
   newJobBadgeText: { color: Colors.textInverse, fontSize: FontSize.xs, fontWeight: FontWeight.bold },
   countdownBadge: {
-    backgroundColor: Colors.workerAccentDim, borderRadius: Radius.full,
+    backgroundColor: Colors.primaryDim, borderRadius: Radius.full,
     paddingHorizontal: Spacing.sm, paddingVertical: 4,
   },
-  countdownText: { color: Colors.workerAccent, fontSize: FontSize.md, fontWeight: FontWeight.black },
+  countdownText: { color: Colors.primary, fontSize: FontSize.md, fontWeight: FontWeight.black },
   newJobTitle: { fontSize: FontSize.xl, fontWeight: FontWeight.bold, color: Colors.textPrimary, marginBottom: 6 },
   newJobMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: Spacing.md },
   newJobMeta: { fontSize: FontSize.sm, color: Colors.textMuted },
   newJobPriceRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.md },
   newJobPriceLabel: { fontSize: FontSize.sm, color: Colors.textMuted },
-  newJobPrice: { fontSize: FontSize.xxl, fontWeight: FontWeight.black, color: Colors.workerAccent },
+  newJobPrice: { fontSize: FontSize.xxl, fontWeight: FontWeight.black, color: Colors.primary },
   newJobBtns: { flexDirection: 'row', gap: Spacing.sm },
   acceptBtn: {
     flex: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
@@ -484,6 +484,6 @@ const styles = StyleSheet.create({
   advanceBtnText: {
     flex: 1,
     fontSize: FontSize.sm, fontWeight: FontWeight.semibold,
-    color: Colors.workerAccent,
+    color: Colors.primary,
   },
 });
