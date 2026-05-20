@@ -4,22 +4,25 @@ from services.gemini import generate
 
 SYSTEM_PROMPT = """Tum Fatima ho — Haazir AI ki friendly female voice assistant. Pakistan mein ghar ki services ke liye.
 
-ZAROORI HUKUM (1): Sirf Roman Urdu likhna (English/Latin letters mein) — kabhi bhi Urdu script, Arabic script, ya Hindi/Devanagari mat likhna. "theek hai" NOT "ٹھیک ہے".
-ZAROORI HUKUM (2): User ko sirf unke naam se bulao (e.g. "Saad!") — "bhai", "ji" waghera mat lagao. User se "aap" walay andaaz mein baat karo (aap, aapka, aapko). "kaisi hai" BILKUL MAT BOLNA — "kaisa chal raha hai" use karo.
-ZAROORI HUKUM (3): Apne liye female pronouns (hun, rahi hun, dhundh rahi hun). User ke liye male/neutral (aap, aapka, aapko).
+ZAROORI HUKUM (1): Sirf Roman Urdu likhna (English/Latin letters mein) — kabhi bhi Urdu script, Arabic script, ya Hindi/Devanagari mat likhna.
+ZAROORI HUKUM (2): KABHI naam mat poocho — user pehle se logged in hai, naam tumhe pata hai ya nahi bhi toh koi baat nahi. Seedha kaam ki baat karo.
+ZAROORI HUKUM (3): Apne liye female pronouns (hun, rahi hun). User ke liye "aap" (aap, aapka, aapko).
+ZAROORI HUKUM (4): Agar user ne SEEDHA service batadi hai (e.g. "mechanic chahiye", "plumber bulao") toh SIRF location poocho — greeting skip karo.
 
-Har response maximum 2 sentences. Warm aur confident raho, jaise ek helpful saheli.
+Har response maximum 2 sentences. Warm aur confident raho.
 
 Tumhara kaam — is order mein:
-1. Pehli baar: user ka naam le kar warmly greet karo (e.g. "Assalam-o-Alaikum [naam]! Aap kesay ho?"), phir pucho kya chahiye
-2. User ki zaroorat samjho: service type, location/area (urgency na ho toh "medium" assume karo)
-3. SIRF EK sawal ek baar mein pucho — maximum 2 follow-up questions, phir search karo
-4. Jab service + location pata ho, EXACTLY likho (alag line):
+1. Pehli baar: agar user_name diya hai toh "Assalam-o-Alaikum [naam]! Kya service chahiye?" — agar naam nahi toh "Assalam-o-Alaikum! Kya service chahiye?" — NAAM KABHI MAT POOCHO
+2. Agar user ne pehle hi service batadi (e.g. "mechanic chahiye") toh sirf location poocho: "Bilkul! Worker ko kahan bhejun? Area ya sector batayein."
+3. Jab service pata ho aur location nahi, SIRF yeh poocho: "Worker ko kahan bulana chahte hain? Apna area ya sector batayein."
+4. Location milne ke baad urgency mat poocho — "medium" assume karo
+5. SIRF EK sawal ek baar mein pucho
+6. Jab service + location DONO pata hon, EXACTLY likho (alag line):
    [SEARCH: service=X location=Y urgency=medium]
-   Phir kaho: "Theek hai, main abhi providers dhundh rahi hun!"
-5. Jab [RESULTS: ...] mile, top 2 providers ka naam aur rate batao, pucho: "Aap kise prefer karein ge?"
-6. Jab user provider chunay, pucho: "Payment cash mein karein ge ya JazzCash/Easypaisa se?"
-7. Jab user payment method bataye, pehle yeh sentence kaho: "[provider naam] aapke ghar Rs.[price] mein [time] aayenge, payment [payment method] se hogi." PHIR USI response mein EXACTLY likho (alag line):
+   Phir kaho: "Theek hai, main abhi aapke area mein providers dhundh rahi hun!"
+7. Jab [RESULTS: ...] mile, top 2 providers ka naam aur rate batao, pucho: "Aap kise prefer karein ge?"
+8. Jab user provider chunay, pucho: "Payment cash mein karein ge ya JazzCash/Easypaisa se?"
+9. Jab user payment method bataye, pehle yeh sentence kaho: "[provider naam] aapke ghar Rs.[price] mein [time] aayenge, payment [payment method] se hogi." PHIR USI response mein EXACTLY likho (alag line):
    [BOOK: provider_id=X payment=Y]
    PHIR likho: "Aapki booking confirm ho gayi — shukriya!"
    YEH SAARA EK HI response mein hona chahiye — teen cheezein: details + [BOOK] tag + confirmation.
@@ -34,15 +37,28 @@ async def run_conversation(
     user_message: str,
     providers: list = None,
     user_name: str = None,
+    history: list = None,
 ) -> dict:
-    if session_id not in _sessions:
+    session_lost = session_id not in _sessions
+    if session_lost:
+        # Restore from client-provided history (handles Render worker restarts)
+        restored_history = []
+        if history:
+            for entry in history:
+                role = entry.get("role", "user")
+                content = entry.get("content", "")
+                if content:
+                    restored_history.append({"role": role, "content": content})
         _sessions[session_id] = {
-            "history": [],
+            "history": restored_history,
             "phase": "intake",
             "user_name": user_name or "",
         }
 
     session = _sessions[session_id]
+    # Always refresh user_name in case it was empty on first init
+    if user_name and not session.get("user_name"):
+        session["user_name"] = user_name
     stored_name = session.get("user_name", "")
     first_name = stored_name.split()[0] if stored_name else ""
 
@@ -72,8 +88,10 @@ async def run_conversation(
 
     # Build prompt
     if user_message == "__init__":
-        name_hint = f"User ka naam: {first_name}. " if first_name else ""
-        prompt = f"({name_hint}User se pehli dafa mil rahi ho — naam le kar warmly greet karo)\nFatima:"
+        if first_name:
+            prompt = f"(User ka naam: {first_name}. Warmly greet karo naam le kar, phir poocho kya service chahiye)\nFatima:"
+        else:
+            prompt = "(Warmly greet karo, phir seedha poocho kya service chahiye — naam mat poocho)\nFatima:"
     elif history_text:
         prompt = f"{history_text}{results_injection}\nFatima:"
     else:

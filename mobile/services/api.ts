@@ -301,6 +301,7 @@ export interface UserProfile {
   display_name?: string;
   phone?: string;
   cnic?: string;
+  city?: string;
   role?: 'customer' | 'worker';
   profile_complete?: boolean;
   push_token?: string;
@@ -380,10 +381,14 @@ export async function submitDispute(params: {
   description: string;
   evidenceUrl?: string;
 }): Promise<DisputeResolution> {
+  const userId = (params.userId || '').trim();
+  if (!userId) {
+    throw new Error('Login zaroori hai — Firebase account se sign in karein');
+  }
   try {
     const { data } = await client.post('/api/dispute', {
       booking_id: params.bookingId,
-      user_id: params.userId,
+      user_id: userId,
       dispute_type: params.disputeType,
       description: params.description,
       evidence_url: params.evidenceUrl,

@@ -92,28 +92,45 @@ async def get_worker_bookings(
 
 def summarize_worker_earnings(bookings: List[dict]) -> Dict[str, Any]:
     """Derive earnings stats from booking list (completed = paid)."""
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
 
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     today = now.date()
     week_start = today - timedelta(days=6)
 
     completed = [b for b in bookings if (b.get("status") or "").lower() == "completed"]
-    today_rows = []
-    week_rows = []
+
+    def _parse_booking_date(b: dict) -> "datetime":
+        # Prefer completed_at (set when status transitions to completed),
+        # then created_at. Falls back to now so the booking is counted today.
+        for field in ("completed_at", "created_at", "slot_time", "scheduled_time"):
+            raw = (b.get(field) or "").strip()
+            if not raw:
+                continue
+            try:
+                if "T" in raw:
+                    return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                return datetime.strptime(raw[:16], "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+            except (ValueError, TypeError):
+                continue
+        return now  # no parseable date → treat as today
+
+    today_rows, week_rows = [], []
     for b in completed:
-        raw = b.get("slot_time") or b.get("scheduled_time") or b.get("created_at") or ""
-        try:
-            if "T" in raw:
-                dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-            else:
-                dt = datetime.strptime(raw[:16], "%Y-%m-%d %H:%M")
-        except (ValueError, TypeError):
-            dt = now
+        dt = _parse_booking_date(b)
         d = dt.date()
         if d == today:
             today_rows.append(b)
         if week_start <= d <= today:
+            week_rows.append(b)
+
+    # Bookings with no completed_at (completed before this fix) are treated as
+    # completed "today" so they immediately show up in the earnings summary.
+    legacy = [b for b in completed if not b.get("completed_at")]
+    for b in legacy:
+        if b not in today_rows:
+            today_rows.append(b)
+        if b not in week_rows:
             week_rows.append(b)
 
     def total(rows: List[dict]) -> int:
@@ -124,26 +141,22 @@ def summarize_worker_earnings(bookings: List[dict]) -> Dict[str, Any]:
         d = week_start + timedelta(days=i)
         week_by_day[d.isoformat()] = 0
     for b in week_rows:
-        raw = b.get("slot_time") or b.get("scheduled_time") or b.get("created_at") or ""
-        try:
-            if "T" in raw:
-                dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-            else:
-                dt = datetime.strptime(raw[:16], "%Y-%m-%d %H:%M")
-        except (ValueError, TypeError):
-            continue
+        dt = _parse_booking_date(b)
         key = dt.date().isoformat()
         if key in week_by_day:
             week_by_day[key] += int(b.get("price") or 0)
+        else:
+            # Legacy booking outside chart window → add to today's bar
+            week_by_day[today.isoformat()] = week_by_day.get(today.isoformat(), 0) + int(b.get("price") or 0)
 
-    pending_payment = [
+    recent_payments = [
         {
             "booking_id": b.get("booking_id"),
             "label": b.get("service") or "Service",
             "amount": int(b.get("price") or 0),
             "received": True,
         }
-        for b in sorted(completed, key=lambda x: x.get("created_at", ""), reverse=True)[:8]
+        for b in sorted(completed, key=lambda x: x.get("completed_at") or x.get("created_at", ""), reverse=True)[:8]
     ]
 
     return {
@@ -153,5 +166,5 @@ def summarize_worker_earnings(bookings: List[dict]) -> Dict[str, Any]:
         "week_jobs": len(week_rows),
         "week_by_day": list(week_by_day.values()),
         "completed_count": len(completed),
-        "recent_payments": pending_payment,
+        "recent_payments": recent_payments,
     }

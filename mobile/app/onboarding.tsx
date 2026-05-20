@@ -1,7 +1,6 @@
 import React, { useRef, useState } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, Animated,
-  StatusBar,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -88,8 +87,6 @@ export default function OnboardingScreen() {
 
   return (
     <View style={styles.root}>
-      <StatusBar barStyle="light-content" backgroundColor={Colors.primary} />
-
       {/* Blue hero top */}
       <View style={[styles.hero, { paddingTop: insets.top + Spacing.lg }]}>
         <TouchableOpacity style={styles.skipBtn} onPress={handleGetStarted} activeOpacity={0.7}>

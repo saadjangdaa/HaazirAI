@@ -10,6 +10,7 @@ Or from ``backend/``:
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
 from pathlib import Path
@@ -25,70 +26,30 @@ from services.firebase import FirebaseService  # noqa: E402
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-PROVIDERS = [
-    {
-        "id": "p001",
-        "name": "Ali AC Services",
-        "service": "AC repair",
-        "city": "Islamabad",
-        "area": "G-13",
-        "phone": "+923001111111",
-        "rating": 4.8,
-        "on_time_percentage": 95,
-        "hourly_rate": 800,
-        "distance_km": 2.1,
-        "cancellation_rate": 0.05,
-        "available": True,
-        "current_bookings": 2,
-        "total_jobs_completed": 1247,
-        "verified": True,
-    },
-    {
-        "id": "p002",
-        "name": "Hassan AC",
-        "service": "AC repair",
-        "city": "Islamabad",
-        "area": "G-14",
-        "phone": "+923002222222",
-        "rating": 4.5,
-        "on_time_percentage": 88,
-        "hourly_rate": 700,
-        "distance_km": 3.2,
-        "cancellation_rate": 0.08,
-        "available": True,
-        "current_bookings": 1,
-        "total_jobs_completed": 856,
-        "verified": True,
-    },
-    {
-        "id": "p003",
-        "name": "Fatima Electrical",
-        "service": "Electrical repair",
-        "city": "Islamabad",
-        "area": "F-11",
-        "phone": "+923003333333",
-        "rating": 4.7,
-        "on_time_percentage": 92,
-        "hourly_rate": 750,
-        "distance_km": 4.5,
-        "cancellation_rate": 0.03,
-        "available": True,
-        "current_bookings": 0,
-        "total_jobs_completed": 542,
-        "verified": True,
-    },
-]
+_PROVIDERS_JSON = Path(__file__).resolve().parents[0] / "providers.json"
+
+
+def _load_providers_json() -> list:
+    with open(_PROVIDERS_JSON, encoding="utf-8") as f:
+        return json.load(f)
 
 
 def seed_providers(firebase: FirebaseService) -> None:
-    """Upsert provider documents via ``FirebaseService`` (works in mock + prod)."""
-    for row in PROVIDERS:
-        pid = row["id"]
+    """Upsert ALL provider documents from providers.json into Firestore."""
+    import json as _json  # local import to avoid shadowing at module level
+    providers = _load_providers_json()
+    ok = 0
+    for row in providers:
+        pid = row.get("id")
+        if not pid:
+            continue
         data = {k: v for k, v in row.items() if k != "id"}
         if firebase.create_provider(pid, data):
-            logger.info("Seeded provider %s", pid)
+            logger.info("Seeded provider %s (%s — %s)", pid, row.get("name"), row.get("city"))
+            ok += 1
         else:
             logger.error("Failed to seed provider %s", pid)
+    logger.info("Seeded %d / %d providers", ok, len(providers))
 
 
 def main() -> None:
