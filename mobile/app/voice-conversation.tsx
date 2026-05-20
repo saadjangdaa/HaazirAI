@@ -250,6 +250,18 @@ export default function VoiceConversationScreen() {
     }
   };
 
+  // ── Select bid from BiddingPanel (confirmation before booking) ───────────
+  const handleSelectBid = useCallback((bid: Bid) => {
+    Alert.alert(
+      'Booking Confirm Karein',
+      `${bid.provider_name} ne Rs. ${bid.final_price.toLocaleString()} mein negotiate kar liya hai.\n\nIs worker ke saath booking karni hai?`,
+      [
+        { text: 'Nahi', style: 'cancel' },
+        { text: 'Haan, Book Karein ✅', onPress: () => handleDirectBook(bid.provider_id, bid.final_price) },
+      ],
+    );
+  }, [handleDirectBook]);
+
   // ── Provider card tap → go to booking screen ──────────────────────────────
   const handleSelectProvider = (provider: any) => {
     router.replace({
@@ -307,6 +319,14 @@ export default function VoiceConversationScreen() {
                 </Text>
               </TouchableOpacity>
             </View>
+          </View>
+        );
+
+      case 'bidding':
+        if (uiState === 'done') return null;
+        return (
+          <View key={item.id} style={styles.biddingWrapper}>
+            <BiddingPanel loading={false} result={item.result} onSelectBid={handleSelectBid} />
           </View>
         );
 
@@ -538,6 +558,7 @@ const styles = StyleSheet.create({
     marginTop: Spacing.xs, ...Shadow.sm,
   },
   confirmBookBtnText: { color: '#fff', fontSize: FontSize.sm, fontWeight: '800' },
+  biddingWrapper: { marginTop: Spacing.sm, marginBottom: Spacing.xs },
   // Booking done
   bookingDoneBtn: {
     backgroundColor: Colors.primary, borderRadius: Radius.lg, padding: Spacing.md + 4,
