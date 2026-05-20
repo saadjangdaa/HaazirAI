@@ -43,22 +43,35 @@ export function formatCnicDisplay(raw: string): string {
   return `${d.slice(0, 5)}-${d.slice(5, 12)}-${d.slice(12)}`;
 }
 
+export type UserRole = 'customer' | 'worker';
+
 type ProfileLike = {
   username?: string;
   name?: string;
+  email?: string;
   phone?: string;
   cnic?: string;
+  role?: UserRole;
   profile_complete?: boolean;
 } | null | undefined;
 
-export function isProfileComplete(profile: ProfileLike): boolean {
+/** Mirrors backend profile_completion_issues — customers need name + email only. */
+export function isProfileComplete(
+  profile: ProfileLike,
+  role: UserRole = profile?.role === 'worker' ? 'worker' : 'customer'
+): boolean {
   if (!profile) return false;
   if (profile.profile_complete === true) return true;
 
   const username = (profile.username || profile.name || '').trim();
+
+  if (role === 'customer') {
+    const email = (profile.email || '').trim();
+    return username.length > 0 && email.length > 0;
+  }
+
   const phone = profile.phone || '';
   const cnic = profile.cnic || '';
-
   if (!username || !phone || !cnic) return false;
 
   try {

@@ -1,44 +1,34 @@
 import { Tabs } from 'expo-router';
-import { Colors, FontSize } from '../../constants/theme';
-import { Text } from 'react-native';
-
-function Icon({ label }: { label: string }) {
-  return <Text style={{ fontSize: 20 }}>{label}</Text>;
-}
+import { Colors, FontSize, FontWeight } from '../../constants/theme';
+import { Platform } from 'react-native';
+import FloatingTabBar from '../../components/FloatingTabBar';
 
 export default function CustomerLayout() {
   return (
     <Tabs
+      tabBar={(props) => <FloatingTabBar {...props} />}
       screenOptions={{
-        tabBarActiveTintColor: Colors.primary,
-        tabBarInactiveTintColor: Colors.textMuted,
-        tabBarStyle: {
-          backgroundColor: Colors.surface,
-          borderTopColor: Colors.border,
-          borderTopWidth: 1,
-        },
-        tabBarLabelStyle: { fontSize: FontSize.xs, fontWeight: '700' },
-        headerStyle: { backgroundColor: Colors.background },
-        headerTintColor: Colors.primary,
-        headerTitleStyle: { color: Colors.textPrimary, fontWeight: '700' },
+        headerStyle: { backgroundColor: Colors.primary, shadowColor: 'transparent', elevation: 0 },
+        headerTintColor: Colors.textInverse,
+        headerTitleStyle: { color: Colors.textInverse, fontWeight: FontWeight.bold, fontSize: FontSize.lg },
         contentStyle: { backgroundColor: Colors.background },
       }}
     >
       <Tabs.Screen
         name="index"
-        options={{ title: 'Home', headerShown: false, tabBarIcon: () => <Icon label="🏠" /> }}
+        options={{ title: 'Services', headerShown: false }}
       />
       <Tabs.Screen
         name="bookings"
-        options={{ title: 'Bookings', tabBarIcon: () => <Icon label="📋" /> }}
+        options={{ title: 'Orders' }}
       />
       <Tabs.Screen
         name="disputes"
-        options={{ title: 'Disputes', tabBarIcon: () => <Icon label="🚨" /> }}
+        options={{ title: 'Bhai' }}
       />
       <Tabs.Screen
         name="profile"
-        options={{ title: 'Profile', tabBarIcon: () => <Icon label="👤" /> }}
+        options={{ title: 'Profile' }}
       />
     </Tabs>
   );

@@ -7,6 +7,7 @@ import { AuthProvider, useAuth, AuthUser } from '../context/AuthContext';
 import AuthSplash from '../components/AuthSplash';
 import { auth } from '../services/firebase';
 import { LanguageProvider } from '../context/LanguageContext';
+import { MockDataProvider } from '../context/MockDataContext';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -30,13 +31,17 @@ function isLangSelectPath(pathname: string): boolean {
   return pathname === '/language-select';
 }
 
+function isOnboardingPath(pathname: string): boolean {
+  return pathname === '/onboarding';
+}
+
 /**
  * Single routing gate — runs only after Firebase auth + profile bootstrap (loading=false).
- * allowPostAuthRedirect=true means a fresh login just happened → show language picker.
- * On cold start (session restored), skip language picker and go straight to home.
+ * hasSessionThisLaunch: user signed in this app session (not just Firebase storage restore).
+ * needsLanguagePicker: customer must complete language screen before home.
  */
 function AuthNavigationGuard() {
-  const { user, loading, allowPostAuthRedirect } = useAuth();
+  const { user, loading, hasSessionThisLaunch, needsLanguagePicker } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
   const navigationState = useRootNavigationState();
@@ -51,32 +56,50 @@ function AuthNavigationGuard() {
     let target: string | null = null;
 
     if (!isAuthenticated) {
-      if (!isAuthPath(pathname)) {
+      // Unauthenticated — allow onboarding or login/signup, redirect everything else to login
+      if (!isAuthPath(pathname) && !isOnboardingPath(pathname)) {
         target = '/login';
+      }
+    } else if (!hasSessionThisLaunch) {
+      if (!isAuthPath(pathname) && !isWorkerSignupPath(pathname)) {
+        target = '/login';
+      }
+    } else if (needsLanguagePicker && user.role === 'customer') {
+      if (!isLangSelectPath(pathname)) {
+        target = '/language-select';
       }
     } else if (user.role === 'worker' && !user.workerOnboarded) {
       if (!isWorkerSignupPath(pathname)) {
         target = '/worker-signup';
       }
-    } else if (allowPostAuthRedirect) {
-      if (!isLangSelectPath(pathname)) {
-        target = '/language-select';
+    } else if (user.role === 'worker') {
+      const home = homeRoute(user);
+      if (isAuthPath(pathname) || isLangSelectPath(pathname)) {
+        target = home;
       }
     } else {
       const home = homeRoute(user);
-      if (isAuthPath(pathname) || isWorkerSignupPath(pathname)) {
+      if (isAuthPath(pathname) || isLangSelectPath(pathname) || isWorkerSignupPath(pathname)) {
         target = home;
       }
     }
 
-    if (!target || lastNav.current === target) return;
+    if (!target || (lastNav.current === target && pathname === target)) return;
     lastNav.current = target;
     router.replace(target as '/login');
-  }, [user, loading, allowPostAuthRedirect, pathname, router, navigationState?.key]);
+  }, [user, loading, hasSessionThisLaunch, needsLanguagePicker, pathname, router, navigationState?.key]);
 
   useEffect(() => {
     if (loading) lastNav.current = null;
   }, [loading]);
+
+  useEffect(() => {
+    if (!user || !hasSessionThisLaunch) lastNav.current = null;
+  }, [user, hasSessionThisLaunch]);
+
+  useEffect(() => {
+    if (!needsLanguagePicker) lastNav.current = null;
+  }, [needsLanguagePicker]);
 
   return null;
 }
@@ -108,6 +131,7 @@ function RootLayoutNav() {
           animation: 'slide_from_right',
         }}
       >
+        <Stack.Screen name="onboarding" options={{ headerShown: false, animation: 'fade' }} />
         <Stack.Screen name="login" options={{ headerShown: false }} />
         <Stack.Screen name="signup" options={{ title: 'Account Banayein', headerBackVisible: false }} />
         <Stack.Screen name="worker-signup" options={{ title: 'Worker Registration', headerBackVisible: false }} />
@@ -120,7 +144,6 @@ function RootLayoutNav() {
         <Stack.Screen name="feedback" options={{ title: 'Feedback Dein' }} />
         <Stack.Screen name="dispute" options={{ title: 'Complaint / Dispute' }} />
         <Stack.Screen name="logs" options={{ title: 'Agent Logs (Judges View)' }} />
-        <Stack.Screen name="voice-conversation" options={{ headerShown: false }} />
       </Stack>
       <AuthNavigationGuard />
     </>
@@ -133,10 +156,12 @@ export default function RootLayout() {
   }, []);
 
   return (
-    <LanguageProvider>
-      <AuthProvider>
-        <RootLayoutNav />
-      </AuthProvider>
-    </LanguageProvider>
+    <MockDataProvider>
+      <LanguageProvider>
+        <AuthProvider>
+          <RootLayoutNav />
+        </AuthProvider>
+      </LanguageProvider>
+    </MockDataProvider>
   );
 }

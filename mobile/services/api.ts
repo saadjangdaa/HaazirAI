@@ -79,8 +79,10 @@ export function formatApiError(err: unknown): string {
 
 export async function pingApi(): Promise<{ ok: boolean; url: string }> {
   const url = getApiBaseUrl();
+  // Render free tier can take 30+ seconds on cold start — use a generous timeout
+  const PING_TIMEOUT = 35000;
   try {
-    const { data } = await client.get('/health', { timeout: 8000 });
+    const { data } = await client.get('/health', { timeout: PING_TIMEOUT, _noRetry: true } as Record<string, unknown>);
     const ok = data?.status === 'ok';
     if (__DEV__ && ok) console.log('[Haazir API] Backend reachable at', url);
     return { ok, url };
@@ -296,6 +298,7 @@ export interface UserProfile {
   email?: string;
   username?: string;
   name?: string;
+  display_name?: string;
   phone?: string;
   cnic?: string;
   role?: 'customer' | 'worker';

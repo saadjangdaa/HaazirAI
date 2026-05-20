@@ -1,29 +1,44 @@
+/**
+ * Agent TTS playback — uses expo-audio (works in Expo Go SDK 55).
+ * expo-av is not loaded here to avoid ExponentAV native module errors in Expo Go.
+ */
 import { createAudioPlayer, setAudioModeAsync } from 'expo-audio';
 import type { AudioPlayer } from 'expo-audio/build/AudioModule.types';
 import * as FileSystem from 'expo-file-system/legacy';
 
-let _currentPlayer: AudioPlayer | null = null;
+let _player: AudioPlayer | null = null;
+let _statusSub: { remove: () => void } | null = null;
+
+function detachListener() {
+  _statusSub?.remove();
+  _statusSub = null;
+}
 
 export async function playBase64Audio(base64: string, onDone?: () => void): Promise<void> {
   await stopSpeaking();
   try {
+    await setAudioModeAsync({ playsInSilentMode: true });
     const uri = (FileSystem.cacheDirectory ?? '') + 'haazir_conv.mp3';
     await FileSystem.writeAsStringAsync(uri, base64, {
       encoding: FileSystem.EncodingType.Base64,
     });
-    await setAudioModeAsync({
-      allowsRecording: false,
-      playsInSilentMode: true,
-    });
-    const player = createAudioPlayer({ uri });
-    _currentPlayer = player;
-    player.addListener('playbackStatusUpdate', (status) => {
+
+    const player = createAudioPlayer(uri);
+    _player = player;
+
+    _statusSub = player.addListener('playbackStatusUpdate', (status) => {
       if (status.didJustFinish) {
-        player.remove();
-        _currentPlayer = null;
+        detachListener();
+        try {
+          player.remove();
+        } catch {
+          /* ignore */
+        }
+        if (_player === player) _player = null;
         onDone?.();
       }
     });
+
     player.play();
   } catch (e) {
     console.error('[voicePlayback] playBase64Audio error:', e);
@@ -32,13 +47,14 @@ export async function playBase64Audio(base64: string, onDone?: () => void): Prom
 }
 
 export async function stopSpeaking(): Promise<void> {
-  if (_currentPlayer) {
+  detachListener();
+  if (_player) {
     try {
-      _currentPlayer.pause();
-      _currentPlayer.remove();
+      _player.pause();
+      _player.remove();
     } catch {
       /* ignore */
     }
-    _currentPlayer = null;
+    _player = null;
   }
 }
