@@ -222,18 +222,6 @@ export default function VoiceConversationScreen() {
     setUiState('idle');
   };
 
-  // ── Select bid from BiddingPanel ──────────────────────────────────────────
-  const handleSelectBid = useCallback((bid: Bid) => {
-    Alert.alert(
-      'Booking Confirm Karein',
-      `${bid.provider_name} ne Rs. ${bid.final_price.toLocaleString()} mein negotiate kar liya hai.\n\nIs worker ke saath booking karni hai?`,
-      [
-        { text: 'Nahi', style: 'cancel' },
-        { text: 'Haan, Book Karein ✅', onPress: () => handleDirectBook(bid.provider_id, bid.final_price) },
-      ],
-    );
-  }, []);
-
   // ── Direct book ───────────────────────────────────────────────────────────
   const handleDirectBook = async (providerId?: string, priceAccepted?: number) => {
     const uid = user?.id;
