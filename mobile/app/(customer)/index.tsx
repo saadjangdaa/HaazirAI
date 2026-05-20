@@ -186,7 +186,9 @@ const CustomerHomeScreen = () => {
       setInput('EMERGENCY! Gas leak ho rahi hai, foran koi bhejein');
       setLocation('G-13, Islamabad');
     } else {
-      setInput(`Mujhe ${label} chahiye`);
+      const area = location.trim() || 'G-13, Islamabad';
+      setInput(`Mujhe ${label} chahiye — ${area}`);
+      if (!location.trim()) setLocation(area);
     }
   };
 

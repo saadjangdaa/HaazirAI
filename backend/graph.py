@@ -66,6 +66,10 @@ def _merge_location_into_intent(intent: dict[str, Any], user_location: str) -> d
 def _route_after_samajh(state: HaazirState) -> Literal["stop", "dhundho"]:
     intent = state.get("intent") or {}
     if intent.get("clarification_needed") and not intent.get("emergency"):
+        # Still discover technicians when service is clear (e.g. "AC technician chahiye").
+        st = (intent.get("service_type") or "").strip().lower()
+        if st and st not in ("unknown", "general", "service", "other"):
+            return "dhundho"
         return "stop"
     return "dhundho"
 

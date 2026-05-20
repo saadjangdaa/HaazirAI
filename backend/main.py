@@ -75,6 +75,7 @@ from services.firebase import (
     repair_user_profile_roots,
     verify_bookings_integrity,
     repair_all_booking_history,
+    repair_all_dispute_history,
     cleanup_bookings_with_invalid_user_id,
     verify_providers_integrity,
     get_provider,
@@ -144,6 +145,30 @@ def _load_providers() -> list:
         with open(_PROVIDERS_PATH, encoding="utf-8") as f:
             _providers_cache = json.load(f)
     return _providers_cache
+
+
+def _fallback_ranked_providers(intent: dict, limit: int = 8) -> list:
+    """When Dhundho/Chunno return empty, still show matching technicians from seed data."""
+    from agents.dhundho import _service_matches
+    from services.providers_integrity import format_provider_record
+
+    intent = intent or {}
+    service_type = (intent.get("service_type") or "").strip()
+    city = (intent.get("city") or "Islamabad").strip()
+    pool = [_load_providers()]
+    if service_type:
+        matched = [p for p in pool if _service_matches(service_type, p)]
+        if matched:
+            pool = matched
+    if city:
+        same_city = [p for p in pool if (p.get("city") or "").lower() == city.lower()]
+        if same_city:
+            pool = same_city
+    ranked = [format_provider_record(p, p.get("id")) for p in pool[:limit]]
+    for i, p in enumerate(ranked):
+        p.setdefault("ranking_score", 1.0 - i * 0.05)
+        p.setdefault("ranking_reason_urdu", "Aapki request ke liye qareeb technician")
+    return ranked
 
 
 _AGENT_URDU = {
@@ -247,7 +272,7 @@ async def handle_service_request(body: ServiceRequest):
     chunno_warnings = final_state.get("chunno_warnings") or []
 
     if not providers_ranked:
-        providers_ranked = _load_providers()[:3]
+        providers_ranked = _fallback_ranked_providers(intent)
 
     best_provider = providers_ranked[0] if providers_ranked else None
 
@@ -728,6 +753,16 @@ async def repair_booking_history():
         raise HTTPException(status_code=403, detail="Repair only allowed in development")
     result = await repair_all_booking_history()
     verify = await verify_bookings_integrity()
+    return {**result, "verify": verify}
+
+
+@app.post("/api/admin/repair-dispute-history")
+async def repair_dispute_history():
+    """Backfill users/{uid}.dispute_history from disputes/* (development only)."""
+    if os.getenv("ENVIRONMENT", "development") != "development":
+        raise HTTPException(status_code=403, detail="Repair only allowed in development")
+    result = await repair_all_dispute_history()
+    verify = await verify_disputes_integrity()
     return {**result, "verify": verify}
 
 

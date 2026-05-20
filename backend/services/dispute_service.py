@@ -7,8 +7,8 @@ from fastapi import HTTPException
 from agents.orchestrator import run_dispute
 from services.notification_service import notify_dispute_filed
 from services.disputes_integrity import VALID_DISPUTE_TYPES, normalize_dispute_type
-from services.firebase import create_dispute, get_booking, update_booking
-from services.firestore_schema import normalize_booking_status
+from services.firebase import append_user_dispute, create_dispute, get_booking, update_booking
+from services.firestore_schema import normalize_booking_status, require_firebase_uid
 
 
 async def ensure_booking_disputed(booking_id: str) -> None:
@@ -41,7 +41,13 @@ async def file_dispute(
         raise HTTPException(status_code=404, detail=f"Booking {booking_id} not found")
 
     booking_uid = (booking.get("user_id") or "").strip()
-    if booking_uid and booking_uid != user_id:
+    owner_uid = (user_id or "").strip() or booking_uid
+    try:
+        owner_uid = require_firebase_uid(owner_uid)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if booking_uid and booking_uid != owner_uid:
         raise HTTPException(status_code=403, detail="You can only dispute your own bookings")
 
     dtype = normalize_dispute_type(dispute_type)
@@ -65,7 +71,7 @@ async def file_dispute(
     dispute_id = await create_dispute(
         {
             "booking_id": booking_id,
-            "user_id": user_id,
+            "user_id": owner_uid,
             "type": dtype,
             "description": description.strip(),
             "evidence_url": evidence_url,
@@ -78,10 +84,11 @@ async def file_dispute(
             "resolved_at": resolved_at,
         }
     )
+    await append_user_dispute(owner_uid, dispute_id)
 
     await ensure_booking_disputed(booking_id)
     updated_booking = await get_booking(booking_id) or booking
-    await notify_dispute_filed(updated_booking, user_id, dispute_id=dispute_id)
+    await notify_dispute_filed(updated_booking, owner_uid, dispute_id=dispute_id)
 
     return {
         **result,

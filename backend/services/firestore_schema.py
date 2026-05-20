@@ -59,6 +59,7 @@ USER_CANONICAL_FIELDS = (
     "phone",
     "city",
     "booking_history",
+    "dispute_history",
 )
 
 DISPUTE_CANONICAL_FIELDS = (
@@ -153,6 +154,11 @@ def normalize_user(data: Dict[str, Any], user_id: str) -> Dict[str, Any]:
         history = []
     elif not isinstance(history, list):
         history = list(history)
+    dispute_history = data.get("dispute_history")
+    if dispute_history is None:
+        dispute_history = []
+    elif not isinstance(dispute_history, list):
+        dispute_history = list(dispute_history)
     out: Dict[str, Any] = {
         "user_id": uid,
         "uid": uid,
@@ -160,6 +166,7 @@ def normalize_user(data: Dict[str, Any], user_id: str) -> Dict[str, Any]:
         "phone": data.get("phone", ""),
         "city": data.get("city", ""),
         "booking_history": history,
+        "dispute_history": dispute_history,
     }
     for key, value in data.items():
         if key not in out and value is not None and value != "":
@@ -171,9 +178,8 @@ def normalize_dispute(data: Dict[str, Any], dispute_id: Optional[str] = None) ->
     from services.disputes_integrity import normalize_dispute_type
 
     did = (dispute_id or data.get("dispute_id") or "").strip()
-    uid = data.get("user_id")
-    if uid:
-        uid = require_firebase_uid(uid)
+    uid_raw = (data.get("user_id") or data.get("uid") or "").strip()
+    uid = require_firebase_uid(uid_raw) if uid_raw else ""
     dtype = normalize_dispute_type(data.get("type") or data.get("dispute_type"))
     status = (data.get("status") or "open").lower()
     out: Dict[str, Any] = {

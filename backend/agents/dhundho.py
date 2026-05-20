@@ -46,8 +46,12 @@ def _service_matches(intent_service: str, provider: dict) -> bool:
     def has(*words: str) -> bool:
         return any(w in blob for w in words)
 
+    if "technician" in s and "ac" in s:
+        return has("ac", "climate", "cooling", "gas", "split", "technician")
     if any(k in s for k in ["ac", "air condition", "cooling", "gas refill", "split", "inverter"]):
         return has("ac", "climate", "cooling", "gas", "split")
+    if "technician" in s:
+        return has("technician", "repair", "service") or bool(blob.strip())
     if "plumb" in s or "pipe" in s or "drain" in s or "tap" in s or "nal" in s:
         return has("plumb", "pipe", "drain", "sanitary", "bathroom", "kitchen", "water")
     if "electric" in s or "wiring" in s or "bijli" in s or "ups" in s:

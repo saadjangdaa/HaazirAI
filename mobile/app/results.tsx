@@ -44,6 +44,7 @@ const ResultsScreen = () => {
   const urgency = intent?.urgency || 'medium';
   const agents = result.agent_logs || [];
   const doneCount = agents.length;
+  const providerCount = result.providers_ranked?.length || 0;
 
   const handleSpeak = async () => {
     const already = await getIsSpeaking();
@@ -71,14 +72,20 @@ const ResultsScreen = () => {
   };
 
   const handleSelectProvider = (provider: Provider) => {
-    router.push({ pathname: '/booking', params: { providerData: JSON.stringify(provider), priceData: JSON.stringify(result.price_breakdown), requestId: result.request_id } });
+    router.push({
+      pathname: '/booking',
+      params: {
+        providerData: JSON.stringify(provider),
+        priceData: JSON.stringify(result.price_breakdown),
+        requestId: result.request_id,
+      },
+    });
   };
 
   return (
     <View style={styles.root}>
       <StatusBar barStyle="light-content" backgroundColor={Colors.primary} />
 
-      {/* Blue header */}
       <View style={[styles.header, { paddingTop: insets.top + Spacing.sm }]}>
         <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
           <Ionicons name="arrow-back" size={22} color={Colors.textInverse} />
@@ -94,9 +101,11 @@ const ResultsScreen = () => {
         )}
       </View>
 
-      <ScrollView style={styles.body} contentContainerStyle={[styles.bodyContent, { paddingBottom: insets.bottom + 24 }]} showsVerticalScrollIndicator={false}>
-
-        {/* Pipeline progress */}
+      <ScrollView
+        style={styles.body}
+        contentContainerStyle={[styles.bodyContent, { paddingBottom: insets.bottom + 24 }]}
+        showsVerticalScrollIndicator={false}
+      >
         <View style={[styles.pipelineCard, Shadow.sm]}>
           <Text style={styles.pipelineTitle}>AI Pipeline</Text>
           <View style={styles.pipelineRow}>
@@ -107,8 +116,7 @@ const ResultsScreen = () => {
                   <View style={[styles.pipelineStep, done && styles.pipelineStepDone]}>
                     {done
                       ? <Ionicons name="checkmark" size={12} color={Colors.primary} />
-                      : <Ionicons name="time-outline" size={12} color={Colors.textMuted} />
-                    }
+                      : <Ionicons name="time-outline" size={12} color={Colors.textMuted} />}
                     <Text style={[styles.pipelineText, done && styles.pipelineTextDone]}>{step}</Text>
                   </View>
                   {i < PIPELINE_STEPS.length - 1 && (
@@ -120,6 +128,16 @@ const ResultsScreen = () => {
           </View>
         </View>
 
+        {result.clarification_needed && result.clarification_question && (
+          <View style={styles.clarificationCard}>
+            <Text style={styles.clarificationTitle}>Ek aur detail</Text>
+            <Text style={styles.clarificationText}>{result.clarification_question}</Text>
+            <Text style={styles.clarificationSub}>
+              Neeche technicians phir bhi dikhaye gaye hain — koi card tap karke booking shuru karein.
+            </Text>
+          </View>
+        )}
+
         {result.emergency && (
           <View style={styles.emergencyBanner}>
             <Ionicons name="warning" size={18} color={Colors.danger} />
@@ -127,7 +145,6 @@ const ResultsScreen = () => {
           </View>
         )}
 
-        {/* Intent summary */}
         {intent && (
           <View style={[styles.intentCard, Shadow.sm]}>
             <View style={styles.intentRow}>
@@ -149,16 +166,16 @@ const ResultsScreen = () => {
               <Ionicons name="speedometer-outline" size={14} color={Colors.textMuted} />
               <Text style={styles.intentLabel}>Urgency</Text>
               <View style={[styles.urgencyBadge, { backgroundColor: (URGENCY_COLOR[urgency] || Colors.warning) + '22' }]}>
-                <Text style={[styles.urgencyText, { color: URGENCY_COLOR[urgency] || Colors.warning }]}>{urgency.toUpperCase()}</Text>
+                <Text style={[styles.urgencyText, { color: URGENCY_COLOR[urgency] || Colors.warning }]}>
+                  {urgency.toUpperCase()}
+                </Text>
               </View>
             </View>
           </View>
         )}
 
-        {/* Price breakdown */}
         {result.price_breakdown && <PriceBreakdown pricing={result.price_breakdown} />}
 
-        {/* Negotiate */}
         {!showBidding && (
           <TouchableOpacity style={[styles.negotiateBtn, Shadow.sm]} onPress={handleNegotiate} activeOpacity={0.85}>
             <Ionicons name="swap-horizontal-outline" size={18} color={Colors.primary} />
@@ -181,18 +198,30 @@ const ResultsScreen = () => {
           />
         )}
 
-        {/* Providers list */}
         <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>Providers ({result.providers_ranked?.length || 0})</Text>
+          <Text style={styles.sectionTitle}>Technicians / Providers ({providerCount})</Text>
           <View style={styles.sortPill}>
             <Ionicons name="star" size={11} color={Colors.warning} />
             <Text style={styles.sortPillText}>Best Match</Text>
           </View>
         </View>
 
-        {result.providers_ranked?.map((p, i) => (
-          <ProviderCard key={p.id} provider={p} rank={i + 1} onSelect={() => handleSelectProvider(p)} />
-        ))}
+        {providerCount === 0 ? (
+          <View style={styles.emptyProviders}>
+            <Text style={styles.emptyProvidersText}>
+              Abhi koi technician nahi mila. Location ya service type badal kar dubara Haazir Karo try karein.
+            </Text>
+          </View>
+        ) : (
+          result.providers_ranked?.map((p, i) => (
+            <ProviderCard
+              key={p.id || `provider-${i}`}
+              provider={p}
+              rank={i + 1}
+              onSelect={() => handleSelectProvider(p)}
+            />
+          ))
+        )}
 
         {result.fallback && (
           <View style={styles.fallbackCard}>
@@ -201,7 +230,6 @@ const ResultsScreen = () => {
           </View>
         )}
 
-        {/* Agent logs toggle */}
         <TouchableOpacity style={styles.logsToggle} onPress={() => setShowLogs(!showLogs)} activeOpacity={0.75}>
           <Ionicons name={showLogs ? 'chevron-up' : 'flask-outline'} size={14} color={Colors.textMuted} />
           <Text style={styles.logsToggleText}>{showLogs ? 'Logs Chhupayein' : 'Agent Logs Dekhen (Judges)'}</Text>
@@ -232,7 +260,6 @@ const styles = StyleSheet.create({
   body: { flex: 1 },
   bodyContent: { padding: Spacing.md },
 
-  // Pipeline
   pipelineCard: {
     backgroundColor: Colors.surface, borderRadius: Radius.xl,
     padding: Spacing.md, marginBottom: Spacing.md,
@@ -247,7 +274,18 @@ const styles = StyleSheet.create({
   pipelineConnector: { flex: 1, height: 2, backgroundColor: Colors.border, marginHorizontal: 2 },
   pipelineConnectorDone: { backgroundColor: Colors.primary },
 
-  // Emergency
+  clarificationCard: {
+    backgroundColor: Colors.surfaceElevated,
+    borderRadius: Radius.lg,
+    padding: Spacing.md,
+    marginBottom: Spacing.md,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+  },
+  clarificationTitle: { color: Colors.primary, fontWeight: FontWeight.bold, fontSize: FontSize.md, marginBottom: 4 },
+  clarificationText: { color: Colors.textPrimary, fontSize: FontSize.sm, marginBottom: 6 },
+  clarificationSub: { color: Colors.textMuted, fontSize: FontSize.xs },
+
   emergencyBanner: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
     backgroundColor: Colors.dangerDim, borderRadius: Radius.lg,
@@ -256,7 +294,6 @@ const styles = StyleSheet.create({
   },
   emergencyText: { color: Colors.danger, fontWeight: FontWeight.bold, fontSize: FontSize.md, flex: 1 },
 
-  // Intent
   intentCard: {
     backgroundColor: Colors.surface, borderRadius: Radius.xl,
     padding: Spacing.md, marginBottom: Spacing.md,
@@ -269,7 +306,6 @@ const styles = StyleSheet.create({
   urgencyBadge: { borderRadius: Radius.full, paddingHorizontal: 10, paddingVertical: 3 },
   urgencyText: { fontSize: FontSize.xs, fontWeight: FontWeight.bold },
 
-  // Negotiate
   negotiateBtn: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
     backgroundColor: Colors.surface, borderRadius: Radius.xl,
@@ -279,13 +315,21 @@ const styles = StyleSheet.create({
   negotiateBtnText: { color: Colors.primary, fontWeight: FontWeight.bold, fontSize: FontSize.sm },
   negotiateBtnSub: { color: Colors.textMuted, fontSize: FontSize.xs, marginTop: 1 },
 
-  // Section
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.sm },
   sectionTitle: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: Colors.textPrimary },
   sortPill: { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: Colors.warningDim, borderRadius: Radius.full, paddingHorizontal: 8, paddingVertical: 3 },
   sortPillText: { fontSize: FontSize.xs, color: Colors.warning, fontWeight: FontWeight.bold },
 
-  // Fallback
+  emptyProviders: {
+    backgroundColor: Colors.surface,
+    borderRadius: Radius.lg,
+    padding: Spacing.md,
+    marginBottom: Spacing.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  emptyProvidersText: { color: Colors.textSecondary, fontSize: FontSize.sm, textAlign: 'center' },
+
   fallbackCard: {
     flexDirection: 'row', alignItems: 'flex-start', gap: 8,
     backgroundColor: Colors.warningDim, borderRadius: Radius.lg,
@@ -294,7 +338,6 @@ const styles = StyleSheet.create({
   },
   fallbackText: { color: Colors.warning, fontSize: FontSize.sm, flex: 1 },
 
-  // Logs
   logsToggle: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, padding: Spacing.md },
   logsToggleText: { color: Colors.textMuted, fontSize: FontSize.sm },
 });
