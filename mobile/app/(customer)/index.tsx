@@ -315,7 +315,7 @@ const CustomerHomeScreen = () => {
           </TouchableOpacity>
 
           <View style={styles.headerCenter}>
-            <Text style={styles.headerTitle}>{firstName ? `Salam, ${firstName}!` : 'Haazir AI'}</Text>
+            <Text style={styles.headerTitle}>{tr.homeGreeting(firstName)}</Text>
             <View style={styles.availRow}>
               <View style={styles.greenDot} />
               <Text style={styles.availText}>{availableCount} workers available nearby</Text>
@@ -434,7 +434,7 @@ const CustomerHomeScreen = () => {
         ) : (
           <View style={styles.sheetInner}>
             <View style={styles.sheetTitleRow}>
-              <Text style={styles.sheetTitle}>Kya chahiye aapko?</Text>
+              <Text style={styles.sheetTitle}>{tr.homeQuestion}</Text>
               <TouchableOpacity onPress={() => router.push('/agent-traces' as any)} style={styles.tracesBtn}>
                 <Ionicons name="git-network-outline" size={13} color={Colors.primary} />
                 <Text style={styles.tracesBtnText}>Traces</Text>
@@ -474,14 +474,14 @@ const CustomerHomeScreen = () => {
 
               <TouchableOpacity style={styles.talkBtn} onPress={() => router.push('/voice-conversation')} activeOpacity={0.8}>
                 <Ionicons name="chatbubble-ellipses-outline" size={15} color={Colors.primary} />
-                <Text style={styles.talkBtnText}>{(tr as any).talkToAI || 'Talk to Haazir AI'}</Text>
+                <Text style={styles.talkBtnText}>{tr.talkToAI}</Text>
                 <Ionicons name="arrow-forward" size={13} color={Colors.primary} />
               </TouchableOpacity>
             </View>
 
             {sheetExpanded && recentRequests.length > 0 && (
               <View style={styles.recentBox}>
-                <Text style={styles.recentHeading}>Recent</Text>
+                <Text style={styles.recentHeading}>{tr.recentActivity}</Text>
                 {recentRequests.map((r, i) => (
                   <TouchableOpacity
                     key={i}

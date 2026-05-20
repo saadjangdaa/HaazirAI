@@ -1,6 +1,7 @@
 """Agent 2 — DHUNDHO: Provider discovery from mock DB + Maps geocode + Firestore availability."""
 import json
 import os
+import re
 from collections import Counter
 from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
@@ -37,37 +38,89 @@ def _load_providers() -> List[dict]:
 
 
 def _service_matches(intent_service: str, provider: dict) -> bool:
-    """Match SAMAJH service_type strings to provider.service + specialization."""
+    """Strict match: SAMAJH service_type must map to the provider's category.
+    Checks p_service (primary) then specialization — no cross-category leakage."""
     s = (intent_service or "").lower().strip()
-    p_service = (provider.get("service") or "").lower()
+    if not s:
+        return False
+
+    p_service = (provider.get("service") or "").lower().strip()
     specs = [x.lower() for x in provider.get("specialization", [])]
-    blob = p_service + " " + " ".join(specs)
 
-    def has(*words: str) -> bool:
-        return any(w in blob for w in words)
+    # ── helper: match ONLY on primary service field ────────────────────────
+    def svc_has(*words: str) -> bool:
+        return any(w in p_service for w in words)
 
-    if "technician" in s and "ac" in s:
-        return has("ac", "climate", "cooling", "gas", "split", "technician")
-    if any(k in s for k in ["ac", "air condition", "cooling", "gas refill", "split", "inverter"]):
-        return has("ac", "climate", "cooling", "gas", "split")
+    # ── helper: match on service OR specializations ────────────────────────
+    def any_has(*words: str) -> bool:
+        return any(w in p_service or any(w in sp for sp in specs) for w in words)
+
+    # AC / cooling — only providers whose PRIMARY service is ac-related
+    if any(k in s for k in ["ac technician", "ac repair", "ac service", "ac",
+                              "air condition", "cooling", "gas refill",
+                              "split ac", "inverter ac", "climate"]):
+        return svc_has("ac", "climate", "cool")  # strict: primary service only
+
+    # Mechanic / auto repair — must be an actual mechanic
+    if any(k in s for k in ["mechanic", "auto repair", "car repair",
+                              "motorcycle repair", "engine", "gearbox", "tyre",
+                              "oil change", "garage", "puncture"]):
+        return svc_has("mechanic")
+
+    # Home appliance repair — map to mechanic (closest category)
+    if any(k in s for k in ["machine repair", "appliance", "fridge",
+                              "washing machine", "microwave"]):
+        return svc_has("mechanic", "ac", "technician")
+
+    # Generic "technician" — must be an AC tech or similar
     if "technician" in s:
-        return has("technician", "repair", "service") or bool(blob.strip())
-    if "plumb" in s or "pipe" in s or "drain" in s or "tap" in s or "nal" in s:
-        return has("plumb", "pipe", "drain", "sanitary", "bathroom", "kitchen", "water")
-    if "electric" in s or "wiring" in s or "bijli" in s or "ups" in s:
-        return has("electric", "wiring", "switch", "fault", "ups")
-    if "tutor" in s or "teacher" in s or "math" in s or "science" in s:
-        return has("tutor", "teacher", "math", "science", "academic")
-    if "beaut" in s or "salon" in s or "hair" in s or "makeup" in s:
-        return has("beaut", "salon", "hair", "makeup", "thread")
-    if "carpent" in s or "wood" in s or "furniture" in s:
-        return has("carpent", "wood", "furniture")
-    if "paint" in s or "wall" in s or "rang" in s:
-        return has("paint", "wall")
+        return svc_has("ac", "technician")
 
-    if s and (s in p_service or p_service in s):
-        return True
-    return any(s in sp or sp in s for sp in specs if s)
+    # Plumbing — provider must be a plumber (not carpenter doing kitchen cabinets)
+    if any(k in s for k in ["plumb", "plumber", "pipe", "drain", "tap",
+                              "nal", "paani", "water leak"]):
+        return svc_has("plumb")  # strict: primary service only
+
+    # Electrical — provider must be an electrician (not AC tech with inverter spec)
+    if any(k in s for k in ["electric", "electrician", "wiring", "bijli",
+                              "switchboard", "short circuit"]):
+        return svc_has("electric")  # strict
+
+    # Tutor / teacher
+    if any(k in s for k in ["tutor", "teacher", "math", "science",
+                              "tuition", "academic"]):
+        return svc_has("tutor", "teacher", "academ")
+
+    # Beautician / salon
+    if any(k in s for k in ["beaut", "salon", "hair", "makeup",
+                              "threading", "parlor"]):
+        return svc_has("beaut", "salon")
+
+    # Carpenter / woodwork
+    if any(k in s for k in ["carpent", "carpenter", "wood", "furniture"]):
+        return svc_has("carpent", "wood")
+
+    # Painter
+    if any(k in s for k in ["paint", "painter", "wall paint", "rang"]):
+        return svc_has("paint")
+
+    # Cook / chef / catering
+    if any(k in s for k in ["cook", "chef", "cooking", "khana", "biryani",
+                              "catering", "daily meals", "food prep"]):
+        return svc_has("cook", "chef")
+
+    # Maid / house help / cleaning
+    if any(k in s for k in ["maid", "house help", "kaam wali", "housemaid",
+                              "jhaadu", "pocha", "safai", "cleaning", "laundry"]):
+        return svc_has("maid", "house help", "cleaning")
+
+    # Gardener / lawn care
+    if any(k in s for k in ["garden", "gardener", "lawn", "plant care",
+                              "tree trim", "mowing"]):
+        return svc_has("garden", "lawn")
+
+    # Last resort — exact primary service match only
+    return s == p_service or p_service == s
 
 
 async def _resolve_availability(
@@ -124,19 +177,23 @@ class DhundhoAgent:
         start = datetime.now()
         all_providers = _load_providers()
 
+        from services.service_categories import intent_category
+
         service_type = intent.get("service_type", "")
+        normalized_category = intent_category(intent)
         city = intent.get("city", "Islamabad")
-        service_type = intent.get("service_type", "").lower()
 
         from services.firebase import list_providers as firestore_list_providers
         from services.providers_integrity import format_provider_record
 
         all_providers = await firestore_list_providers(city=city, service=service_type)
         if not all_providers:
-            all_providers = [
-                format_provider_record(p, p.get("id"))
-                for p in _load_providers()
-            ]
+            raw_all = _load_providers()
+            # Pre-filter JSON seed data by service so downstream filters start clean
+            if service_type:
+                raw_filtered = [p for p in raw_all if _service_matches(service_type, p)]
+                raw_all = raw_filtered if raw_filtered else raw_all
+            all_providers = [format_provider_record(p, p.get("id")) for p in raw_all]
 
         location = intent.get("location", "")
         complexity = intent.get("job_complexity", "intermediate")
@@ -158,7 +215,9 @@ class DhundhoAgent:
         pool = list(all_providers)
         count_stage("all_db", len(pool))
 
-        after_service = [p for p in pool if _service_matches(service_type, p)]
+        from services.service_categories import filter_providers_by_category
+
+        after_service = filter_providers_by_category(pool, normalized_category)
         count_stage("after_service_match", len(after_service))
 
         after_city = [p for p in after_service if (p.get("city") or "").lower() == (city or "").lower()]
@@ -184,6 +243,7 @@ class DhundhoAgent:
         count_stage("with_distance_sorted", len(with_distance))
 
         filters_applied = [
+            f"normalized_category={normalized_category!r}",
             f"service_type~match({service_type!r})",
             f"city={city}",
             f"job_complexity={complexity} → provider.complexity_level in {allowed_complexities}",

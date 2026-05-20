@@ -11,17 +11,37 @@ VALID_DISPUTE_TYPES = frozenset(
         "overrun",
         "cancellation",
         "refund_request",
+        "rude_behavior",
     }
 )
 
 DISPUTE_TYPE_ALIASES = {
     "noshow": "no_show",
     "no-show": "no_show",
+    "no_show_worker": "no_show",
     "quality": "quality_complaint",
+    "quality_issue": "quality_complaint",
     "price": "price_disagreement",
+    "overpricing": "price_disagreement",
     "incomplete": "quality_complaint",
     "job_not_completed": "quality_complaint",
+    "service_not_done": "quality_complaint",
 }
+
+DISPUTE_STATUS_TRANSITIONS = {
+    "open": frozenset({"under_review", "resolved", "escalated"}),
+    "under_review": frozenset({"resolved", "escalated"}),
+    "resolved": frozenset(),
+    "escalated": frozenset(),
+}
+
+
+def can_transition_dispute_status(current: str, new_status: str) -> bool:
+    current = (current or "open").strip().lower()
+    new_status = (new_status or "").strip().lower()
+    if current == new_status:
+        return True
+    return new_status in DISPUTE_STATUS_TRANSITIONS.get(current, frozenset())
 
 
 def normalize_dispute_type(raw: Optional[str]) -> str:

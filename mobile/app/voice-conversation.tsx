@@ -16,6 +16,15 @@ import {
 import { BiddingResponse, Bid } from '../services/api';
 import ProviderCard from '../components/ProviderCard';
 import BiddingPanel from '../components/BiddingPanel';
+import { useMockData } from '../context/MockDataContext';
+import { MOCK_BIDS, makeMockBookingResult } from '../data/mockData';
+import { useLang } from '../context/LanguageContext';
+
+const DEFAULT_VOICE_ID = 'v_meklc281';
+const VOICE_IDS: Record<string, string> = {
+  sindhi:  'v_sd0kl3m9',
+  balochi: 'v_bl1de2f7',
+};
 
 export const options = { headerShown: false };
 
@@ -51,7 +60,10 @@ const PHASE_LABEL: Record<ConversationPhase, string> = {
 export default function VoiceConversationScreen() {
   const router = useRouter();
   const { user } = useAuth();
+  const { isMockMode } = useMockData();
+  const { language } = useLang();
   const insets = useSafeAreaInsets();
+  const voiceId = VOICE_IDS[language] ?? DEFAULT_VOICE_ID;
   const scrollRef = useRef<ScrollView>(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const sessionId = useRef(generateSessionId());
@@ -118,7 +130,7 @@ export default function VoiceConversationScreen() {
     let cancelled = false;
     (async () => {
       try {
-        const turn = await startConversation(sessionId.current, user?.id || 'user_001', userName);
+        const turn = await startConversation(sessionId.current, user?.id || 'user_001', userName, voiceId);
         if (!cancelled) playAgentTurn(turn);
       } catch {
         if (!cancelled) {
@@ -147,7 +159,7 @@ export default function VoiceConversationScreen() {
         setHistory((prev) => [...prev, { role: 'user', content: text }]);
         setUiState('searching');
         const currentHistory = history.concat({ role: 'user', content: text });
-        const turn = await sendMessage(sessionId.current, text, user?.id || 'anonymous', userName, currentHistory);
+        const turn = await sendMessage(sessionId.current, text, user?.id || 'anonymous', userName, currentHistory, voiceId);
         playAgentTurn(turn);
       } catch (e: any) {
         Alert.alert('Error', e?.message || 'Masla hua — dobara try karein');
@@ -202,6 +214,34 @@ export default function VoiceConversationScreen() {
     const liveId = liveItem.id;
     setChat((prev) => [...prev, liveItem]);
 
+    // ── Mock mode: skip API, drip MOCK_BIDS ──────────────────────────────────
+    if (isMockMode) {
+      const mockRecommendedId = MOCK_BIDS[0].provider_id;
+      MOCK_BIDS.forEach((bid, index) => {
+        setTimeout(() => {
+          setChat((prev) =>
+            prev.map((item) =>
+              item.id === liveId && item.kind === 'livebidding'
+                ? { ...item, bids: [...item.bids, bid] }
+                : item,
+            ),
+          );
+        }, (index + 1) * 1200);
+      });
+      setTimeout(() => {
+        setChat((prev) =>
+          prev.map((item) =>
+            item.id === liveId && item.kind === 'livebidding'
+              ? { ...item, complete: true, recommendedId: mockRecommendedId }
+              : item,
+          ),
+        );
+        setUiState('idle');
+      }, (MOCK_BIDS.length + 1) * 1200 + 600);
+      return;
+    }
+
+    // ── Real mode ─────────────────────────────────────────────────────────────
     try {
       const res = await negotiateProviders(sessionId.current, user?.id || 'anonymous', providers);
       if (res.top_bids?.length) {
@@ -258,13 +298,26 @@ export default function VoiceConversationScreen() {
     const top = providers.find((p) => p.id === providerId) || providers[0];
     const pid = providerId || top?.id;
     const price = priceAccepted || top?.base_rate || 2500;
-    if (!pid) return;
 
     setChat((prev) => [
       ...prev.filter((i) => i.kind !== 'actions' && i.kind !== 'negotiated'),
       mk({ kind: 'text', role: 'user', text: 'Booking karo' }),
     ]);
     setUiState('searching');
+
+    // ── Mock mode: instant fake booking ──────────────────────────────────────
+    if (isMockMode) {
+      const mockBid = MOCK_BIDS.find((b) => b.provider_id === providerId) || MOCK_BIDS[0];
+      const result = makeMockBookingResult(mockBid.provider_name, price || mockBid.final_price, top?.service || 'Service');
+      setBookingResult(result);
+      setChat((prev) => [...prev, mk({ kind: 'text', role: 'agent', text: `✅ Booking confirm! ID: ${result.booking_id}. (Demo Mode)` })]);
+      setPhase('done');
+      setUiState('done');
+      return;
+    }
+
+    // ── Real mode ─────────────────────────────────────────────────────────────
+    if (!pid) return;
     try {
       const result = await directBook(sessionId.current, uid, pid, price, 'cash', top);
       setBookingResult(result);

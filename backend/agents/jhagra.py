@@ -33,6 +33,7 @@ DISPUTE_POLICIES = {
     "overrun": {"refund_pct": 0.0, "penalty": "none"},
     "cancellation": {"refund_pct": 1.0, "penalty": "none"},
     "refund_request": {"refund_pct": 0.5, "penalty": "none"},
+    "rude_behavior": {"refund_pct": 0.0, "penalty": "warning_issued"},
 }
 
 
@@ -119,6 +120,10 @@ class JhagraAgent:
             "overrun": "Job zyada time laga — iss case mein standard policy apply hogi.",
             "cancellation": f"Cancellation ke liye Rs {refund_amount:,} poora refund approved.",
             "refund_request": f"Aapki request review hui — Rs {refund_amount:,} refund approved.",
+            "rude_behavior": (
+                "Behavior ki shikayat par provider ko warning di gayi hai. "
+                "Service complete thi — refund nahi milega."
+            ),
         }
         return {
             "resolution": messages.get(dispute_type, f"Rs {refund_amount:,} refund approved per policy."),
