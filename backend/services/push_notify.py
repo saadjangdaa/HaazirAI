@@ -4,6 +4,8 @@ from services.notification_service import (
     notify_booking_created,
     notify_booking_status_change,
     notify_dispute_filed,
+    notify_dispute_worker_replied,
+    notify_dispute_resolved,
     notify_feedback_received,
     process_pending_notifications,
 )
@@ -13,6 +15,8 @@ __all__ = [
     "notify_booking_created",
     "notify_booking_status_change",
     "notify_dispute_filed",
+    "notify_dispute_worker_replied",
+    "notify_dispute_resolved",
     "notify_feedback_received",
     "process_pending_notifications",
 ]

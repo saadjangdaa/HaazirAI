@@ -28,6 +28,10 @@ export default function WorkerLayout() {
         name="profile"
         options={{ title: 'Profile' }}
       />
+      <Tabs.Screen
+        name="disputes"
+        options={{ title: 'Disputes', headerShown: false }}
+      />
     </Tabs>
   );
 }

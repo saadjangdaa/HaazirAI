@@ -256,16 +256,34 @@ export interface DisputeResolution {
   provider_penalty: string;
   case_summary: string;
   escalated_to_human: boolean;
+  worker_id?: string;
+  worker_response_pending?: boolean;
+  message?: string;
+  instant_resolve?: boolean;
+  hifazat_summary?: {
+    complaint_verdict?: string;
+    recommended_action?: string;
+    trust_score?: number;
+  };
+  already_finalized?: boolean;
+}
+
+export interface DisputeWorkerResponse {
+  message: string;
+  timestamp: string;
 }
 
 export interface DisputeRecord {
   dispute_id: string;
   booking_id: string;
   user_id?: string;
+  worker_id?: string;
   type: string;
   status: string;
   resolution?: string;
   description?: string;
+  customer_message?: string;
+  worker_response?: DisputeWorkerResponse | null;
   refund_amount?: number;
   provider_penalty?: string;
   escalated_to_human?: boolean;
@@ -410,13 +428,85 @@ export async function getUserDisputes(userId: string): Promise<DisputeRecord[]> 
   return data.disputes || [];
 }
 
+export async function getDisputeDetail(disputeId: string): Promise<DisputeRecord> {
+  const { data } = await client.get(`/api/dispute/${disputeId}`);
+  return data;
+}
+
+export async function finalizeDispute(params: {
+  disputeId: string;
+  userId: string;
+}): Promise<DisputeResolution> {
+  const { data } = await client.post(`/api/dispute/${params.disputeId}/finalize`, {
+    user_id: params.userId,
+  });
+  return data;
+}
+
 export async function getBookingDisputes(bookingId: string): Promise<DisputeRecord[]> {
   const { data } = await client.get(`/api/disputes/booking/${bookingId}`);
   return data.disputes || [];
 }
 
+export interface WorkerDisputesResponse {
+  user_id: string;
+  provider_id: string | null;
+  disputes: DisputeRecord[];
+  count: number;
+}
+
+export async function getWorkerDisputes(
+  userId: string,
+  status?: string
+): Promise<WorkerDisputesResponse> {
+  const params: Record<string, string> = {};
+  if (status) params.status = status;
+  const { data } = await client.get(`/api/disputes/worker/${userId}`, { params });
+  return data;
+}
+
+export async function respondToDispute(params: {
+  disputeId: string;
+  userId: string;
+  message: string;
+}): Promise<{
+  dispute_id: string;
+  dispute_status: string;
+  booking_id: string;
+  worker_response: DisputeWorkerResponse;
+  message: string;
+  dispute?: DisputeRecord;
+  hifazat_summary?: {
+    recommended_action?: string;
+    complaint_verdict?: string;
+    trust_score?: number;
+  };
+  worker_warning?: string | null;
+}> {
+  const { data } = await client.post(`/api/dispute/${params.disputeId}/respond`, {
+    user_id: params.userId,
+    message: params.message,
+  });
+  return data;
+}
+
 export async function getBookingStatus(id: string): Promise<BookingStatus> {
   const { data } = await client.get(`/api/booking/${id}`);
+  return data;
+}
+
+export interface DisputeEligibilityResponse {
+  booking_id: string;
+  eligible: boolean;
+  reason: string;
+  message: string;
+  booking_status: string;
+  would_auto_cancel: boolean;
+  no_show_grace_hours: number;
+}
+
+export async function getDisputeEligibility(bookingId: string): Promise<DisputeEligibilityResponse> {
+  const { data } = await client.get(`/api/booking/${bookingId}/dispute-eligibility`);
   return data;
 }
 

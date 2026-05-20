@@ -17,6 +17,7 @@ const SIDEBAR_W = Math.min(300, SCREEN_W * 0.82);
 type WorkerSidebarItem = { label: string; icon: string; path?: string; badge?: string; highlight?: boolean; dividerBefore?: boolean };
 const WORKER_SIDEBAR_NAV: WorkerSidebarItem[] = [
   { label: 'My Jobs',       icon: 'briefcase-outline',     path: '/(worker)/jobs' },
+  { label: 'Complaints',    icon: 'alert-circle-outline',  path: '/(worker)/disputes' },
   { label: 'Earnings',      icon: 'cash-outline',          path: '/(worker)/earnings' },
   { label: 'My Route',      icon: 'navigate-outline',      path: '/(worker)/route' },
   { label: 'Profile',       icon: 'person-outline',        path: '/(worker)/profile' },

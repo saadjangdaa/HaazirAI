@@ -281,7 +281,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const myToken = sessionTokenRef.current;
 
       // Use a short timeout so a slow/down backend doesn't block the splash screen.
-      let profile = await fetchServerProfile(fbUser.uid, 4000);
+      const profileTimeout = options.sync ? 4000 : 2000;
+      let profile = await fetchServerProfile(fbUser.uid, profileTimeout);
 
       if (sessionTokenRef.current !== myToken) return mapProfileToAuthUser(fbUser, null);
 
@@ -334,7 +335,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       try {
         if (fbUser) {
-          await bootstrapFromFirebase(fbUser, { sync: true });
+          // Fast path: only fetch profile on startup, don't block splash on backend sync
+          await bootstrapFromFirebase(fbUser, { sync: false });
+          // Background sync — doesn't block UI
+          bootstrapFromFirebase(fbUser, { sync: true }).catch(() => {});
         } else if (mountedRef.current) {
           setUser(null);
           setHasSessionThisLaunch(false);
