@@ -8,6 +8,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '../constants/theme';
 import { AgentLog, confirmBooking, formatApiError, getAgentLogs, requireUserId } from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import { useMockData } from '../context/MockDataContext';
+import { makeMockBookingResult } from '../data/mockData';
 import BookingReceipt from '../components/BookingReceipt';
 import PriceBreakdown from '../components/PriceBreakdown';
 import AgentLogViewer from '../components/AgentLogViewer';
@@ -20,6 +22,7 @@ const PAYMENT_METHODS = [
 
 export default function BookingScreen() {
   const { user } = useAuth();
+  const { isMockMode } = useMockData();
   const router = useRouter();
   const { providerData, priceData, requestId, confirmedData } = useLocalSearchParams<{
     providerData: string; priceData: string; requestId: string; confirmedData: string;
@@ -62,11 +65,21 @@ export default function BookingScreen() {
   const finalTotal = (pricing?.total || 1000) + urgentFee;
 
   const handleConfirm = async () => {
-    if (!user?.profileComplete) {
+    if (!isMockMode && !user?.profileComplete) {
       Alert.alert('Profile incomplete', 'Booking confirm karne se pehle apna profile complete karein.', [{ text: 'Profile', onPress: () => router.push('/signup') }]);
       return;
     }
     setLoading(true);
+
+    // ── Mock mode: instant demo booking ──────────────────────────────────────
+    if (isMockMode) {
+      await new Promise((r) => setTimeout(r, 900));
+      setConfirmed(makeMockBookingResult(provider?.name, finalTotal, provider?.service));
+      setLoading(false);
+      return;
+    }
+
+    // ── Real mode ─────────────────────────────────────────────────────────────
     try {
       const result = await confirmBooking({ providerId: provider.id, userId: requireUserId(user), service: provider.service, time: 'tomorrow_morning', priceAccepted: finalTotal });
       setConfirmed(result);

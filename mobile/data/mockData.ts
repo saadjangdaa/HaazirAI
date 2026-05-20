@@ -1,4 +1,5 @@
-import { UserBooking, WorkerEarningsSummary } from '../services/api';
+import { UserBooking, WorkerEarningsSummary, Bid } from '../services/api';
+import { BookingResult } from '../services/conversationApi';
 
 // ─── Customer Mock Data ────────────────────────────────────────────────────────
 
@@ -244,6 +245,71 @@ export const MOCK_NEARBY_WORKERS: NearbyWorker[] = [
   { id: 'w9',  name: 'Bilal Hassan',   service: 'Beautician',   rating: 4.9, reviews: 77,  priceMin: 1500, priceMax: 5000, distanceKm: 1.8, available: true,  verified: true,  completedJobs: 134, area: 'Defence',         lat: 24.8737, lng: 67.0838 },
   { id: 'w10', name: 'Naeem Siddiqui', service: 'Carpenter',    rating: 4.6, reviews: 52,  priceMin: 900,  priceMax: 3500, distanceKm: 2.7, available: true,  verified: true,  completedJobs: 88,  area: 'Gulberg',         lat: 24.9117, lng: 67.0688 },
 ];
+
+// ─── Bidding / Booking Mock Data (for Demo Mode in voice conversation) ────────
+
+export const MOCK_BIDS: Bid[] = [
+  {
+    provider_id: 'mock-w1',
+    provider_name: 'Muhammad Tariq',
+    bid_price: 2800,
+    final_price: 2350,
+    eta_minutes: 18,
+    rating: 4.9,
+    message: 'Main 18 minute mein pahunch jaunga, quality kaam guarantee!',
+    negotiated: true,
+  },
+  {
+    provider_id: 'mock-w2',
+    provider_name: 'Aslam Khan',
+    bid_price: 2500,
+    final_price: 2100,
+    eta_minutes: 25,
+    rating: 4.7,
+    message: 'Acha kaam karta hun, customer satisfied hoga insha Allah!',
+    negotiated: true,
+  },
+  {
+    provider_id: 'mock-w3',
+    provider_name: 'Rashid Hussain',
+    bid_price: 3000,
+    final_price: 2600,
+    eta_minutes: 30,
+    rating: 4.8,
+    message: '10 saal ka tajurba, kal tak free guarantee.',
+    negotiated: false,
+  },
+];
+
+export function makeMockBookingResult(
+  providerName = 'Muhammad Tariq',
+  price = 2350,
+  service = 'Service',
+): BookingResult {
+  return {
+    booking_id: 'HAZ-DEMO-A1B2C3',
+    provider: {
+      id: 'mock-w1',
+      name: providerName,
+      service,
+      phone: '03001234567',
+      rating: 4.9,
+    },
+    receipt: {
+      service,
+      scheduled_time: 'Kal, Subah 10 baje',
+      estimated_price: `Rs. ${price.toLocaleString()}`,
+      payment_methods: ['cash'],
+      status: 'confirmed',
+    },
+    confirmation_message: `✅ Demo booking confirm! ${providerName} kal aayenge. ID: HAZ-DEMO-A1B2C3`,
+    reminders: ['Subah 8 baje reminder bheja jayega'],
+    payment_method: 'cash',
+    whatsapp_sent: false,
+  };
+}
+
+// ─── Worker Earnings ────────────────────────────────────────────────────────
 
 export const MOCK_WORKER_EARNINGS: WorkerEarningsSummary = {
   today_total: 4300,

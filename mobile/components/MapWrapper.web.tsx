@@ -59,14 +59,15 @@ export function MapSection({ selectedProvider, onMarkerPress }: Props) {
       {/* City label */}
       <View style={styles.cityLabel}>
         <Ionicons name="location" size={12} color={Colors.primary} />
-        <Text style={styles.cityLabelText}>Islamabad, Pakistan</Text>
+        <Text style={styles.cityLabelText}>Karachi, Pakistan</Text>
       </View>
 
-      {/* "Map" decorative roads */}
+      {/* Karachi decorative roads */}
       <View style={styles.roadH1} />
       <View style={styles.roadH2} />
       <View style={styles.roadV1} />
       <View style={styles.roadV2} />
+      <View style={styles.roadDiag} />
 
       {/* Worker markers */}
       {MOCK_NEARBY_WORKERS.map((worker) => (
@@ -94,9 +95,12 @@ export function MapSection({ selectedProvider, onMarkerPress }: Props) {
         </TouchableOpacity>
       ))}
 
+      {/* Sea (bottom) */}
+      <View style={styles.sea} />
+
       {/* Map watermark */}
       <View style={styles.watermark}>
-        <Text style={styles.watermarkText}>🗺 Map (Web Preview)</Text>
+        <Text style={styles.watermarkText}>🗺 Karachi (Mock Map)</Text>
       </View>
     </View>
   );
@@ -171,9 +175,24 @@ const styles = StyleSheet.create({
     borderWidth: 3, borderColor: '#111',
     marginLeft: -5, marginTop: -5,
   },
+  sea: {
+    position: 'absolute', bottom: 0, left: 0, right: 0,
+    height: '14%',
+    backgroundColor: '#B5D0E8',
+    borderTopRightRadius: 80,
+  },
+  roadDiag: {
+    position: 'absolute',
+    top: '32%', left: '25%',
+    width: '65%', height: 5,
+    backgroundColor: 'rgba(255,255,255,0.88)',
+    borderTopWidth: 1, borderBottomWidth: 1,
+    borderColor: 'rgba(26,111,255,0.10)',
+    transform: [{ rotate: '-34deg' }],
+  },
   watermark: {
-    position: 'absolute', bottom: 10, right: 10,
-    backgroundColor: 'rgba(255,255,255,0.8)',
+    position: 'absolute', bottom: 16, right: 10,
+    backgroundColor: 'rgba(255,255,255,0.85)',
     paddingHorizontal: 8, paddingVertical: 4,
     borderRadius: 8,
   },
