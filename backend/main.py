@@ -849,7 +849,8 @@ async def conversation(body: ConversationRequest):
     audio_base64 = None
     if result.get("response_text"):
         try:
-            tts = await text_to_speech(result["response_text"], translate=True)
+            tts_voice_id = body.voice_id or None
+            tts = await text_to_speech(result["response_text"], **({"voice_id": tts_voice_id} if tts_voice_id else {}), translate=True)
             if tts.get("success"):
                 audio_base64 = tts["audio_base64"]
         except Exception as e:

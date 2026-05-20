@@ -68,6 +68,7 @@ class ConversationRequest(BaseModel):
     user_name: Optional[str] = None
     providers: Optional[List[dict]] = None
     history: Optional[List[dict]] = None  # [{role: user|assistant, content: str}]
+    voice_id: Optional[str] = None  # language-specific Uplift AI voice agent ID
 
 
 class UserSyncRequest(BaseModel):

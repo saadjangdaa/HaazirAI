@@ -18,6 +18,13 @@ import ProviderCard from '../components/ProviderCard';
 import BiddingPanel from '../components/BiddingPanel';
 import { useMockData } from '../context/MockDataContext';
 import { MOCK_BIDS, makeMockBookingResult } from '../data/mockData';
+import { useLang } from '../context/LanguageContext';
+
+const DEFAULT_VOICE_ID = 'v_meklc281';
+const VOICE_IDS: Record<string, string> = {
+  sindhi:  'v_sd0kl3m9',
+  balochi: 'v_bl1de2f7',
+};
 
 export const options = { headerShown: false };
 
@@ -54,7 +61,9 @@ export default function VoiceConversationScreen() {
   const router = useRouter();
   const { user } = useAuth();
   const { isMockMode } = useMockData();
+  const { language } = useLang();
   const insets = useSafeAreaInsets();
+  const voiceId = VOICE_IDS[language] ?? DEFAULT_VOICE_ID;
   const scrollRef = useRef<ScrollView>(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const sessionId = useRef(generateSessionId());
@@ -121,7 +130,7 @@ export default function VoiceConversationScreen() {
     let cancelled = false;
     (async () => {
       try {
-        const turn = await startConversation(sessionId.current, user?.id || 'user_001', userName);
+        const turn = await startConversation(sessionId.current, user?.id || 'user_001', userName, voiceId);
         if (!cancelled) playAgentTurn(turn);
       } catch {
         if (!cancelled) {
@@ -150,7 +159,7 @@ export default function VoiceConversationScreen() {
         setHistory((prev) => [...prev, { role: 'user', content: text }]);
         setUiState('searching');
         const currentHistory = history.concat({ role: 'user', content: text });
-        const turn = await sendMessage(sessionId.current, text, user?.id || 'anonymous', userName, currentHistory);
+        const turn = await sendMessage(sessionId.current, text, user?.id || 'anonymous', userName, currentHistory, voiceId);
         playAgentTurn(turn);
       } catch (e: any) {
         Alert.alert('Error', e?.message || 'Masla hua — dobara try karein');
