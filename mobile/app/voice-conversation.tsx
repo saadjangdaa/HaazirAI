@@ -210,7 +210,7 @@ export default function VoiceConversationScreen() {
   const handleDirectBook = async (providerId?: string, priceAccepted?: number) => {
     const uid = user?.uid;
     if (!uid) { Alert.alert('Login Karein', 'Booking ke liye pehle login karein'); return; }
-    const top = providers[0];
+    const top = providers.find((p) => p.id === providerId) || providers[0];
     const pid = providerId || top?.id;
     const price = priceAccepted || top?.base_rate || 2500;
     if (!pid) return;
@@ -221,7 +221,7 @@ export default function VoiceConversationScreen() {
     ]);
     setUiState('searching');
     try {
-      const result = await directBook(sessionId.current, uid, pid, price, 'cash');
+      const result = await directBook(sessionId.current, uid, pid, price, 'cash', top);
       setBookingResult(result);
       const waNote = result.whatsapp_sent ? ' 📱 WhatsApp confirmation bhej di gayi.' : '';
       setChat((prev) => [...prev, mk({ kind: 'text', role: 'agent', text: `✅ Booking confirm! ID: ${result.booking_id}.${waNote}` })]);
