@@ -102,7 +102,11 @@ firebase: Optional[FirebaseService] = None
 _PROVIDERS_PATH = _BACKEND_DIR / "data" / "providers.json"
 _request_store: dict = {}
 _providers_cache: list = []
+_session_search_cache: dict = {}  # session_id → {providers, intent} for voice booking
 pakka_agent = PakkaAgent()
+
+from agents.hisaab import HisaabAgent
+hisaab_agent = HisaabAgent()
 
 try:
     if config.validate():
@@ -577,14 +581,30 @@ async def conversation(body: ConversationRequest):
         location = trigger.get("location", "Islamabad")
         urgency = trigger.get("urgency", "medium")
 
-        orch = await run_samajh_workflow(
-            user_input=f"Mujhe {service} chahiye, location: {location}, urgency: {urgency}",
-            source="text",
-            user_location=location,
-        )
+        orch: dict = {}
+        try:
+            orch = await run_samajh_workflow(
+                user_input=f"Mujhe {service} chahiye, location: {location}, urgency: {urgency}",
+                source="text",
+                user_location=location,
+            )
+        except Exception as _se:
+            logger.warning("[conversation] run_samajh_workflow failed: %s", _se)
+
         providers = list((orch.get("providers_ranked") or []))[:3]
         if not providers:
             providers = _load_providers()[:3]
+
+        # Cache providers + intent so book_trigger can use them for real booking
+        _session_search_cache[body.session_id] = {
+            "providers": providers,
+            "intent": orch.get("intent") or {
+                "service_type": service,
+                "location": location,
+                "urgency": urgency,
+                "job_complexity": "intermediate",
+            },
+        }
 
         follow_up = await run_conversation(
             session_id=body.session_id,
@@ -602,29 +622,52 @@ async def conversation(body: ConversationRequest):
         provider_id = trigger.get("provider_id", "")
         payment_method = trigger.get("payment", "cash")
 
-        all_providers = _load_providers()
-        provider = next((p for p in all_providers if p["id"] == provider_id), None)
-        if not provider:
-            provider = all_providers[0]
+        # Prefer providers from this session's search; fall back to Firestore then JSON
+        cached = _session_search_cache.get(body.session_id, {})
+        cached_providers = cached.get("providers") or []
+        intent = cached.get("intent") or {}
 
-        booking_id = f"HAZ-{uuid.uuid4().hex[:8].upper()}"
-        result["booking_result"] = {
-            "booking_id": booking_id,
-            "provider": provider,
-            "receipt": {
-                "service": provider.get("service", "Service"),
-                "location": f"{provider.get('area', '')}, {provider.get('city', 'Islamabad')}",
-                "scheduled_time": "2026-05-19 10:00",
-                "estimated_price": f"Rs. {provider.get('base_rate', 2500):,}",
-                "payment_methods": [payment_method.title()],
-            },
-            "confirmation_message": (
-                f"{provider.get('name')} kal 10:00 AM pe {provider.get('city', 'Islamabad')} aayenge. "
-                f"Total estimate: Rs. {provider.get('base_rate', 2500):,}. Reference: {booking_id}"
-            ),
-            "reminders": [],
-            "payment_method": payment_method,
-        }
+        provider = next((p for p in cached_providers if str(p.get("id")) == str(provider_id)), None)
+        if not provider:
+            provider = await get_provider(provider_id)
+        if not provider:
+            provider = cached_providers[0] if cached_providers else _load_providers()[0]
+
+        user_id = (body.user_id or "").strip() or "anonymous"
+
+        try:
+            pricing = await hisaab_agent.calculate_price(intent, provider)
+            pricing.pop("_log", None)
+            booking_raw = await pakka_agent.create_booking(intent, provider, pricing, user_id)
+            booking_raw.pop("_log", None)
+            result["booking_result"] = {
+                "booking_id": booking_raw["booking_id"],
+                "provider": provider,
+                "receipt": booking_raw.get("receipt", {}),
+                "confirmation_message": booking_raw.get("confirmation_message", ""),
+                "reminders": booking_raw.get("reminder_times", []),
+                "payment_method": payment_method,
+            }
+        except Exception as _be:
+            logger.warning("[conversation] pakka booking error: %s", _be)
+            booking_id = f"HAZ-{uuid.uuid4().hex[:8].upper()}"
+            result["booking_result"] = {
+                "booking_id": booking_id,
+                "provider": provider,
+                "receipt": {
+                    "service": provider.get("service", "Service"),
+                    "location": f"{provider.get('area', '')}, {provider.get('city', 'Islamabad')}",
+                    "scheduled_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "estimated_price": f"Rs. {provider.get('base_rate', 2500):,}",
+                    "payment_methods": [payment_method.title()],
+                },
+                "confirmation_message": (
+                    f"{provider.get('name')} aayenge. "
+                    f"Total estimate: Rs. {provider.get('base_rate', 2500):,}. Reference: {booking_id}"
+                ),
+                "reminders": [],
+                "payment_method": payment_method,
+            }
         result["phase"] = "done"
 
     audio_base64 = None

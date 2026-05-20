@@ -2,7 +2,7 @@
  * Native Firebase entry (Metro resolves ./firebase → firebase.native.ts on device).
  */
 import { getApp, getApps, initializeApp } from 'firebase/app';
-import { getAuth, getReactNativePersistence, initializeAuth } from 'firebase/auth';
+import { getAuth, initializeAuth, getReactNativePersistence } from 'firebase/auth';
 import { getFirestore, initializeFirestore } from 'firebase/firestore';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
