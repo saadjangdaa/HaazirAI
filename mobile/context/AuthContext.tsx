@@ -113,7 +113,7 @@ async function writeUserToFirestore(
 function parseWorkerData(profile: UserProfile | null): WorkerData | undefined {
   if (!profile || profile.role !== 'worker') return undefined;
 
-  const legacy = profile.worker_data as WorkerData | undefined;
+  const legacy = profile.worker_data as unknown as WorkerData | undefined;
   const skills = profile.skills ?? legacy?.specializations;
   const areas = profile.areas ?? legacy?.areas;
 
@@ -134,7 +134,7 @@ function parseWorkerData(profile: UserProfile | null): WorkerData | undefined {
 
 function isWorkerOnboarded(profile: UserProfile | null, role: UserRole): boolean {
   if (role !== 'worker') return true;
-  const skills = profile?.skills ?? (profile?.worker_data as WorkerData)?.specializations;
+  const skills = profile?.skills ?? (profile?.worker_data as unknown as WorkerData)?.specializations;
   return Array.isArray(skills) && skills.length > 0;
 }
 

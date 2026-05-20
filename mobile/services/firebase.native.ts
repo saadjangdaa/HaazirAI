@@ -2,7 +2,7 @@
  * Native Firebase entry (Metro resolves ./firebase → firebase.native.ts on device).
  */
 import { getApp, getApps, initializeApp } from 'firebase/app';
-import { getAuth, initializeAuth, getReactNativePersistence } from 'firebase/auth';
+import { getAuth, initializeAuth } from 'firebase/auth';
 import { getFirestore, initializeFirestore } from 'firebase/firestore';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -27,15 +27,25 @@ function getDb() {
 
 export const db = getDb();
 
+// Firebase 12 removed getReactNativePersistence — implement AsyncStorage persistence directly
+const asyncStoragePersistence = {
+  type: 'LOCAL' as const,
+  async _isAvailable() { return true; },
+  async _set(key: string, value: string) { await AsyncStorage.setItem(key, value); },
+  async _get(key: string) { return AsyncStorage.getItem(key); },
+  async _remove(key: string) { await AsyncStorage.removeItem(key); },
+  _addListener(_key: string, _listener: unknown) {},
+  _removeListener(_key: string, _listener: unknown) {},
+};
+
 function initAuth() {
   try {
     return initializeAuth(app, {
-      persistence: getReactNativePersistence(AsyncStorage),
+      persistence: asyncStoragePersistence as any,
     });
-  } catch (e: unknown) {
-    const code = (e as { code?: string })?.code;
-    if (code === 'auth/already-initialized') return getAuth(app);
-    throw e;
+  } catch {
+    // Already initialized on re-render / hot reload
+    return getAuth(app);
   }
 }
 

@@ -1,12 +1,10 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import {
+  AudioRecorder,
   RecordingPresets,
   requestRecordingPermissionsAsync,
   setAudioModeAsync,
 } from 'expo-audio';
-import AudioModule from 'expo-audio/build/AudioModule';
-import { createRecordingOptions } from 'expo-audio/build/utils/options';
-import type { AudioRecorder } from 'expo-audio/build/AudioModule.types';
 import { formatApiError, transcribeVoiceAudio } from './api';
 
 let _recording: AudioRecorder | null = null;
@@ -21,8 +19,7 @@ export async function startRecording(): Promise<void> {
     allowsRecording: true,
     playsInSilentMode: true,
   });
-  const options = createRecordingOptions(RecordingPresets.HIGH_QUALITY);
-  const recorder = new AudioModule.AudioRecorder(options);
+  const recorder = new AudioRecorder(RecordingPresets.HIGH_QUALITY);
   await recorder.prepareToRecordAsync();
   recorder.record();
   _recording = recorder;

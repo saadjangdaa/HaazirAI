@@ -335,14 +335,7 @@ export default function VoiceConversationScreen() {
 
   // ── Select bid from BiddingPanel (confirmation before booking) ───────────
   const handleSelectBid = useCallback((bid: Bid) => {
-    Alert.alert(
-      'Booking Confirm Karein',
-      `${bid.provider_name} ne Rs. ${bid.final_price.toLocaleString()} mein negotiate kar liya hai.\n\nIs worker ke saath booking karni hai?`,
-      [
-        { text: 'Nahi', style: 'cancel' },
-        { text: 'Haan, Book Karein ✅', onPress: () => handleDirectBook(bid.provider_id, bid.final_price) },
-      ],
-    );
+    handleDirectBook(bid.provider_id, bid.final_price);
   }, [handleDirectBook]);
 
   // ── Provider card tap → go to booking screen ──────────────────────────────
@@ -466,7 +459,7 @@ export default function VoiceConversationScreen() {
                   <Text style={styles.liveBidMessage}>"{bid.message}"</Text>
                   <TouchableOpacity
                     style={[styles.liveBidSelectBtn, isRec && styles.liveBidSelectBtnRec]}
-                    onPress={() => handleSelectBid(bid)}
+                    onPress={() => handleDirectBook(bid.provider_id, bid.final_price)}
                   >
                     <Text style={[styles.liveBidSelectText, isRec && styles.liveBidSelectTextRec]}>
                       {isRec ? '✅ Ye Waala Chunein' : 'Is Se Book Karein'}
