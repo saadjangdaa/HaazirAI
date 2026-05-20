@@ -3,6 +3,7 @@ import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
   ActivityIndicator, RefreshControl,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../../constants/theme';
@@ -10,6 +11,7 @@ import { getUserBookings, UserBooking, formatApiError, requireUserId } from '../
 import { useAuth } from '../../context/AuthContext';
 import { useMockData } from '../../context/MockDataContext';
 import { MOCK_CUSTOMER_BOOKINGS } from '../../data/mockData';
+import CustomerSidebar from '../../components/CustomerSidebar';
 
 const STATUS_LABEL: Record<string, string> = {
   pending: 'Pending',
@@ -50,6 +52,7 @@ export default function BookingsScreen() {
   const [bookings, setBookings] = useState<UserBooking[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const load = useCallback(async () => {
     if (isMockMode) {
@@ -88,19 +91,39 @@ export default function BookingsScreen() {
 
   if (loading && bookings.length === 0) {
     return (
-      <View style={styles.center}>
-        <ActivityIndicator color={Colors.primary} size="large" />
-        <Text style={styles.loadingText}>Bookings load ho rahi hain...</Text>
+      <View style={styles.rootWrap}>
+        <View style={[styles.header, { paddingTop: insets.top + 6 }]}>
+          <TouchableOpacity style={styles.menuBtn} onPress={() => setSidebarOpen(true)}>
+            <Ionicons name="menu" size={22} color={Colors.textPrimary} />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>Meri Bookings</Text>
+          <View style={{ width: 38 }} />
+        </View>
+        <View style={styles.center}>
+          <ActivityIndicator color={Colors.primary} size="large" />
+          <Text style={styles.loadingText}>Bookings load ho rahi hain...</Text>
+        </View>
+        <CustomerSidebar visible={sidebarOpen} onClose={() => setSidebarOpen(false)} />
       </View>
     );
   }
 
   return (
-    <ScrollView
-      style={styles.root}
-      contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
-      refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={Colors.primary} />}
-    >
+    <View style={styles.rootWrap}>
+      {/* ── Header ── */}
+      <View style={[styles.header, { paddingTop: insets.top + 6 }]}>
+        <TouchableOpacity style={styles.menuBtn} onPress={() => setSidebarOpen(true)}>
+          <Ionicons name="menu" size={22} color={Colors.textPrimary} />
+        </TouchableOpacity>
+        <Text style={styles.headerTitle}>Meri Bookings</Text>
+        <View style={{ width: 38 }} />
+      </View>
+
+      <ScrollView
+        style={styles.root}
+        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
+        refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={Colors.primary} />}
+      >
       <Text style={styles.title}>Meri Bookings</Text>
 
       <View style={styles.summaryRow}>
@@ -173,12 +196,28 @@ export default function BookingsScreen() {
           </View>
         );
       })}
-    </ScrollView>
+      </ScrollView>
+
+      <CustomerSidebar visible={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  rootWrap: { flex: 1, backgroundColor: Colors.background },
   root: { flex: 1, backgroundColor: Colors.background },
+  header: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: Spacing.md, paddingBottom: Spacing.sm,
+    backgroundColor: Colors.surface,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: Colors.border,
+  },
+  headerTitle: { flex: 1, textAlign: 'center', fontSize: FontSize.lg, fontWeight: '700', color: Colors.textPrimary },
+  menuBtn: {
+    width: 38, height: 38, borderRadius: 19,
+    backgroundColor: Colors.background,
+    justifyContent: 'center', alignItems: 'center',
+  },
   content: { padding: Spacing.md, paddingBottom: 48 },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: Colors.background },
   loadingText: { marginTop: Spacing.md, color: Colors.textMuted },

@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, Modal, Switch } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, Modal, Switch, Platform } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
+import CustomerSidebar from '../../components/CustomerSidebar';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../../constants/theme';
 import { useAuth } from '../../context/AuthContext';
 import { useLang, LANGUAGE_LABELS } from '../../context/LanguageContext';
@@ -56,21 +58,35 @@ export default function CustomerProfileScreen() {
     return () => { cancelled = true; };
   }, [user?.id, isMockMode]);
 
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  const doLogout = async () => {
+    try { await signOut(); } finally { router.replace('/login'); }
+  };
+
   const handleLogout = () => {
+    if (Platform.OS === 'web') {
+      doLogout();
+      return;
+    }
     Alert.alert(tr.logout, tr.logoutConfirm, [
       { text: tr.cancel, style: 'cancel' },
-      {
-        text: tr.logout,
-        style: 'destructive',
-        onPress: async () => {
-          try { await signOut(); } finally { router.replace('/login'); }
-        },
-      },
+      { text: tr.logout, style: 'destructive', onPress: doLogout },
     ]);
   };
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
+    <View style={styles.rootWrap}>
+      {/* ── Header ── */}
+      <View style={[styles.header, { paddingTop: insets.top + 6 }]}>
+        <TouchableOpacity style={styles.menuBtn} onPress={() => setSidebarOpen(true)}>
+          <Ionicons name="menu" size={22} color={Colors.textPrimary} />
+        </TouchableOpacity>
+        <Text style={styles.headerTitle}>Profile</Text>
+        <View style={{ width: 38 }} />
+      </View>
+
+      <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 110 }]}>
 
       {/* Demo Mode Banner */}
       {isMockMode && (
@@ -213,12 +229,28 @@ export default function CustomerProfileScreen() {
           </View>
         </TouchableOpacity>
       </Modal>
-    </ScrollView>
+      </ScrollView>
+
+      <CustomerSidebar visible={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  rootWrap: { flex: 1, backgroundColor: Colors.background },
   root: { flex: 1, backgroundColor: Colors.background },
+  header: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: Spacing.md, paddingBottom: Spacing.sm,
+    backgroundColor: Colors.surface,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: Colors.border,
+  },
+  headerTitle: { flex: 1, textAlign: 'center', fontSize: FontSize.lg, fontWeight: '700', color: Colors.textPrimary },
+  menuBtn: {
+    width: 38, height: 38, borderRadius: 19,
+    backgroundColor: Colors.background,
+    justifyContent: 'center', alignItems: 'center',
+  },
   content: { padding: Spacing.md, paddingBottom: 48 },
 
   mockBanner: {

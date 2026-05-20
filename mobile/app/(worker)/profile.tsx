@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, Modal, Switch } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, Modal, Switch, Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../../constants/theme';
@@ -28,20 +28,18 @@ export default function WorkerProfileScreen() {
   const toggleDay = (i: number) =>
     setAvailability((prev) => prev.map((v, idx) => (idx === i ? !v : v)));
 
+  const doLogout = async () => {
+    try { await signOut(); } finally { router.replace('/login'); }
+  };
+
   const handleLogout = () => {
+    if (Platform.OS === 'web') {
+      doLogout();
+      return;
+    }
     Alert.alert(tr.logout, tr.logoutConfirm, [
       { text: tr.cancel, style: 'cancel' },
-      {
-        text: tr.logout,
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            await signOut();
-          } finally {
-            router.replace('/login');
-          }
-        },
-      },
+      { text: tr.logout, style: 'destructive', onPress: doLogout },
     ]);
   };
 
@@ -52,7 +50,7 @@ export default function WorkerProfileScreen() {
   const initial = displayName.charAt(0).toUpperCase();
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
+    <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 110 }]}>
       <Text style={styles.title}>{tr.profile}</Text>
 
       {/* Identity Card */}
@@ -126,7 +124,7 @@ export default function WorkerProfileScreen() {
         <Text style={styles.cardTitle}>Performance</Text>
         <View style={styles.statsRow}>
           <View style={styles.statItem}>
-            <Text style={[styles.statVal, { color: Colors.warning }]}>Rs 18.4k</Text>
+            <Text style={[styles.statVal, { color: Colors.primary }]}>Rs 18.4k</Text>
             <Text style={styles.statLabel}>Is Hafte</Text>
           </View>
           <View style={styles.statItem}>
@@ -141,10 +139,10 @@ export default function WorkerProfileScreen() {
       </View>
 
       {/* Demo Mode Toggle */}
-      <View style={[styles.card, Shadow.card, isMockMode && { borderColor: Colors.warning, backgroundColor: '#FFFBEB' }]}>
+      <View style={[styles.card, Shadow.card, isMockMode && { borderColor: Colors.primary, backgroundColor: Colors.primaryLight }]}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.md }}>
           <View style={{ flex: 1 }}>
-            <Text style={[styles.cardTitle, { marginBottom: 2 }, isMockMode && { color: Colors.warning }]}>
+            <Text style={[styles.cardTitle, { marginBottom: 2 }, isMockMode && { color: Colors.primary }]}>
               🎭 Demo Mode
             </Text>
             <Text style={{ fontSize: FontSize.xs, color: Colors.textMuted }}>
@@ -156,7 +154,7 @@ export default function WorkerProfileScreen() {
           <Switch
             value={isMockMode}
             onValueChange={toggleMockMode}
-            trackColor={{ false: Colors.border, true: Colors.warning }}
+            trackColor={{ false: Colors.border, true: Colors.primary }}
             thumbColor={isMockMode ? Colors.textInverse : Colors.textMuted}
           />
         </View>
@@ -166,7 +164,7 @@ export default function WorkerProfileScreen() {
       <TouchableOpacity style={[styles.card, Shadow.card, { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm }]} onPress={() => setShowLangPicker(true)}>
         <Text style={{ fontSize: 18, width: 28 }}>🌐</Text>
         <Text style={[styles.cardTitle, { flex: 1, marginBottom: 0 }]}>{tr.language}</Text>
-        <Text style={{ fontSize: FontSize.sm, color: Colors.warning, fontWeight: '700', marginRight: 4 }}>{LANGUAGE_LABELS[language]}</Text>
+        <Text style={{ fontSize: FontSize.sm, color: Colors.primary, fontWeight: '700', marginRight: 4 }}>{LANGUAGE_LABELS[language]}</Text>
         <Text style={{ fontSize: FontSize.xl, color: Colors.textMuted }}>›</Text>
       </TouchableOpacity>
 
@@ -203,8 +201,8 @@ const styles = StyleSheet.create({
   title: { fontSize: FontSize.xxl, fontWeight: '800', color: Colors.textPrimary, marginBottom: Spacing.md },
   profileCard: { backgroundColor: Colors.surface, borderRadius: Radius.xl, borderWidth: 1, borderColor: Colors.border, padding: Spacing.md, marginBottom: Spacing.md },
   profileRow: { flexDirection: 'row', gap: Spacing.md, alignItems: 'flex-start' },
-  avatar: { width: 56, height: 56, borderRadius: 28, backgroundColor: '#FFFBEB', justifyContent: 'center', alignItems: 'center' },
-  avatarText: { fontSize: FontSize.xxl, fontWeight: '800', color: Colors.warning },
+  avatar: { width: 56, height: 56, borderRadius: 28, backgroundColor: Colors.primaryLight, justifyContent: 'center', alignItems: 'center' },
+  avatarText: { fontSize: FontSize.xxl, fontWeight: '800', color: Colors.primary },
   profileName: { fontSize: FontSize.lg, fontWeight: '800', color: Colors.textPrimary },
   profileMeta: { fontSize: FontSize.xs, color: Colors.textMuted, marginTop: 2, marginBottom: Spacing.xs },
   badgeRow: { flexDirection: 'row', gap: Spacing.xs, flexWrap: 'wrap' },
@@ -213,20 +211,20 @@ const styles = StyleSheet.create({
   card: { backgroundColor: Colors.surface, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.border, padding: Spacing.md, marginBottom: Spacing.md },
   cardTitle: { fontSize: FontSize.md, fontWeight: '700', color: Colors.textPrimary, marginBottom: Spacing.sm },
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.xs, marginBottom: Spacing.xs },
-  chip: { backgroundColor: '#FFFBEB', borderRadius: Radius.full, borderWidth: 1, borderColor: Colors.warning + '66', paddingHorizontal: 10, paddingVertical: 4 },
+  chip: { backgroundColor: Colors.primaryLight, borderRadius: Radius.full, borderWidth: 1, borderColor: Colors.primaryDim, paddingHorizontal: 10, paddingVertical: 4 },
   chipBlue: { backgroundColor: '#E0F2FE', borderColor: '#0284C733' },
-  chipText: { fontSize: FontSize.xs, fontWeight: '700', color: Colors.warning },
+  chipText: { fontSize: FontSize.xs, fontWeight: '700', color: Colors.primary },
   certBadge: { backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md, padding: 6, alignSelf: 'flex-start' },
   certText: { fontSize: FontSize.xs, fontWeight: '700', color: Colors.primary },
   docRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: Spacing.sm, borderBottomWidth: 1, borderBottomColor: Colors.border + '44' },
   docName: { fontSize: FontSize.sm, color: Colors.textPrimary },
   verifiedBadge: { backgroundColor: Colors.surfaceElevated, borderRadius: Radius.full, paddingHorizontal: 8, paddingVertical: 3 },
   verifiedText: { fontSize: FontSize.xs, fontWeight: '700', color: Colors.primary },
-  pendingBadge: { backgroundColor: Colors.warningDim, borderRadius: Radius.full, paddingHorizontal: 8, paddingVertical: 3 },
-  pendingText: { fontSize: FontSize.xs, fontWeight: '700', color: Colors.warning },
+  pendingBadge: { backgroundColor: Colors.primaryDim, borderRadius: Radius.full, paddingHorizontal: 8, paddingVertical: 3 },
+  pendingText: { fontSize: FontSize.xs, fontWeight: '700', color: Colors.primary },
   daysRow: { flexDirection: 'row', gap: Spacing.xs },
   dayBtn: { flex: 1, aspectRatio: 1, borderRadius: Radius.sm, backgroundColor: Colors.border, justifyContent: 'center', alignItems: 'center' },
-  dayBtnActive: { backgroundColor: Colors.warning },
+  dayBtnActive: { backgroundColor: Colors.primary, borderWidth: 0 },
   dayText: { fontSize: FontSize.xs, fontWeight: '700', color: Colors.textMuted },
   dayTextActive: { color: Colors.background },
   statsRow: { flexDirection: 'row' },
@@ -239,8 +237,8 @@ const styles = StyleSheet.create({
   modalSheet: { backgroundColor: Colors.surface, borderTopLeftRadius: Radius.xl, borderTopRightRadius: Radius.xl, padding: Spacing.lg, paddingBottom: 40 },
   modalTitle: { fontSize: FontSize.lg, fontWeight: '800', color: Colors.textPrimary, marginBottom: Spacing.md, textAlign: 'center' },
   langOption: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: Spacing.md, borderRadius: Radius.md, marginBottom: Spacing.xs },
-  langOptionActive: { backgroundColor: '#FFFBEB' },
+  langOptionActive: { backgroundColor: Colors.primaryLight },
   langOptionText: { fontSize: FontSize.md, color: Colors.textPrimary, fontWeight: '600' },
-  langOptionTextActive: { color: Colors.warning, fontWeight: '800' },
-  langCheck: { color: Colors.warning, fontSize: FontSize.lg, fontWeight: '800' },
+  langOptionTextActive: { color: Colors.primary, fontWeight: '800' },
+  langCheck: { color: Colors.primary, fontSize: FontSize.lg, fontWeight: '800' },
 });

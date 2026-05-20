@@ -58,6 +58,7 @@ class ConversationRequest(BaseModel):
     user_id: str = "user_001"
     user_name: Optional[str] = None
     providers: Optional[List[dict]] = None
+    history: Optional[List[dict]] = None  # [{role: user|assistant, content: str}]
 
 
 class UserSyncRequest(BaseModel):
@@ -106,6 +107,20 @@ class UserSyncRequest(BaseModel):
         from services.user_validation import normalize_cnic
 
         return normalize_cnic(str(v))
+
+
+class NegotiateRequest(BaseModel):
+    session_id: str
+    user_id: str = "user_001"
+    providers: Optional[List[dict]] = None  # frontend passes current providers directly
+
+
+class ConvDirectBookRequest(BaseModel):
+    session_id: str
+    user_id: str
+    provider_id: str
+    price_accepted: int = 0
+    payment_method: str = "cash"
 
 
 class BookingStatusUpdate(BaseModel):

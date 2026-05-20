@@ -37,6 +37,7 @@ export default function WorkerSignupScreen() {
   const [cnic, setCnic] = useState('');
   const [phone, setPhone] = useState('');
   const [busy, setBusy] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
 
   const toggleSpec = (s: string) =>
     setSelectedSpecs((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]));
@@ -50,19 +51,20 @@ export default function WorkerSignupScreen() {
   };
 
   const handleRegister = async () => {
-    if (selectedSpecs.length === 0) { Alert.alert('Specialization chunein', 'Kam az kam ek skill select karein'); return; }
-    if (selectedCities.length === 0) { Alert.alert('City chunein', 'Kahan kaam karte hain?'); return; }
-    if (!phone.trim()) { Alert.alert('Phone number', 'Mobile number daalna zaroori hai'); return; }
+    setErrorMsg('');
+    if (selectedSpecs.length === 0) { setErrorMsg('Kam az kam ek skill select karein'); return; }
+    if (selectedCities.length === 0) { setErrorMsg('Kahan kaam karte hain? City chunein'); return; }
+    if (!phone.trim()) { setErrorMsg('Mobile number daalna zaroori hai'); return; }
 
     let normalizedPhone: string;
     try { normalizedPhone = normalizePkPhone(phone); }
-    catch (e) { Alert.alert('Phone Format', (e as Error).message + '\nMisaal: 03001234567'); return; }
+    catch (e) { setErrorMsg((e as Error).message + ' — Misaal: 03001234567'); return; }
 
-    if (!cnic.trim()) { Alert.alert('CNIC', 'CNIC number daalna zaroori hai'); return; }
+    if (!cnic.trim()) { setErrorMsg('CNIC number daalna zaroori hai'); return; }
 
     let normalizedCnic: string;
     try { normalizedCnic = normalizeCnic(cnic); }
-    catch (e) { Alert.alert('CNIC Format', (e as Error).message); return; }
+    catch (e) { setErrorMsg((e as Error).message); return; }
 
     setBusy(true);
     try {
@@ -78,7 +80,8 @@ export default function WorkerSignupScreen() {
       });
       router.replace('/(worker)/jobs');
     } catch (e) {
-      Alert.alert('Registration failed', formatAuthBootstrapError(e));
+      const msg = formatAuthBootstrapError(e);
+      setErrorMsg(msg || 'Registration fail ho gayi — dobara koshish karein');
     } finally {
       setBusy(false);
     }
@@ -206,8 +209,15 @@ export default function WorkerSignupScreen() {
         </View>
       </View>
 
+      {!!errorMsg && (
+        <View style={styles.errorBox}>
+          <Ionicons name="alert-circle-outline" size={16} color={Colors.danger} />
+          <Text style={styles.errorText}>{errorMsg}</Text>
+        </View>
+      )}
+
       <TouchableOpacity style={[styles.btn, Shadow.primary]} onPress={handleRegister} disabled={busy} activeOpacity={0.85}>
-        {busy ? <ActivityIndicator color={Colors.textInverse} /> : <Text style={styles.btnText}>Worker Ke Tor Pe Register Karein</Text>}
+        {busy ? <ActivityIndicator color={Colors.textInverse} /> : <Text style={styles.btnText}>Register Karein</Text>}
       </TouchableOpacity>
     </ScrollView>
   );
@@ -267,6 +277,15 @@ const styles = StyleSheet.create({
   },
   trustTitle: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: Colors.primary, marginBottom: 4 },
   trustText: { fontSize: FontSize.xs, color: Colors.primary, lineHeight: 18 },
+
+  errorBox: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 8,
+    backgroundColor: Colors.dangerDim,
+    borderRadius: Radius.md, padding: Spacing.sm,
+    borderWidth: 1, borderColor: Colors.danger,
+    marginBottom: Spacing.sm,
+  },
+  errorText: { flex: 1, fontSize: FontSize.sm, color: Colors.danger, lineHeight: 18 },
 
   btn: {
     backgroundColor: Colors.workerAccent,

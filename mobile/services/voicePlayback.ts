@@ -5,9 +5,11 @@
 import { createAudioPlayer, setAudioModeAsync } from 'expo-audio';
 import type { AudioPlayer } from 'expo-audio/build/AudioModule.types';
 import * as FileSystem from 'expo-file-system/legacy';
+import { Platform } from 'react-native';
 
 let _player: AudioPlayer | null = null;
 let _statusSub: { remove: () => void } | null = null;
+let _webAudio: any = null;
 
 function detachListener() {
   _statusSub?.remove();
@@ -16,6 +18,21 @@ function detachListener() {
 
 export async function playBase64Audio(base64: string, onDone?: () => void): Promise<void> {
   await stopSpeaking();
+  if (Platform.OS === 'web') {
+    try {
+      _webAudio = new Audio(`data:audio/mpeg;base64,${base64}`);
+      _webAudio.onended = () => {
+        _webAudio = null;
+        onDone?.();
+      };
+      await _webAudio.play();
+    } catch (e) {
+      console.error('[voicePlayback] Web playBase64Audio error:', e);
+      onDone?.();
+    }
+    return;
+  }
+
   try {
     await setAudioModeAsync({ playsInSilentMode: true });
     const uri = (FileSystem.cacheDirectory ?? '') + 'haazir_conv.mp3';
@@ -47,6 +64,18 @@ export async function playBase64Audio(base64: string, onDone?: () => void): Prom
 }
 
 export async function stopSpeaking(): Promise<void> {
+  if (Platform.OS === 'web') {
+    if (_webAudio) {
+      try {
+        _webAudio.pause();
+      } catch {
+        /* ignore */
+      }
+      _webAudio = null;
+    }
+    return;
+  }
+
   detachListener();
   if (_player) {
     try {

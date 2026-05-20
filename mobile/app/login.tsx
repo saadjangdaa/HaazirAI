@@ -1,5 +1,4 @@
-import React, { useState, useEffect } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import React, { useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
   ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView,
@@ -30,11 +29,7 @@ export default function LoginScreen() {
   const [emailFocused, setEmailFocused] = useState(false);
   const [passFocused, setPassFocused] = useState(false);
 
-  useEffect(() => {
-    AsyncStorage.getItem('haazir_onboarding_seen').then((val) => {
-      if (val !== '1') router.replace('/onboarding');
-    });
-  }, []);
+  // Onboarding redirect is handled by AuthNavigationGuard in _layout.tsx
 
   const handleLogin = async () => {
     if (!email.trim() || !password.trim()) {
