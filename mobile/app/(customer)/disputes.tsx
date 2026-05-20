@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, ScrollView, StyleSheet,
   Alert, ActivityIndicator, Animated, Easing,
@@ -624,6 +624,7 @@ export default function DisputesScreen() {
 }
 
 function DisputeHeader({ insets, onMenu }: { insets: { top: number }; onMenu: () => void }) {
+  const { tr } = useLang();
   return (
     <View style={[disputeHeaderStyle.header, { paddingTop: insets.top + 6 }]}>
       <TouchableOpacity style={disputeHeaderStyle.menuBtn} onPress={onMenu}>

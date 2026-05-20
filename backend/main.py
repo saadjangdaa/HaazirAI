@@ -683,6 +683,7 @@ async def conversation(body: ConversationRequest):
         providers=body.providers,
         user_name=body.user_name,
         history=body.history,
+        language=body.language or 'roman_urdu',
     )
 
     if result.get("search_trigger"):
@@ -768,13 +769,13 @@ async def conversation(body: ConversationRequest):
                     "service": provider.get("service", "Service"),
                     "location": f"{provider.get('area', '')}, {provider.get('city', 'Islamabad')}",
                     "scheduled_time": "Tomorrow 10:00 AM",
-                    "estimated_price": f"Rs. {provider.get('base_rate', 2500):,}",
+                    "estimated_price": f"Rs. {provider.get('price_per_hour', provider.get('base_rate', 2500)):,}",
                     "payment_methods": [payment_method.title()],
                     "status": "confirmed",
                 },
                 "confirmation_message": (
                     f"✅ {provider.get('name')} kal 10:00 AM pe aayenge. "
-                    f"Rs. {provider.get('base_rate', 2500):,}. Ref: {booking_id}"
+                    f"Rs. {provider.get('price_per_hour', provider.get('base_rate', 2500)):,}. Ref: {booking_id}"
                 ),
                 "reminders": [],
                 "payment_method": payment_method,
@@ -832,13 +833,13 @@ async def conversation(body: ConversationRequest):
                         "service": provider.get("service", "Service"),
                         "location": f"{provider.get('area', '')}, {provider.get('city', 'Islamabad')}",
                         "scheduled_time": "Tomorrow 10:00 AM",
-                        "estimated_price": f"Rs. {provider.get('base_rate', 2500):,}",
+                        "estimated_price": f"Rs. {provider.get('price_per_hour', provider.get('base_rate', 2500)):,}",
                         "payment_methods": [payment_method.title()],
                         "status": "confirmed",
                     },
                     "confirmation_message": (
                         f"✅ {provider.get('name')} kal 10:00 AM pe aayenge. "
-                        f"Rs. {provider.get('base_rate', 2500):,}. Ref: {booking_id}"
+                        f"Rs. {provider.get('price_per_hour', provider.get('base_rate', 2500)):,}. Ref: {booking_id}"
                     ),
                     "reminders": [],
                     "payment_method": payment_method,
@@ -849,8 +850,14 @@ async def conversation(body: ConversationRequest):
     audio_base64 = None
     if result.get("response_text"):
         try:
+            lang = body.language or 'roman_urdu'
             tts_voice_id = body.voice_id or None
-            tts = await text_to_speech(result["response_text"], **({"voice_id": tts_voice_id} if tts_voice_id else {}), translate=True)
+            # roman_urdu needs translation (Roman → Urdu script); all others are already in their script
+            tts_translate = (lang == 'roman_urdu')
+            tts_kwargs: dict = {"translate": tts_translate}
+            if tts_voice_id:
+                tts_kwargs["voice_id"] = tts_voice_id
+            tts = await text_to_speech(result["response_text"], **tts_kwargs)
             if tts.get("success"):
                 audio_base64 = tts["audio_base64"]
         except Exception as e:

@@ -80,11 +80,13 @@ export default function CustomerSidebar({ visible, onClose }: Props) {
   const handleLogout = () => {
     onClose();
     setTimeout(() => {
-      Alert.alert(tr.logout, tr.logoutConfirm, [
-        { text: tr.cancel, style: 'cancel' },
+      Alert.alert('Logout', 'Kya aap logout karna chahte hain?', [
+        { text: 'Cancel', style: 'cancel' },
         {
-          text: tr.logout, style: 'destructive', onPress: async () => {
-            try { await signOut(); } finally { router.replace('/login'); }
+          text: 'Logout', style: 'destructive', onPress: () => {
+            signOut()
+              .catch(() => {})
+              .finally(() => router.replace('/login'));
           },
         },
       ]);

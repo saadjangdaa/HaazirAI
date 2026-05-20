@@ -61,23 +61,24 @@ type SidebarItem = {
   dividerBefore?: boolean;
 };
 
-const SIDEBAR_NAV: SidebarItem[] = [
-  { label: 'Services (Home)',  icon: 'home-outline',         path: '/(customer)/' },
-  { label: 'My Bookings',      icon: 'calendar-outline',     path: '/(customer)/bookings' },
-  { label: 'My Disputes',      icon: 'shield-outline',       path: '/(customer)/disputes' },
-  { label: 'Profile',          icon: 'person-outline',       path: '/(customer)/profile' },
-  { label: 'Agent Traces',     icon: 'git-network-outline',  path: '/agent-traces', highlight: true, badge: 'NEW', dividerBefore: true },
-  { label: 'Agent Logs',       icon: 'flask-outline',        path: '/logs' },
-  { label: 'Nearby Workers',   icon: 'people-outline',       path: '/nearby', dividerBefore: true },
-  { label: 'Notifications',    icon: 'notifications-outline', path: '/logs' },
-  { label: 'Help & Support',   icon: 'help-circle-outline' },
-];
 
 const CustomerHomeScreen = () => {
   const router = useRouter();
   const { user, signOut } = useAuth();
   const { tr } = useLang();
   const { isMockMode, toggleMockMode } = useMockData();
+
+  const SIDEBAR_NAV: SidebarItem[] = [
+    { label: tr.navHome,      icon: 'home-outline',          path: '/(customer)/' },
+    { label: tr.navBookings,  icon: 'calendar-outline',      path: '/(customer)/bookings' },
+    { label: tr.navDisputes,  icon: 'shield-outline',        path: '/(customer)/disputes' },
+    { label: tr.navProfile,   icon: 'person-outline',        path: '/(customer)/profile' },
+    { label: 'Agent Traces',  icon: 'git-network-outline',   path: '/agent-traces', highlight: true, badge: 'NEW', dividerBefore: true },
+    { label: tr.agentLogs,    icon: 'flask-outline',         path: '/logs' },
+    { label: 'Nearby Workers', icon: 'people-outline',       path: '/nearby', dividerBefore: true },
+    { label: 'Notifications', icon: 'notifications-outline', path: '/logs' },
+    { label: 'Help & Support', icon: 'help-circle-outline' },
+  ];
   const insets = useSafeAreaInsets();
 
   const [input, setInput] = useState('');
@@ -184,8 +185,10 @@ const CustomerHomeScreen = () => {
     setTimeout(() => {
       Alert.alert('Logout', 'Kya aap logout karna chahte hain?', [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Logout', style: 'destructive', onPress: async () => {
-          try { await signOut(); } finally { router.replace('/login'); }
+        { text: 'Logout', style: 'destructive', onPress: () => {
+          signOut()
+            .catch(() => {})
+            .finally(() => router.replace('/login'));
         }},
       ]);
     }, 250);
@@ -570,7 +573,7 @@ const CustomerHomeScreen = () => {
             <View style={[styles.sidebarItemIcon]}>
               <Ionicons name="color-wand-outline" size={18} color={Colors.textSecondary} />
             </View>
-            <Text style={styles.sidebarItemLabel}>Demo Mode</Text>
+            <Text style={styles.sidebarItemLabel}>{tr.demoMode}</Text>
             <Switch
               value={isMockMode}
               onValueChange={toggleMockMode}
@@ -588,7 +591,7 @@ const CustomerHomeScreen = () => {
             <View style={[styles.sidebarItemIcon, { backgroundColor: Colors.dangerDim }]}>
               <Ionicons name="log-out-outline" size={18} color={Colors.danger} />
             </View>
-            <Text style={[styles.sidebarItemLabel, { color: Colors.danger }]}>Logout</Text>
+            <Text style={[styles.sidebarItemLabel, { color: Colors.danger }]}>{tr.logout}</Text>
           </TouchableOpacity>
         </ScrollView>
 

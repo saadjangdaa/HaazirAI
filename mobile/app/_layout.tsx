@@ -66,11 +66,10 @@ function AuthNavigationGuard() {
     let target: string | null = null;
 
     if (!isAuthenticated) {
-      // Unauthenticated — show onboarding first if not seen yet
-      if (!onboardingSeen && !isOnboardingPath(pathname) && !isAuthPath(pathname)) {
-        target = '/onboarding';
-      } else if (onboardingSeen && !isAuthPath(pathname) && !isOnboardingPath(pathname)) {
-        target = '/login';
+      // Always send to login if not on an auth/onboarding path
+      if (!isAuthPath(pathname) && !isOnboardingPath(pathname)) {
+        // Show onboarding first for truly first-time users, else login
+        target = (!onboardingSeen) ? '/onboarding' : '/login';
       }
     } else if (!hasSessionThisLaunch) {
       if (!isAuthPath(pathname) && !isWorkerSignupPath(pathname)) {

@@ -69,6 +69,7 @@ class ConversationRequest(BaseModel):
     providers: Optional[List[dict]] = None
     history: Optional[List[dict]] = None  # [{role: user|assistant, content: str}]
     voice_id: Optional[str] = None  # language-specific Uplift AI voice agent ID
+    language: Optional[str] = None  # roman_urdu | urdu | sindhi | pashto | balochi
 
 
 class UserSyncRequest(BaseModel):
