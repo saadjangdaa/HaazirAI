@@ -288,8 +288,8 @@ const CustomerHomeScreen = () => {
 
   // ── Derived ───────────────────────────────────────────────────────────────
 
-  const firstName    = user?.username?.split(' ')[0] || user?.name?.split(' ')[0] || '';
-  const displayName  = user?.username || user?.name || 'User';
+  const firstName    = user?.username?.split(' ')[0] || '';
+  const displayName  = user?.username || 'User';
   const initial      = displayName.charAt(0).toUpperCase();
   const availableCount = MOCK_NEARBY_WORKERS.filter(w => w.available).length;
 
