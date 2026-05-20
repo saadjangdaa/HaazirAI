@@ -1,12 +1,10 @@
 import { Tabs } from 'expo-router';
 import { Colors, FontSize, FontWeight } from '../../constants/theme';
-import { Platform } from 'react-native';
-import FloatingTabBar from '../../components/FloatingTabBar';
 
 export default function CustomerLayout() {
   return (
     <Tabs
-      tabBar={(props) => <FloatingTabBar {...props} />}
+      tabBar={() => null}
       screenOptions={{
         headerStyle: { backgroundColor: Colors.primary, shadowColor: 'transparent', elevation: 0 },
         headerTintColor: Colors.textInverse,

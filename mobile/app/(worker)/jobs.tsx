@@ -1,14 +1,29 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, TouchableOpacity, ScrollView, StyleSheet, Switch,
   ActivityIndicator, Alert, RefreshControl, StatusBar,
+  Animated, Dimensions,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '../../constants/theme';
 import { useAuth } from '../../context/AuthContext';
 import { useMockData } from '../../context/MockDataContext';
+
+const { width: SCREEN_W } = Dimensions.get('window');
+const SIDEBAR_W = Math.min(300, SCREEN_W * 0.82);
+
+type WorkerSidebarItem = { label: string; icon: string; path?: string; badge?: string; highlight?: boolean; dividerBefore?: boolean };
+const WORKER_SIDEBAR_NAV: WorkerSidebarItem[] = [
+  { label: 'My Jobs',       icon: 'briefcase-outline',     path: '/(worker)/jobs' },
+  { label: 'Earnings',      icon: 'cash-outline',          path: '/(worker)/earnings' },
+  { label: 'My Route',      icon: 'navigate-outline',      path: '/(worker)/route' },
+  { label: 'Profile',       icon: 'person-outline',        path: '/(worker)/profile' },
+  { label: 'Agent Traces',  icon: 'git-network-outline',   path: '/agent-traces', highlight: true, badge: 'NEW', dividerBefore: true },
+  { label: 'Agent Logs',    icon: 'flask-outline',         path: '/logs' },
+  { label: 'Nearby Workers',icon: 'people-outline',        path: '/nearby', dividerBefore: true },
+];
 import { formatApiError, getWorkerBookings, requireUserId, updateBookingStatus, UserBooking } from '../../services/api';
 import { formatWorkerPrice, formatWorkerTime, isActiveWorkerStatus, isOfferStatus, isTerminalStatus, WORKER_STATUS_LABEL } from '../../utils/workerBookings';
 import { MOCK_WORKER_BOOKINGS } from '../../data/mockData';
@@ -21,10 +36,40 @@ const STATUS_NEXT: Record<string, { label: string; nextStatus: string; icon: str
 };
 
 export default function WorkerJobsScreen() {
-  const { user } = useAuth();
-  const { isMockMode } = useMockData();
+  const router = useRouter();
+  const { user, signOut } = useAuth();
+  const { isMockMode, toggleMockMode } = useMockData();
   const insets = useSafeAreaInsets();
   const [online, setOnline] = useState(true);
+
+  // ── Sidebar state ─────────────────────────────────────────
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const drawerAnim = useRef(new Animated.Value(0)).current;
+  const drawerTranslateX = drawerAnim.interpolate({ inputRange: [0, 1], outputRange: [-SIDEBAR_W, 0] });
+  const overlayOpacity   = drawerAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 0.55] });
+
+  const openSidebar = () => {
+    setSidebarOpen(true);
+    Animated.spring(drawerAnim, { toValue: 1, useNativeDriver: true, tension: 65, friction: 11 }).start();
+  };
+  const closeSidebar = () => {
+    Animated.timing(drawerAnim, { toValue: 0, duration: 220, useNativeDriver: true }).start(() => setSidebarOpen(false));
+  };
+  const handleSidebarNav = (path?: string) => {
+    closeSidebar();
+    if (path) setTimeout(() => router.push(path as any), 230);
+  };
+  const handleWorkerLogout = () => {
+    closeSidebar();
+    setTimeout(() => {
+      Alert.alert('Logout', 'Kya aap logout karna chahte hain?', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Logout', style: 'destructive', onPress: async () => {
+          try { await signOut(); } finally { router.replace('/login'); }
+        }},
+      ]);
+    }, 250);
+  };
   const [bookings, setBookings] = useState<UserBooking[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -143,6 +188,9 @@ export default function WorkerJobsScreen() {
 
       {/* Header */}
       <View style={[styles.header, { paddingTop: insets.top + Spacing.sm }]}>
+        <TouchableOpacity style={styles.hamburgerBtn} onPress={openSidebar} activeOpacity={0.75}>
+          <Ionicons name="menu" size={22} color={Colors.textInverse} />
+        </TouchableOpacity>
         <View style={styles.headerLeft}>
           <View style={styles.avatarCircle}>
             <Ionicons name="construct" size={20} color={Colors.primary} />
@@ -345,9 +393,135 @@ export default function WorkerJobsScreen() {
           </>
         )}
       </ScrollView>
+
+      {/* ── Sidebar overlay ── */}
+      <Animated.View
+        style={[StyleSheet.absoluteFillObject, { backgroundColor: '#000', opacity: overlayOpacity }]}
+        pointerEvents={sidebarOpen ? 'auto' : 'none'}
+      >
+        <TouchableOpacity style={{ flex: 1 }} onPress={closeSidebar} activeOpacity={1} />
+      </Animated.View>
+
+      {/* ── Sidebar drawer ── */}
+      <Animated.View style={[wStyles.sidebar, { transform: [{ translateX: drawerTranslateX }], paddingTop: insets.top }]}>
+        <TouchableOpacity style={wStyles.closeBtn} onPress={closeSidebar} activeOpacity={0.7}>
+          <Ionicons name="close" size={22} color="#666" />
+        </TouchableOpacity>
+
+        {/* Worker profile */}
+        <View style={wStyles.profile}>
+          <View style={wStyles.profileAvatar}>
+            <Ionicons name="construct" size={26} color="#fff" />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={wStyles.profileName} numberOfLines={1}>{isMockMode ? 'Mohammad Rashid' : displayName}</Text>
+            <Text style={wStyles.profileSub} numberOfLines={1}>{isMockMode ? 'AC Repair, Electrician' : (user?.workerData?.specializations?.slice(0, 2).join(', ') || 'Haazir Worker')}</Text>
+            <View style={[wStyles.onlineDot, { backgroundColor: online ? Colors.success : Colors.textMuted }]}>
+              <Text style={wStyles.onlineDotText}>{online ? '● Online' : '● Offline'}</Text>
+            </View>
+          </View>
+        </View>
+
+        {/* Nav items */}
+        <ScrollView style={wStyles.scroll} showsVerticalScrollIndicator={false}>
+          {WORKER_SIDEBAR_NAV.map((item) => (
+            <View key={item.label}>
+              {item.dividerBefore && <View style={wStyles.divider} />}
+              <TouchableOpacity style={wStyles.item} onPress={() => handleSidebarNav(item.path)} activeOpacity={0.75}>
+                <View style={[wStyles.itemIcon, item.highlight && wStyles.itemIconHL]}>
+                  <Ionicons name={item.icon as any} size={18} color={item.highlight ? Colors.primary : '#666'} />
+                </View>
+                <Text style={[wStyles.itemLabel, item.highlight && { color: Colors.primary, fontWeight: FontWeight.bold }]}>
+                  {item.label}
+                </Text>
+                {item.badge && (
+                  <View style={wStyles.badge}><Text style={wStyles.badgeText}>{item.badge}</Text></View>
+                )}
+                <Ionicons name="chevron-forward" size={15} color={Colors.border} />
+              </TouchableOpacity>
+            </View>
+          ))}
+
+          <View style={wStyles.divider} />
+
+          {/* Demo mode */}
+          <View style={wStyles.toggleRow}>
+            <View style={wStyles.itemIcon}>
+              <Ionicons name="color-wand-outline" size={18} color="#666" />
+            </View>
+            <Text style={wStyles.itemLabel}>Demo Mode</Text>
+            <Switch
+              value={isMockMode}
+              onValueChange={toggleMockMode}
+              trackColor={{ false: Colors.border, true: Colors.primary }}
+              thumbColor={isMockMode ? '#fff' : Colors.textMuted}
+              style={{ transform: [{ scaleX: 0.85 }, { scaleY: 0.85 }] }}
+            />
+          </View>
+
+          <View style={wStyles.divider} />
+
+          {/* Logout */}
+          <TouchableOpacity style={wStyles.item} onPress={handleWorkerLogout} activeOpacity={0.75}>
+            <View style={[wStyles.itemIcon, { backgroundColor: Colors.dangerDim }]}>
+              <Ionicons name="log-out-outline" size={18} color={Colors.danger} />
+            </View>
+            <Text style={[wStyles.itemLabel, { color: Colors.danger }]}>Logout</Text>
+          </TouchableOpacity>
+        </ScrollView>
+
+        <View style={[wStyles.footer, { paddingBottom: insets.bottom + 10 }]}>
+          <Text style={wStyles.footerText}>Haazir AI v1.0 · Google Hackathon</Text>
+        </View>
+      </Animated.View>
     </View>
   );
 }
+
+const wStyles = StyleSheet.create({
+  sidebar: {
+    position: 'absolute', top: 0, left: 0, bottom: 0, width: SIDEBAR_W,
+    backgroundColor: '#fff',
+    shadowColor: '#000', shadowOffset: { width: 4, height: 0 }, shadowOpacity: 0.15, shadowRadius: 20, elevation: 20,
+    borderTopRightRadius: 24, borderBottomRightRadius: 24,
+  },
+  closeBtn: {
+    position: 'absolute', top: 52, right: 14, zIndex: 1,
+    width: 34, height: 34, borderRadius: 17,
+    backgroundColor: '#F6F7FB', justifyContent: 'center', alignItems: 'center',
+  },
+  profile: {
+    flexDirection: 'row', alignItems: 'center', gap: 14,
+    paddingHorizontal: 20, paddingTop: 14, paddingBottom: 18,
+    backgroundColor: Colors.primaryLight,
+    borderBottomWidth: 1, borderBottomColor: Colors.primaryDim,
+  },
+  profileAvatar: {
+    width: 52, height: 52, borderRadius: 26,
+    backgroundColor: Colors.workerAccent,
+    justifyContent: 'center', alignItems: 'center',
+  },
+  profileName: { fontSize: 16, fontWeight: '700', color: '#111', marginBottom: 2 },
+  profileSub: { fontSize: 12, color: '#999', marginBottom: 5 },
+  onlineDot: {
+    alignSelf: 'flex-start', borderRadius: 99, paddingHorizontal: 8, paddingVertical: 2,
+  },
+  onlineDotText: { fontSize: 11, color: '#fff', fontWeight: '700' },
+
+  scroll: { flex: 1 },
+  divider: { height: 1, backgroundColor: '#EBEBEB', marginVertical: 4, marginHorizontal: 16 },
+
+  item: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 13, gap: 12 },
+  itemIcon: { width: 36, height: 36, borderRadius: 10, backgroundColor: '#F6F7FB', justifyContent: 'center', alignItems: 'center' },
+  itemIconHL: { backgroundColor: Colors.primaryLight },
+  itemLabel: { flex: 1, fontSize: 14, color: '#111', fontWeight: '500' },
+  badge: { backgroundColor: Colors.primary, borderRadius: 99, paddingHorizontal: 7, paddingVertical: 2, marginRight: 4 },
+  badgeText: { fontSize: 10, color: '#fff', fontWeight: '700' },
+  toggleRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10, gap: 12 },
+
+  footer: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: '#EBEBEB', padding: 16, alignItems: 'center' },
+  footerText: { fontSize: 11, color: '#999' },
+});
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: Colors.background },
@@ -356,9 +530,15 @@ const styles = StyleSheet.create({
   header: {
     backgroundColor: Colors.primary,
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingHorizontal: Spacing.md, paddingBottom: Spacing.md,
+    paddingHorizontal: Spacing.sm, paddingBottom: Spacing.md,
+    gap: Spacing.sm,
   },
-  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  hamburgerBtn: {
+    width: 38, height: 38, borderRadius: 10,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    justifyContent: 'center', alignItems: 'center',
+  },
+  headerLeft: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
   avatarCircle: {
     width: 44, height: 44, borderRadius: 22,
     backgroundColor: 'rgba(255,255,255,0.25)',

@@ -15,7 +15,7 @@
       "package": "com.haazir.ai",
       "config": {
         "googleMaps": {
-          "apiKey": "YOUR_GOOGLE_MAPS_API_KEY"
+          "apiKey": "AIzaSyDOLSRc5zgnQhS6bSc4zBO0K0edQSkdIqM"
         }
       },
       "permissions": [
@@ -34,7 +34,7 @@
       "supportsTablet": false,
       "bundleIdentifier": "com.haazir.ai",
       "config": {
-        "googleMapsApiKey": "YOUR_GOOGLE_MAPS_API_KEY"
+        "googleMapsApiKey": "AIzaSyDOLSRc5zgnQhS6bSc4zBO0K0edQSkdIqM"
       },
       "infoPlist": {
         "NSMicrophoneUsageDescription": "Haazir AI ko awaz sun'ne ke liye microphone chahiye",
@@ -58,7 +58,7 @@
       [
         "react-native-maps",
         {
-          "googleMapsApiKey": "YOUR_GOOGLE_MAPS_API_KEY"
+          "googleMapsApiKey": "AIzaSyDOLSRc5zgnQhS6bSc4zBO0K0edQSkdIqM"
         }
       ],
       [

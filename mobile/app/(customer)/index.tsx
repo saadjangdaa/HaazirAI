@@ -1,47 +1,114 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity, ScrollView,
+  View, Text, TouchableOpacity, ScrollView,
   StyleSheet, ActivityIndicator, Animated, Easing, Alert, StatusBar,
+  Dimensions, Switch,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '../../constants/theme';
-import { submitRequest, formatApiError, pingApi, getApiBaseUrl, requireUserId, getUserBookings } from '../../services/api';
+import { pingApi, requireUserId, getUserBookings } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import { useLang } from '../../context/LanguageContext';
 import { useMockData } from '../../context/MockDataContext';
-import { MOCK_RECENT_REQUESTS } from '../../data/mockData';
+import { MOCK_NEARBY_WORKERS, NearbyWorker, MOCK_RECENT_REQUESTS } from '../../data/mockData';
+// Platform-specific map + location — Metro picks .native.tsx or .web.tsx automatically
+import { MapSection, Location } from '../../components/MapWrapper';
+
+const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
+const SIDEBAR_W = Math.min(300, SCREEN_W * 0.82);
+const SHEET_COLLAPSED = 272;
+const SHEET_EXPANDED = Math.min(Math.round(SCREEN_H * 0.56), 500);
+
+
+
+const SERVICE_COLORS: Record<string, string> = {
+  'AC Repair':   '#1A6FFF',
+  'Plumber':     '#0099CC',
+  'Electrician': '#FF9500',
+  'Tutor':       '#34C759',
+  'Beautician':  '#FF2D55',
+  'Carpenter':   '#8B572A',
+};
+
+const SERVICE_ICONS: Record<string, string> = {
+  'AC Repair':   'snow-outline',
+  'Plumber':     'water-outline',
+  'Electrician': 'flash-outline',
+  'Tutor':       'book-outline',
+  'Beautician':  'sparkles-outline',
+  'Carpenter':   'hammer-outline',
+};
 
 const QUICK_SERVICES = [
-  { label: 'AC Repair', icon: 'snow-outline' as const },
-  { label: 'Plumber', icon: 'water-outline' as const },
-  { label: 'Electrician', icon: 'flash-outline' as const },
-  { label: 'Tutor', icon: 'book-outline' as const },
-  { label: 'Beautician', icon: 'sparkles-outline' as const },
-  { label: 'Carpenter', icon: 'hammer-outline' as const },
-  { label: 'Emergency', icon: 'warning-outline' as const, danger: true },
+  { label: 'AC Repair',   icon: 'snow-outline'     as const },
+  { label: 'Plumber',     icon: 'water-outline'    as const },
+  { label: 'Electrician', icon: 'flash-outline'    as const },
+  { label: 'Tutor',       icon: 'book-outline'     as const },
+  { label: 'Beautician',  icon: 'sparkles-outline' as const },
+  { label: 'Carpenter',   icon: 'hammer-outline'   as const },
+  { label: 'Emergency',   icon: 'warning-outline'  as const, danger: true },
+];
+
+type SidebarItem = {
+  label: string;
+  icon: string;
+  path?: string;
+  badge?: string;
+  highlight?: boolean;
+  danger?: boolean;
+  dividerBefore?: boolean;
+};
+
+const SIDEBAR_NAV: SidebarItem[] = [
+  { label: 'Services (Home)',  icon: 'home-outline',         path: '/(customer)/' },
+  { label: 'My Bookings',      icon: 'calendar-outline',     path: '/(customer)/bookings' },
+  { label: 'My Disputes',      icon: 'shield-outline',       path: '/(customer)/disputes' },
+  { label: 'Profile',          icon: 'person-outline',       path: '/(customer)/profile' },
+  { label: 'Agent Traces',     icon: 'git-network-outline',  path: '/agent-traces', highlight: true, badge: 'NEW', dividerBefore: true },
+  { label: 'Agent Logs',       icon: 'flask-outline',        path: '/logs' },
+  { label: 'Nearby Workers',   icon: 'people-outline',       path: '/nearby', dividerBefore: true },
+  { label: 'Notifications',    icon: 'notifications-outline', path: '/logs' },
+  { label: 'Help & Support',   icon: 'help-circle-outline' },
 ];
 
 const CustomerHomeScreen = () => {
   const router = useRouter();
-  const { user, ensureProfileSyncedBeforeRequest } = useAuth();
+  const { user, signOut } = useAuth();
   const { tr } = useLang();
-  const { isMockMode } = useMockData();
+  const { isMockMode, toggleMockMode } = useMockData();
   const insets = useSafeAreaInsets();
 
   const [input, setInput] = useState('');
   const [location, setLocation] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [agentMsg, setAgentMsg] = useState('');
-  const pulseAnim = useRef(new Animated.Value(1)).current;
   const [recording, setRecording] = useState(false);
   const [voiceProcessing, setVoiceProcessing] = useState(false);
   const [apiOk, setApiOk] = useState<boolean | null>(null);
   const [apiWakingUp, setApiWakingUp] = useState(false);
   const [recentRequests, setRecentRequests] = useState<string[]>([]);
 
-  // Pre-fill location from the customer's city saved at signup.
+  const [userLocation, setUserLocation] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [selectedProvider, setSelectedProvider] = useState<NearbyWorker | null>(null);
+  const [sheetExpanded, setSheetExpanded] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  const sheetAnim   = useRef(new Animated.Value(SHEET_COLLAPSED)).current;
+  const pulseAnim   = useRef(new Animated.Value(1)).current;
+  const drawerAnim  = useRef(new Animated.Value(0)).current;
+  const mapRef      = useRef<any>(null);
+
+  const drawerTranslateX = drawerAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-SIDEBAR_W, 0],
+  });
+  const overlayOpacity = drawerAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 0.55],
+  });
+
+  // ── Effects ──────────────────────────────────────────────────────────────
+
   useEffect(() => {
     if (user?.city && !location) setLocation(user.city);
   }, [user?.city]);
@@ -49,13 +116,11 @@ const CustomerHomeScreen = () => {
   useEffect(() => {
     let mounted = true;
     let retryTimer: ReturnType<typeof setTimeout>;
-
     const check = async () => {
       const { ok } = await pingApi();
       if (!mounted) return;
       setApiOk(ok);
       if (!ok) {
-        // Render free tier cold start can take 30+ seconds — auto-retry once
         setApiWakingUp(true);
         retryTimer = setTimeout(async () => {
           const { ok: ok2 } = await pingApi();
@@ -63,16 +128,12 @@ const CustomerHomeScreen = () => {
         }, 20000);
       }
     };
-
     check();
     return () => { mounted = false; clearTimeout(retryTimer); };
   }, []);
 
   useEffect(() => {
-    if (isMockMode) {
-      setRecentRequests(MOCK_RECENT_REQUESTS);
-      return;
-    }
+    if (isMockMode) { setRecentRequests(MOCK_RECENT_REQUESTS); return; }
     if (!user?.id) return;
     let cancelled = false;
     try {
@@ -80,22 +141,63 @@ const CustomerHomeScreen = () => {
       getUserBookings(uid).then((bookings) => {
         if (cancelled) return;
         const names = bookings
-          .slice()
-          .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
-          .slice(0, 3)
-          .map((b) => b.service || '')
-          .filter(Boolean);
+          .slice().sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
+          .slice(0, 3).map((b) => b.service || '').filter(Boolean);
         setRecentRequests(names);
       }).catch(() => {});
     } catch {}
     return () => { cancelled = true; };
   }, [user?.id, isMockMode]);
 
+  useEffect(() => {
+    (async () => {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status === 'granted') {
+          const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+          const coords = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
+          setUserLocation(coords);
+          mapRef.current?.animateToRegion({ ...coords, latitudeDelta: 0.048, longitudeDelta: 0.048 }, 1000);
+        }
+      } catch {}
+    })();
+  }, []);
+
+  // ── Sidebar ───────────────────────────────────────────────────────────────
+
+  const openSidebar = () => {
+    setSidebarOpen(true);
+    Animated.spring(drawerAnim, { toValue: 1, useNativeDriver: true, tension: 65, friction: 11 }).start();
+  };
+
+  const closeSidebar = () => {
+    Animated.timing(drawerAnim, { toValue: 0, duration: 220, useNativeDriver: true }).start(() => setSidebarOpen(false));
+  };
+
+  const handleSidebarNav = (path?: string) => {
+    closeSidebar();
+    if (path) setTimeout(() => router.push(path as any), 230);
+  };
+
+  const handleLogout = () => {
+    closeSidebar();
+    setTimeout(() => {
+      Alert.alert('Logout', 'Kya aap logout karna chahte hain?', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Logout', style: 'destructive', onPress: async () => {
+          try { await signOut(); } finally { router.replace('/login'); }
+        }},
+      ]);
+    }, 250);
+  };
+
+  // ── Sheet & Map ───────────────────────────────────────────────────────────
+
   const startPulse = () => {
     Animated.loop(
       Animated.sequence([
         Animated.timing(pulseAnim, { toValue: 1.18, duration: 700, easing: Easing.ease, useNativeDriver: true }),
-        Animated.timing(pulseAnim, { toValue: 1.0, duration: 700, easing: Easing.ease, useNativeDriver: true }),
+        Animated.timing(pulseAnim, { toValue: 1.0,  duration: 700, easing: Easing.ease, useNativeDriver: true }),
       ])
     ).start();
   };
@@ -104,6 +206,36 @@ const CustomerHomeScreen = () => {
     pulseAnim.stopAnimation();
     Animated.timing(pulseAnim, { toValue: 1.0, duration: 200, useNativeDriver: true }).start();
   };
+
+  const animateSheet = (toValue: number) => {
+    Animated.spring(sheetAnim, { toValue, useNativeDriver: false, tension: 65, friction: 11 }).start();
+  };
+
+  const toggleSheet = () => {
+    if (selectedProvider) return;
+    const next = !sheetExpanded;
+    animateSheet(next ? SHEET_EXPANDED : SHEET_COLLAPSED);
+    setSheetExpanded(next);
+  };
+
+  const handleMarkerPress = (worker: NearbyWorker) => {
+    setSelectedProvider(worker);
+    animateSheet(SHEET_COLLAPSED);
+    setSheetExpanded(false);
+    mapRef.current?.animateToRegion({
+      latitude: worker.lat - 0.008,
+      longitude: worker.lng,
+      latitudeDelta: 0.032,
+      longitudeDelta: 0.032,
+    }, 600);
+  };
+
+  const clearSelectedProvider = () => {
+    setSelectedProvider(null);
+    animateSheet(SHEET_COLLAPSED);
+  };
+
+  // ── Voice ─────────────────────────────────────────────────────────────────
 
   const handleVoice = async () => {
     if (voiceProcessing) return;
@@ -114,14 +246,14 @@ const CustomerHomeScreen = () => {
       try {
         const { stopAndTranscribe } = await import('../../services/voiceRecord');
         const { text } = await stopAndTranscribe();
-        if (text) setInput(text);
+        if (text) { setInput(text); router.push('/voice-conversation'); }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         if (msg.includes('Network') || msg.includes('rabta')) {
           Alert.alert('Voice / Network', msg);
         } else {
           setInput('AC bilkul kaam nahi kar raha, kal subah G-13 mein technician chahiye');
-          setLocation('G-13, Islamabad');
+          router.push('/voice-conversation');
         }
       } finally {
         setVoiceProcessing(false);
@@ -135,216 +267,336 @@ const CustomerHomeScreen = () => {
         setRecording(true);
         startPulse();
       } catch {
-        setInput('AC bilkul kaam nahi kar raha, kal subah G-13 mein technician chahiye');
-        setLocation('G-13, Islamabad');
-        Alert.alert('Voice', 'Recording unavailable in Expo Go — demo text set.');
+        Alert.alert('Voice', 'Recording unavailable — Talk to AI se baat karein');
       }
-    }
-  };
-
-  const handleSubmit = async () => {
-    const query = input.trim();
-    if (!query) { Alert.alert('Kuch toh likhein!', 'Apni zaroorat batayein — Urdu ya English mein'); return; }
-    if (!user) { Alert.alert('Login zaroori hai', 'Pehle login karein phir try karein'); return; }
-
-    setLoading(true);
-    const messages = [
-      'Agents kaam par hain...',
-      'SAMAJH: Aapki baat samajh raha hun...',
-      'DHUNDHO: Providers dhoondh raha hun...',
-      'CHUNNO: Best match chunna ja raha hai...',
-      'HISAAB: Price calculate ho raha hai...',
-    ];
-    let i = 0;
-    const ticker = setInterval(() => { setAgentMsg(messages[i % messages.length]); i++; }, 1200);
-
-    try {
-      const { ok } = await pingApi();
-      if (!ok) { Alert.alert('Backend offline', formatApiError(new Error('Network Error'))); return; }
-
-      const syncedUser = await ensureProfileSyncedBeforeRequest();
-      if (!syncedUser.profileComplete) {
-        Alert.alert(
-          'Profile incomplete',
-          syncedUser.role === 'worker'
-            ? 'Booking se pehle username, mobile aur CNIC complete karein.'
-            : 'Pehle apna naam profile mein complete karein.',
-          [{ text: 'Profile', onPress: () => router.push('/signup') }]
-        );
-        return;
-      }
-
-      const userId = requireUserId(syncedUser);
-      const result = await submitRequest(query, location || 'G-13, Islamabad', userId);
-      router.push({ pathname: '/results', params: { data: JSON.stringify(result) } });
-    } catch (err: unknown) {
-      Alert.alert('Error', formatApiError(err));
-    } finally {
-      clearInterval(ticker);
-      setLoading(false);
-      setAgentMsg('');
     }
   };
 
   const handleQuickService = (label: string, danger?: boolean) => {
+    const area = location.trim() || user?.city || 'G-13, Islamabad';
     if (danger) {
       setInput('EMERGENCY! Gas leak ho rahi hai, foran koi bhejein');
-      setLocation('G-13, Islamabad');
     } else {
-      const area = location.trim() || 'G-13, Islamabad';
       setInput(`Mujhe ${label} chahiye — ${area}`);
-      if (!location.trim()) setLocation(area);
     }
+    if (!location.trim()) setLocation(area);
+    router.push('/voice-conversation');
   };
 
-  const firstName = user?.username?.split(' ')[0] || user?.name?.split(' ')[0] || '';
+  // ── Derived ───────────────────────────────────────────────────────────────
+
+  const firstName    = user?.username?.split(' ')[0] || user?.name?.split(' ')[0] || '';
+  const displayName  = user?.username || user?.name || 'User';
+  const initial      = displayName.charAt(0).toUpperCase();
+  const availableCount = MOCK_NEARBY_WORKERS.filter(w => w.available).length;
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // RENDER
+  // ─────────────────────────────────────────────────────────────────────────
 
   return (
     <View style={styles.root}>
-      <StatusBar barStyle="light-content" backgroundColor={Colors.primary} />
+      <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
 
-      {/* Blue header */}
-      <View style={[styles.header, { paddingTop: insets.top + Spacing.sm }]}>
-        <View style={styles.headerTop}>
-          <View>
-            <Text style={styles.greeting}>{firstName ? `Assalam o Alaikum, ${firstName}!` : 'Assalam o Alaikum!'}</Text>
-            <Text style={styles.greetingSub}>Aaj kya chahiye?</Text>
-          </View>
-          <View style={styles.headerRight}>
-            <TouchableOpacity style={styles.notifBtn} onPress={() => router.push('/logs')}>
-              <Ionicons name="notifications-outline" size={22} color={Colors.textInverse} />
-              <View style={styles.notifDot} />
-            </TouchableOpacity>
-            <View style={styles.avatarCircle}>
-              <Ionicons name="person" size={18} color={Colors.primary} />
+      {/* ── MAP ── */}
+      <MapSection
+        mapRef={mapRef}
+        userLocation={userLocation}
+        selectedProvider={selectedProvider}
+        onMarkerPress={handleMarkerPress}
+      />
+
+      {/* ── HEADER OVERLAY ── */}
+      <View style={[styles.header, { paddingTop: insets.top + 6 }]}>
+        <View style={styles.headerRow}>
+          {/* Hamburger */}
+          <TouchableOpacity style={styles.iconBtn} onPress={openSidebar} activeOpacity={0.8}>
+            <Ionicons name="menu" size={22} color={Colors.textPrimary} />
+          </TouchableOpacity>
+
+          <View style={styles.headerCenter}>
+            <Text style={styles.headerTitle}>{firstName ? `Salam, ${firstName}!` : 'Haazir AI'}</Text>
+            <View style={styles.availRow}>
+              <View style={styles.greenDot} />
+              <Text style={styles.availText}>{availableCount} workers available nearby</Text>
             </View>
           </View>
+
+          <View style={styles.headerActions}>
+            <TouchableOpacity style={styles.iconBtn} onPress={() => router.push('/logs')}>
+              <Ionicons name="notifications-outline" size={20} color={Colors.textPrimary} />
+              <View style={styles.notifDot} />
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.iconBtn, styles.avatarBtn]} onPress={openSidebar}>
+              <Text style={styles.avatarInitial}>{initial}</Text>
+            </TouchableOpacity>
+          </View>
         </View>
-
-      </View>
-
-      <ScrollView style={styles.body} contentContainerStyle={styles.bodyContent} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
 
         {apiOk === false && (
           <TouchableOpacity
-            style={[styles.apiBannerBad, apiWakingUp && styles.apiBannerWaking]}
+            style={styles.apiBanner}
             onPress={() => { setApiWakingUp(false); pingApi().then(({ ok }) => setApiOk(ok)); }}
           >
-            <Ionicons name={apiWakingUp ? 'hourglass-outline' : 'warning-outline'} size={14} color={apiWakingUp ? Colors.warning : Colors.danger} />
+            <Ionicons name={apiWakingUp ? 'hourglass-outline' : 'warning-outline'} size={12} color={apiWakingUp ? Colors.warning : Colors.danger} />
             <Text style={[styles.apiBannerText, apiWakingUp && { color: Colors.warning }]}>
-              {apiWakingUp
-                ? 'Server waking up (Render cold start)... retry in ~20s'
-                : 'Backend offline — tap to retry'}
+              {apiWakingUp ? 'Server waking up (~20s)...' : 'Backend offline — tap to retry'}
             </Text>
           </TouchableOpacity>
         )}
+      </View>
 
-        {/* Voice button section */}
-        <View style={styles.voiceSection}>
-          <Animated.View style={[styles.voiceBtnOuter, { transform: [{ scale: pulseAnim }] }, recording && styles.voiceBtnOuterActive]}>
-            <TouchableOpacity style={[styles.voiceBtn, recording && styles.voiceBtnActive]} onPress={handleVoice} disabled={voiceProcessing} activeOpacity={0.85}>
-              {voiceProcessing
-                ? <ActivityIndicator color={Colors.textInverse} size="small" />
-                : <Ionicons name={recording ? 'stop' : 'mic'} size={32} color={Colors.textInverse} />
-              }
+      {/* ── BOTTOM SHEET ── */}
+      <Animated.View style={[styles.sheet, { height: sheetAnim, paddingBottom: insets.bottom + 4 }]}>
+        <TouchableOpacity onPress={toggleSheet} activeOpacity={0.6} style={styles.handleArea} disabled={!!selectedProvider}>
+          <View style={styles.handle} />
+        </TouchableOpacity>
+
+        {selectedProvider ? (
+          <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.providerContent}>
+            <TouchableOpacity onPress={clearSelectedProvider} style={styles.backRow}>
+              <Ionicons name="chevron-back" size={18} color={Colors.primary} />
+              <Text style={styles.backText}>Wapas jayen</Text>
             </TouchableOpacity>
-          </Animated.View>
-          <Text style={styles.voiceLabel}>
-            {voiceProcessing ? 'Samajh raha hun...' : recording ? 'Rokein' : 'Bolein ya likhein'}
-          </Text>
-          <TouchableOpacity style={styles.talkBtn} onPress={() => router.push('/voice-conversation')} activeOpacity={0.8}>
-            <Ionicons name="chatbubble-ellipses-outline" size={16} color={Colors.primary} />
-            <Text style={styles.talkBtnText}>{tr.talkToAI}</Text>
-            <Ionicons name="arrow-forward" size={14} color={Colors.primary} />
-          </TouchableOpacity>
-        </View>
 
-        {/* Location row */}
-        <View style={styles.locationCard}>
-          <Ionicons name="location" size={16} color={Colors.primary} />
-          <TextInput
-            style={styles.locationInput}
-            value={location}
-            onChangeText={setLocation}
-            placeholder="Aapka area (e.g. G-13, DHA)"
-            placeholderTextColor={Colors.textMuted}
-          />
-        </View>
-
-        {/* Quick services */}
-        <Text style={styles.sectionLabel}>Services</Text>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipsScroll} contentContainerStyle={{ paddingRight: Spacing.md }}>
-          {QUICK_SERVICES.map((s) => (
-            <TouchableOpacity
-              key={s.label}
-              style={[styles.serviceChip, s.danger && styles.serviceChipDanger]}
-              onPress={() => handleQuickService(s.label, s.danger)}
-              activeOpacity={0.8}
-            >
-              <View style={[styles.serviceChipIcon, s.danger && styles.serviceChipIconDanger]}>
-                <Ionicons name={s.icon} size={20} color={s.danger ? Colors.danger : Colors.primary} />
+            <View style={styles.providerHeader}>
+              <View style={[styles.providerAvatar, { backgroundColor: SERVICE_COLORS[selectedProvider.service] || Colors.primary }]}>
+                <Ionicons name={(SERVICE_ICONS[selectedProvider.service] || 'person') as any} size={24} color="#fff" />
               </View>
-              <Text style={[styles.serviceChipText, s.danger && styles.serviceChipTextDanger]}>{s.label}</Text>
-            </TouchableOpacity>
+              <View style={styles.providerInfo}>
+                <View style={styles.providerNameRow}>
+                  <Text style={styles.providerName}>{selectedProvider.name}</Text>
+                  {selectedProvider.verified && <Ionicons name="checkmark-circle" size={16} color={Colors.success} />}
+                </View>
+                <Text style={styles.providerService}>{selectedProvider.service}</Text>
+                <View style={[styles.availBadge, !selectedProvider.available && styles.unavailBadge]}>
+                  <Text style={[styles.availBadgeText, !selectedProvider.available && styles.unavailBadgeText]}>
+                    {selectedProvider.available ? '● Available' : '● Busy'}
+                  </Text>
+                </View>
+              </View>
+            </View>
+
+            <View style={styles.statsRow}>
+              <View style={styles.statBox}>
+                <Text style={styles.statNum}>⭐ {selectedProvider.rating}</Text>
+                <Text style={styles.statLbl}>{selectedProvider.reviews} reviews</Text>
+              </View>
+              <View style={styles.statDivider} />
+              <View style={styles.statBox}>
+                <Text style={styles.statNum}>{selectedProvider.distanceKm} km</Text>
+                <Text style={styles.statLbl}>Aap se</Text>
+              </View>
+              <View style={styles.statDivider} />
+              <View style={styles.statBox}>
+                <Text style={styles.statNum}>{selectedProvider.completedJobs}</Text>
+                <Text style={styles.statLbl}>Jobs done</Text>
+              </View>
+            </View>
+
+            <View style={styles.priceCard}>
+              <View>
+                <Text style={styles.priceLabel}>Rate (approx)</Text>
+                <Text style={styles.priceVal}>
+                  Rs {selectedProvider.priceMin.toLocaleString()} – {selectedProvider.priceMax.toLocaleString()}
+                </Text>
+              </View>
+              <View style={styles.areaTag}>
+                <Ionicons name="pin" size={12} color={Colors.primary} />
+                <Text style={styles.areaTagText}>{selectedProvider.area}</Text>
+              </View>
+            </View>
+
+            <View style={styles.actionRow}>
+              <TouchableOpacity
+                style={[styles.bookBtn, !selectedProvider.available && styles.bookBtnDisabled]}
+                onPress={() => {
+                  setInput(`Mujhe ${selectedProvider!.service} chahiye — ${selectedProvider!.area}`);
+                  setLocation(selectedProvider!.area);
+                  router.push('/voice-conversation');
+                }}
+                activeOpacity={0.85}
+                disabled={!selectedProvider.available}
+              >
+                <Ionicons name="calendar-outline" size={16} color="#fff" />
+                <Text style={styles.bookBtnText}>Book Karein</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.aiBtn}
+                onPress={() => router.push('/voice-conversation')}
+                activeOpacity={0.85}
+              >
+                <Ionicons name="chatbubble-ellipses-outline" size={16} color={Colors.primary} />
+                <Text style={styles.aiBtnText}>AI se Puchein</Text>
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
+        ) : (
+          <View style={styles.sheetInner}>
+            <View style={styles.sheetTitleRow}>
+              <Text style={styles.sheetTitle}>Kya chahiye aapko?</Text>
+              <TouchableOpacity onPress={() => router.push('/agent-traces' as any)} style={styles.tracesBtn}>
+                <Ionicons name="git-network-outline" size={13} color={Colors.primary} />
+                <Text style={styles.tracesBtnText}>Traces</Text>
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipsRow} contentContainerStyle={{ paddingRight: Spacing.md }}>
+              {QUICK_SERVICES.map((s) => (
+                <TouchableOpacity
+                  key={s.label}
+                  style={[styles.chip, s.danger && styles.chipDanger]}
+                  onPress={() => handleQuickService(s.label, s.danger)}
+                  activeOpacity={0.8}
+                >
+                  <View style={[styles.chipIcon, s.danger && styles.chipIconDanger]}>
+                    <Ionicons name={s.icon} size={20} color={s.danger ? Colors.danger : Colors.primary} />
+                  </View>
+                  <Text style={[styles.chipLabel, s.danger && styles.chipLabelDanger]}>{s.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+
+            <View style={styles.voiceRow}>
+              <Animated.View style={[styles.micOuter, { transform: [{ scale: pulseAnim }] }, recording && styles.micOuterActive]}>
+                <TouchableOpacity
+                  style={[styles.micBtn, recording && styles.micBtnActive]}
+                  onPress={handleVoice}
+                  disabled={voiceProcessing}
+                  activeOpacity={0.85}
+                >
+                  {voiceProcessing
+                    ? <ActivityIndicator color="#fff" size="small" />
+                    : <Ionicons name={recording ? 'stop' : 'mic'} size={22} color="#fff" />
+                  }
+                </TouchableOpacity>
+              </Animated.View>
+
+              <TouchableOpacity style={styles.talkBtn} onPress={() => router.push('/voice-conversation')} activeOpacity={0.8}>
+                <Ionicons name="chatbubble-ellipses-outline" size={15} color={Colors.primary} />
+                <Text style={styles.talkBtnText}>{(tr as any).talkToAI || 'Talk to Haazir AI'}</Text>
+                <Ionicons name="arrow-forward" size={13} color={Colors.primary} />
+              </TouchableOpacity>
+            </View>
+
+            {sheetExpanded && recentRequests.length > 0 && (
+              <View style={styles.recentBox}>
+                <Text style={styles.recentHeading}>Recent</Text>
+                {recentRequests.map((r, i) => (
+                  <TouchableOpacity
+                    key={i}
+                    style={styles.recentRow}
+                    onPress={() => { setInput(r); router.push('/voice-conversation'); }}
+                    activeOpacity={0.75}
+                  >
+                    <Ionicons name="time-outline" size={13} color={Colors.textMuted} />
+                    <Text style={styles.recentText} numberOfLines={1}>{r}</Text>
+                    <Ionicons name="chevron-forward" size={12} color={Colors.textMuted} />
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+
+            {sheetExpanded && (
+              <View style={styles.agentNote}>
+                <Ionicons name="hardware-chip-outline" size={13} color={Colors.primary} />
+                <Text style={styles.agentNoteText}>6 AI Agents: SAMAJH · CHUNNO · DHUNDHO · PAKKA · MOLTOL · HIFAZAT</Text>
+              </View>
+            )}
+          </View>
+        )}
+      </Animated.View>
+
+      {/* ── SIDEBAR OVERLAY ── */}
+      <Animated.View
+        style={[StyleSheet.absoluteFillObject, styles.overlay, { opacity: overlayOpacity }]}
+        pointerEvents={sidebarOpen ? 'auto' : 'none'}
+      >
+        <TouchableOpacity style={{ flex: 1 }} onPress={closeSidebar} activeOpacity={1} />
+      </Animated.View>
+
+      {/* ── SIDEBAR DRAWER ── */}
+      <Animated.View style={[styles.sidebar, { transform: [{ translateX: drawerTranslateX }], paddingTop: insets.top }]}>
+        {/* Close button */}
+        <TouchableOpacity style={styles.sidebarCloseBtn} onPress={closeSidebar} activeOpacity={0.7}>
+          <Ionicons name="close" size={22} color={Colors.textSecondary} />
+        </TouchableOpacity>
+
+        {/* User profile section */}
+        <View style={styles.sidebarProfile}>
+          <View style={styles.sidebarAvatar}>
+            <Text style={styles.sidebarAvatarText}>{initial}</Text>
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.sidebarName} numberOfLines={1}>{isMockMode ? 'Ahmed Ali' : displayName}</Text>
+            <Text style={styles.sidebarEmail} numberOfLines={1}>{isMockMode ? 'ahmed.ali@gmail.com' : (user?.email || '')}</Text>
+            <View style={styles.loyalBadge}>
+              <Text style={styles.loyalBadgeText}>Loyal Customer ⭐</Text>
+            </View>
+          </View>
+        </View>
+
+        {/* Navigation items */}
+        <ScrollView style={styles.sidebarScroll} showsVerticalScrollIndicator={false}>
+          {SIDEBAR_NAV.map((item) => (
+            <View key={item.label}>
+              {item.dividerBefore && <View style={styles.sidebarDivider} />}
+              <TouchableOpacity
+                style={styles.sidebarItem}
+                onPress={() => handleSidebarNav(item.path)}
+                activeOpacity={0.75}
+              >
+                <View style={[styles.sidebarItemIcon, item.highlight && styles.sidebarItemIconHighlight]}>
+                  <Ionicons name={item.icon as any} size={18} color={item.highlight ? Colors.primary : Colors.textSecondary} />
+                </View>
+                <Text style={[styles.sidebarItemLabel, item.highlight && { color: Colors.primary, fontWeight: FontWeight.bold }]}>
+                  {item.label}
+                </Text>
+                {item.badge && (
+                  <View style={styles.sidebarBadge}>
+                    <Text style={styles.sidebarBadgeText}>{item.badge}</Text>
+                  </View>
+                )}
+                <Ionicons name="chevron-forward" size={15} color={Colors.border} />
+              </TouchableOpacity>
+            </View>
           ))}
+
+          {/* Divider */}
+          <View style={styles.sidebarDivider} />
+
+          {/* Demo Mode toggle */}
+          <View style={styles.sidebarToggleRow}>
+            <View style={[styles.sidebarItemIcon]}>
+              <Ionicons name="color-wand-outline" size={18} color={Colors.textSecondary} />
+            </View>
+            <Text style={styles.sidebarItemLabel}>Demo Mode</Text>
+            <Switch
+              value={isMockMode}
+              onValueChange={toggleMockMode}
+              trackColor={{ false: Colors.border, true: Colors.primary }}
+              thumbColor={isMockMode ? Colors.textInverse : Colors.textMuted}
+              style={{ transform: [{ scaleX: 0.85 }, { scaleY: 0.85 }] }}
+            />
+          </View>
+
+          {/* Divider */}
+          <View style={styles.sidebarDivider} />
+
+          {/* Logout */}
+          <TouchableOpacity style={styles.sidebarLogout} onPress={handleLogout} activeOpacity={0.75}>
+            <View style={[styles.sidebarItemIcon, { backgroundColor: Colors.dangerDim }]}>
+              <Ionicons name="log-out-outline" size={18} color={Colors.danger} />
+            </View>
+            <Text style={[styles.sidebarItemLabel, { color: Colors.danger }]}>Logout</Text>
+          </TouchableOpacity>
         </ScrollView>
 
-        {/* Agent info card */}
-        <View style={[styles.agentCard, Shadow.sm]}>
-          <View style={styles.agentCardLeft}>
-            <View style={styles.agentIconBox}>
-              <Ionicons name="hardware-chip-outline" size={22} color={Colors.primary} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.agentCardTitle}>6 AI Agents Active</Text>
-              <Text style={styles.agentCardText}>SAMJHO · CHUNNO · DHUNDHO · PAKKA · MOLTOL · HIFAZAT milkar aapka best provider chunte hain</Text>
-            </View>
-          </View>
+        {/* Footer */}
+        <View style={[styles.sidebarFooter, { paddingBottom: insets.bottom + 10 }]}>
+          <Text style={styles.sidebarFooterText}>Haazir AI v1.0 · Google Hackathon</Text>
         </View>
-
-        {/* Nearby workers card */}
-        <TouchableOpacity style={[styles.nearbyCard, Shadow.sm]} onPress={() => router.push('/nearby')} activeOpacity={0.85}>
-          <View style={styles.nearbyCardLeft}>
-            <View style={styles.nearbyIconBox}>
-              <Ionicons name="people-outline" size={22} color={Colors.textInverse} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.nearbyCardTitle}>Nearby Workers</Text>
-              <Text style={styles.nearbyCardText}>{user?.city || 'Aapke shehar'} mein available workers dekhein aur seedha book karein</Text>
-            </View>
-          </View>
-          <View style={styles.nearbyArrow}>
-            <Ionicons name="chevron-forward" size={18} color={Colors.primary} />
-          </View>
-        </TouchableOpacity>
-
-        {/* Recent requests */}
-        {recentRequests.length > 0 && (
-          <>
-            <Text style={styles.sectionLabel}>Recent</Text>
-            {recentRequests.map((r, i) => (
-              <TouchableOpacity key={i} style={[styles.recentItem, Shadow.sm]} onPress={() => setInput(r)} activeOpacity={0.75}>
-                <Ionicons name="time-outline" size={16} color={Colors.textMuted} />
-                <Text style={styles.recentText} numberOfLines={1}>{r}</Text>
-                <Ionicons name="chevron-forward" size={14} color={Colors.textMuted} />
-              </TouchableOpacity>
-            ))}
-          </>
-        )}
-
-        {/* Submit */}
-        {loading && (
-          <View style={styles.loadingCard}>
-            <ActivityIndicator size="large" color={Colors.primary} />
-            <Text style={styles.loadingMsg}>{agentMsg}</Text>
-          </View>
-        )}
-
-        <TouchableOpacity style={styles.logsLink} onPress={() => router.push('/logs')}>
-          <Ionicons name="flask-outline" size={14} color={Colors.textMuted} />
-          <Text style={styles.logsLinkText}>Agent Logs (Judges)</Text>
-        </TouchableOpacity>
-      </ScrollView>
+      </Animated.View>
     </View>
   );
 };
@@ -352,166 +604,223 @@ const CustomerHomeScreen = () => {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: Colors.background },
 
-  // Blue header
+  // ── Header
   header: {
-    backgroundColor: Colors.primary,
-    paddingHorizontal: Spacing.lg,
-    paddingBottom: Spacing.lg,
+    position: 'absolute', top: 0, left: 0, right: 0,
+    paddingHorizontal: Spacing.sm,
+    paddingBottom: Spacing.sm,
+    backgroundColor: 'rgba(255,255,255,0.93)',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: Colors.border,
   },
-  headerTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: Spacing.md },
-  greeting: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: Colors.textInverse },
-  greetingSub: { fontSize: FontSize.sm, color: 'rgba(255,255,255,0.75)', marginTop: 2 },
-  headerRight: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
-  notifBtn: { position: 'relative', padding: 4 },
-  notifDot: { position: 'absolute', top: 4, right: 4, width: 8, height: 8, borderRadius: 4, backgroundColor: Colors.danger, borderWidth: 1.5, borderColor: Colors.primary },
-  avatarCircle: { width: 36, height: 36, borderRadius: 18, backgroundColor: Colors.textInverse, justifyContent: 'center', alignItems: 'center' },
-
-  // Search bar
-  searchBar: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+  headerRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs },
+  headerCenter: { flex: 1, paddingHorizontal: Spacing.xs },
+  headerTitle: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: Colors.textPrimary },
+  availRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 1 },
+  greenDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: Colors.success },
+  availText: { fontSize: 11, color: Colors.textMuted, fontWeight: FontWeight.medium },
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  iconBtn: {
+    width: 38, height: 38, borderRadius: 19,
     backgroundColor: Colors.surface,
-    borderRadius: Radius.lg,
-    paddingHorizontal: Spacing.md, height: 48,
-    ...Shadow.card,
+    justifyContent: 'center', alignItems: 'center',
+    ...Shadow.sm, position: 'relative',
   },
-  searchInput: { flex: 1, fontSize: FontSize.md, color: Colors.textPrimary, fontWeight: FontWeight.medium },
-
-  // Body
-  body: { flex: 1 },
-  bodyContent: { padding: Spacing.md, paddingBottom: 32 },
-
-  apiBannerBad: {
+  avatarBtn: { backgroundColor: Colors.primaryLight },
+  avatarInitial: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: Colors.primary },
+  notifDot: {
+    position: 'absolute', top: 7, right: 7,
+    width: 7, height: 7, borderRadius: 3.5,
+    backgroundColor: Colors.danger, borderWidth: 1.5, borderColor: Colors.surface,
+  },
+  apiBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
     backgroundColor: Colors.dangerDim,
-    borderRadius: Radius.md, padding: Spacing.sm,
-    marginBottom: Spacing.sm,
-    borderWidth: 1, borderColor: Colors.danger,
+    borderRadius: Radius.md, paddingHorizontal: Spacing.sm, paddingVertical: 5,
+    marginTop: 6, borderWidth: 1, borderColor: Colors.danger,
   },
-  apiBannerWaking: { backgroundColor: Colors.warningDim, borderColor: Colors.warning },
   apiBannerText: { color: Colors.danger, fontSize: FontSize.xs, flex: 1 },
 
-  // Voice section
-  voiceSection: { alignItems: 'center', paddingVertical: Spacing.lg },
-  voiceBtnOuter: {
-    width: 96, height: 96, borderRadius: 48,
-    backgroundColor: Colors.primaryDim,
+  // ── Map markers
+  markerBubble: {
+    width: 34, height: 34, borderRadius: 17,
     justifyContent: 'center', alignItems: 'center',
-    marginBottom: Spacing.sm,
+    borderWidth: 2.5, borderColor: '#fff',
+    ...Shadow.card,
   },
-  voiceBtnOuterActive: { backgroundColor: 'rgba(255,59,48,0.12)' },
-  voiceBtn: {
-    width: 76, height: 76, borderRadius: 38,
+  markerBubbleSelected: {
+    width: 42, height: 42, borderRadius: 21,
+    borderWidth: 3, borderColor: Colors.textPrimary,
+  },
+
+  // ── Bottom sheet
+  sheet: {
+    position: 'absolute', bottom: 0, left: 0, right: 0,
+    backgroundColor: Colors.surface,
+    borderTopLeftRadius: Radius.xl,
+    borderTopRightRadius: Radius.xl,
+    ...Shadow.modal,
+    overflow: 'hidden',
+  },
+  handleArea: { alignItems: 'center', paddingTop: 10, paddingBottom: 4 },
+  handle: { width: 40, height: 4, borderRadius: 2, backgroundColor: Colors.border },
+
+  // Provider detail
+  providerContent: { paddingHorizontal: Spacing.md, paddingBottom: Spacing.xl },
+  backRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: Spacing.md },
+  backText: { color: Colors.primary, fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
+  providerHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.md, marginBottom: Spacing.md },
+  providerAvatar: { width: 56, height: 56, borderRadius: 28, justifyContent: 'center', alignItems: 'center', ...Shadow.sm },
+  providerInfo: { flex: 1 },
+  providerNameRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 },
+  providerName: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: Colors.textPrimary },
+  providerService: { fontSize: FontSize.sm, color: Colors.textMuted, marginBottom: 6 },
+  availBadge: { alignSelf: 'flex-start', backgroundColor: Colors.successDim, borderRadius: Radius.full, paddingHorizontal: 10, paddingVertical: 3 },
+  unavailBadge: { backgroundColor: Colors.dangerDim },
+  availBadgeText: { fontSize: FontSize.xs, color: Colors.success, fontWeight: FontWeight.semibold },
+  unavailBadgeText: { color: Colors.danger },
+
+  statsRow: { flexDirection: 'row', backgroundColor: Colors.background, borderRadius: Radius.lg, padding: Spacing.md, marginBottom: Spacing.md, alignItems: 'center' },
+  statBox: { flex: 1, alignItems: 'center' },
+  statNum: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: Colors.textPrimary, marginBottom: 2 },
+  statLbl: { fontSize: FontSize.xs, color: Colors.textMuted },
+  statDivider: { width: 1, height: 32, backgroundColor: Colors.border },
+
+  priceCard: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    backgroundColor: Colors.primaryLight, borderRadius: Radius.lg,
+    padding: Spacing.md, marginBottom: Spacing.md,
+    borderWidth: 1, borderColor: Colors.primaryDim,
+  },
+  priceLabel: { fontSize: FontSize.xs, color: Colors.textMuted, marginBottom: 2 },
+  priceVal: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: Colors.primary },
+  areaTag: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  areaTagText: { fontSize: FontSize.xs, color: Colors.primary, fontWeight: FontWeight.medium },
+
+  actionRow: { flexDirection: 'row', gap: Spacing.sm },
+  bookBtn: { flex: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: Colors.primary, borderRadius: Radius.lg, height: 50, ...Shadow.primary },
+  bookBtnDisabled: { backgroundColor: Colors.textMuted },
+  bookBtnText: { color: '#fff', fontSize: FontSize.sm, fontWeight: FontWeight.bold },
+  aiBtn: { flex: 1.4, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: Colors.primaryLight, borderRadius: Radius.lg, height: 50, borderWidth: 1, borderColor: Colors.primaryDim },
+  aiBtnText: { color: Colors.primary, fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
+
+  // Services sheet
+  sheetInner: { flex: 1, paddingHorizontal: Spacing.md, overflow: 'hidden' },
+  sheetTitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: Spacing.sm },
+  sheetTitle: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: Colors.textPrimary },
+  tracesBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 5, backgroundColor: Colors.primaryLight, borderRadius: Radius.full, borderWidth: 1, borderColor: Colors.primaryDim },
+  tracesBtnText: { color: Colors.primary, fontSize: FontSize.xs, fontWeight: FontWeight.bold },
+
+  chipsRow: { marginBottom: Spacing.md, marginLeft: -4 },
+  chip: { alignItems: 'center', gap: 5, marginLeft: Spacing.sm, width: 68 },
+  chipDanger: {},
+  chipIcon: { width: 52, height: 52, borderRadius: 26, backgroundColor: Colors.primaryLight, justifyContent: 'center', alignItems: 'center', ...Shadow.sm },
+  chipIconDanger: { backgroundColor: Colors.dangerDim },
+  chipLabel: { fontSize: FontSize.xs, color: Colors.textSecondary, fontWeight: FontWeight.semibold, textAlign: 'center' },
+  chipLabelDanger: { color: Colors.danger },
+
+  voiceRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
+  micOuter: { width: 58, height: 58, borderRadius: 29, backgroundColor: Colors.primaryDim, justifyContent: 'center', alignItems: 'center' },
+  micOuterActive: { backgroundColor: 'rgba(255,59,48,0.12)' },
+  micBtn: { width: 46, height: 46, borderRadius: 23, backgroundColor: Colors.primary, justifyContent: 'center', alignItems: 'center', ...Shadow.primary },
+  micBtnActive: { backgroundColor: Colors.danger },
+  talkBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: Colors.primaryLight, borderRadius: Radius.full, height: 48, borderWidth: 1, borderColor: Colors.primaryDim },
+  talkBtnText: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: FontWeight.bold },
+
+  recentBox: { marginTop: Spacing.md },
+  recentHeading: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: Colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: Spacing.sm },
+  recentRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: Colors.border },
+  recentText: { flex: 1, fontSize: FontSize.sm, color: Colors.textSecondary },
+
+  agentNote: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: Spacing.md, padding: Spacing.sm, backgroundColor: Colors.primaryLight, borderRadius: Radius.md },
+  agentNoteText: { flex: 1, fontSize: FontSize.xs, color: Colors.primary, fontWeight: FontWeight.medium },
+
+  // ── Sidebar overlay
+  overlay: { backgroundColor: '#000' },
+
+  // ── Sidebar drawer
+  sidebar: {
+    position: 'absolute', top: 0, left: 0, bottom: 0,
+    width: SIDEBAR_W,
+    backgroundColor: Colors.surface,
+    ...Shadow.modal,
+    borderTopRightRadius: Radius.xl,
+    borderBottomRightRadius: Radius.xl,
+  },
+  sidebarCloseBtn: {
+    position: 'absolute', top: 52, right: 14,
+    width: 34, height: 34, borderRadius: 17,
+    backgroundColor: Colors.background,
+    justifyContent: 'center', alignItems: 'center',
+    zIndex: 1,
+  },
+  sidebarProfile: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.md,
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.md,
+    paddingBottom: Spacing.lg,
+    backgroundColor: Colors.primaryLight,
+    borderBottomWidth: 1, borderBottomColor: Colors.primaryDim,
+  },
+  sidebarAvatar: {
+    width: 52, height: 52, borderRadius: 26,
     backgroundColor: Colors.primary,
     justifyContent: 'center', alignItems: 'center',
     ...Shadow.primary,
   },
-  voiceBtnActive: { backgroundColor: Colors.danger },
-  voiceLabel: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.textSecondary, marginBottom: Spacing.md },
-  talkBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: Colors.primaryLight,
+  sidebarAvatarText: { fontSize: FontSize.xl, fontWeight: FontWeight.black, color: '#fff' },
+  sidebarName: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: Colors.textPrimary, marginBottom: 2 },
+  sidebarEmail: { fontSize: FontSize.xs, color: Colors.textMuted, marginBottom: 5 },
+  loyalBadge: {
+    alignSelf: 'flex-start',
+    backgroundColor: Colors.surface,
     borderRadius: Radius.full,
-    paddingHorizontal: Spacing.lg, paddingVertical: 10,
+    paddingHorizontal: 8, paddingVertical: 2,
     borderWidth: 1, borderColor: Colors.primaryDim,
   },
-  talkBtnText: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: FontWeight.bold },
+  loyalBadgeText: { fontSize: 10, color: Colors.primary, fontWeight: FontWeight.bold },
 
-  // Location
-  locationCard: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
-    backgroundColor: Colors.surface, borderRadius: Radius.lg,
-    paddingHorizontal: Spacing.md, height: 48,
-    marginBottom: Spacing.md,
-    borderWidth: 1, borderColor: Colors.border,
-    ...Shadow.sm,
-  },
-  locationInput: { flex: 1, fontSize: FontSize.sm, color: Colors.textPrimary },
+  sidebarScroll: { flex: 1 },
+  sidebarDivider: { height: 1, backgroundColor: Colors.border, marginVertical: Spacing.xs, marginHorizontal: Spacing.md },
 
-  sectionLabel: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: Colors.textMuted, textTransform: 'uppercase', letterSpacing: 1, marginBottom: Spacing.sm },
-
-  // Service chips
-  chipsScroll: { marginBottom: Spacing.lg, marginLeft: -Spacing.md },
-  serviceChip: {
-    alignItems: 'center', gap: 6,
-    marginLeft: Spacing.md,
-    width: 72,
-  },
-  serviceChipDanger: {},
-  serviceChipIcon: {
-    width: 56, height: 56, borderRadius: 28,
-    backgroundColor: Colors.primaryLight,
-    justifyContent: 'center', alignItems: 'center',
-    ...Shadow.sm,
-  },
-  serviceChipIconDanger: { backgroundColor: Colors.dangerDim },
-  serviceChipText: { fontSize: FontSize.xs, color: Colors.textSecondary, fontWeight: FontWeight.semibold, textAlign: 'center' },
-  serviceChipTextDanger: { color: Colors.danger },
-
-  // Agent card
-  agentCard: {
-    backgroundColor: Colors.surface, borderRadius: Radius.xl,
-    padding: Spacing.md, marginBottom: Spacing.lg,
-    borderWidth: 1, borderColor: Colors.primaryDim,
-  },
-  agentCardLeft: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
-  agentIconBox: {
-    width: 44, height: 44, borderRadius: 22,
-    backgroundColor: Colors.primaryLight,
-    justifyContent: 'center', alignItems: 'center',
-  },
-  agentCardTitle: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: Colors.primary, marginBottom: 2 },
-  agentCardText: { fontSize: FontSize.xs, color: Colors.textMuted, lineHeight: 16 },
-
-  // Nearby card
-  nearbyCard: {
+  sidebarItem: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: Colors.surface, borderRadius: Radius.xl,
-    padding: Spacing.md, marginBottom: Spacing.lg,
-    borderWidth: 1.5, borderColor: Colors.primary,
+    paddingHorizontal: Spacing.md, paddingVertical: 13,
+    gap: Spacing.sm,
   },
-  nearbyCardLeft: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
-  nearbyIconBox: {
-    width: 44, height: 44, borderRadius: 22,
+  sidebarItemIcon: {
+    width: 36, height: 36, borderRadius: 10,
+    backgroundColor: Colors.background,
+    justifyContent: 'center', alignItems: 'center',
+  },
+  sidebarItemIconHighlight: { backgroundColor: Colors.primaryLight },
+  sidebarItemLabel: { flex: 1, fontSize: FontSize.sm, color: Colors.textPrimary, fontWeight: FontWeight.medium },
+
+  sidebarBadge: {
     backgroundColor: Colors.primary,
-    justifyContent: 'center', alignItems: 'center',
+    borderRadius: Radius.full,
+    paddingHorizontal: 7, paddingVertical: 2,
+    marginRight: 4,
   },
-  nearbyCardTitle: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: Colors.primary, marginBottom: 2 },
-  nearbyCardText: { fontSize: FontSize.xs, color: Colors.textMuted, lineHeight: 16 },
-  nearbyArrow: {
-    width: 30, height: 30, borderRadius: 15,
-    backgroundColor: Colors.primaryLight,
-    justifyContent: 'center', alignItems: 'center',
+  sidebarBadgeText: { fontSize: 10, color: '#fff', fontWeight: FontWeight.bold },
+
+  sidebarToggleRow: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: Spacing.md, paddingVertical: 10,
+    gap: Spacing.sm,
+  },
+  sidebarLogout: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: Spacing.md, paddingVertical: 13,
+    gap: Spacing.sm,
   },
 
-  // Recent
-  recentItem: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
-    backgroundColor: Colors.surface, borderRadius: Radius.lg,
-    padding: Spacing.md, marginBottom: Spacing.xs,
-    borderWidth: 1, borderColor: Colors.border,
+  sidebarFooter: {
+    borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: Colors.border,
+    padding: Spacing.md,
+    alignItems: 'center',
   },
-  recentText: { flex: 1, color: Colors.textSecondary, fontSize: FontSize.sm },
-
-  // Loading
-  loadingCard: {
-    alignItems: 'center', backgroundColor: Colors.surface,
-    borderRadius: Radius.xl, padding: Spacing.xl,
-    marginTop: Spacing.lg,
-    borderWidth: 1, borderColor: Colors.primaryDim,
-    ...Shadow.sm,
-  },
-  loadingMsg: { color: Colors.primary, fontSize: FontSize.sm, marginTop: Spacing.md, fontWeight: FontWeight.semibold, textAlign: 'center' },
-
-  // Submit
-  submitBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    backgroundColor: Colors.primary, borderRadius: Radius.xl,
-    height: 56, marginTop: Spacing.md,
-  },
-  submitText: { color: Colors.textInverse, fontSize: FontSize.lg, fontWeight: FontWeight.bold },
-
-  logsLink: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, marginTop: Spacing.lg, padding: Spacing.sm },
-  logsLinkText: { color: Colors.textMuted, fontSize: FontSize.xs },
+  sidebarFooterText: { fontSize: 11, color: Colors.textMuted },
 });
 
 export default CustomerHomeScreen;

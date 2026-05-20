@@ -1,11 +1,10 @@
 import { Tabs } from 'expo-router';
 import { Colors, FontSize, FontWeight } from '../../constants/theme';
-import FloatingTabBar from '../../components/FloatingTabBar';
 
 export default function WorkerLayout() {
   return (
     <Tabs
-      tabBar={(props) => <FloatingTabBar {...props} />}
+      tabBar={() => null}
       screenOptions={{
         headerStyle: { backgroundColor: Colors.primary, shadowColor: 'transparent', elevation: 0 },
         headerTintColor: Colors.textInverse,

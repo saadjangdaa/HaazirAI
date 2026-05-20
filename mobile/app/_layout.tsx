@@ -1,7 +1,8 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { Stack, usePathname, useRouter, useRootNavigationState } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Colors } from '../constants/theme';
 import { AuthProvider, useAuth, AuthUser } from '../context/AuthContext';
 import AuthSplash from '../components/AuthSplash';
@@ -46,9 +47,18 @@ function AuthNavigationGuard() {
   const pathname = usePathname();
   const navigationState = useRootNavigationState();
   const lastNav = useRef<string | null>(null);
+  const [onboardingSeen, setOnboardingSeen] = useState<boolean | null>(null);
+
+  // Read onboarding flag once on mount — before any navigation decision
+  useEffect(() => {
+    AsyncStorage.getItem('haazir_onboarding_seen').then((val) => {
+      setOnboardingSeen(val === '1');
+    });
+  }, []);
 
   useEffect(() => {
-    if (loading || !navigationState?.key) return;
+    // Wait until both auth AND onboarding check are ready
+    if (loading || !navigationState?.key || onboardingSeen === null) return;
 
     const firebaseUser = auth.currentUser;
     const isAuthenticated = !!firebaseUser && !!user && firebaseUser.uid === user.id;
@@ -56,8 +66,10 @@ function AuthNavigationGuard() {
     let target: string | null = null;
 
     if (!isAuthenticated) {
-      // Unauthenticated — allow onboarding or login/signup, redirect everything else to login
-      if (!isAuthPath(pathname) && !isOnboardingPath(pathname)) {
+      // Unauthenticated — show onboarding first if not seen yet
+      if (!onboardingSeen && !isOnboardingPath(pathname) && !isAuthPath(pathname)) {
+        target = '/onboarding';
+      } else if (onboardingSeen && !isAuthPath(pathname) && !isOnboardingPath(pathname)) {
         target = '/login';
       }
     } else if (!hasSessionThisLaunch) {
@@ -87,7 +99,7 @@ function AuthNavigationGuard() {
     if (!target || (lastNav.current === target && pathname === target)) return;
     lastNav.current = target;
     router.replace(target as '/login');
-  }, [user, loading, hasSessionThisLaunch, needsLanguagePicker, pathname, router, navigationState?.key]);
+  }, [user, loading, hasSessionThisLaunch, needsLanguagePicker, pathname, router, navigationState?.key, onboardingSeen]);
 
   useEffect(() => {
     if (loading) lastNav.current = null;
@@ -108,6 +120,13 @@ function RootLayoutNav() {
   const { loading } = useAuth();
   const navigationState = useRootNavigationState();
   const authReady = !loading && !!navigationState?.key;
+
+  // Hide the native splash screen only once auth is fully resolved
+  useEffect(() => {
+    if (authReady) {
+      SplashScreen.hideAsync();
+    }
+  }, [authReady]);
 
   if (!authReady) {
     return (
@@ -132,7 +151,7 @@ function RootLayoutNav() {
         }}
       >
         <Stack.Screen name="onboarding" options={{ headerShown: false, animation: 'fade' }} />
-        <Stack.Screen name="login" options={{ headerShown: false }} />
+        <Stack.Screen name="login" options={{ headerShown: false, animation: 'fade' }} />
         <Stack.Screen name="signup" options={{ title: 'Account Banayein', headerBackVisible: false }} />
         <Stack.Screen name="worker-signup" options={{ title: 'Worker Registration', headerBackVisible: false }} />
         <Stack.Screen name="language-select" options={{ headerShown: false }} />
@@ -153,10 +172,6 @@ function RootLayoutNav() {
 }
 
 export default function RootLayout() {
-  useEffect(() => {
-    SplashScreen.hideAsync();
-  }, []);
-
   return (
     <MockDataProvider>
       <LanguageProvider>

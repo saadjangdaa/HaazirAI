@@ -25,7 +25,8 @@ type ChatItem =
   | { id: string; kind: 'providers'; items: any[] }
   | { id: string; kind: 'actions' }
   | { id: string; kind: 'negotiated'; bid: NegotiatedBid }
-  | { id: string; kind: 'bidding'; result: BiddingResponse };
+  | { id: string; kind: 'bidding'; result: BiddingResponse }
+  | { id: string; kind: 'livebidding'; bids: Bid[]; complete: boolean; recommendedId?: string };
 
 let _idCtr = 0;
 function mk<T extends Omit<ChatItem, 'id'>>(item: T): ChatItem {
@@ -188,38 +189,66 @@ export default function VoiceConversationScreen() {
     }
   };
 
-  // ── Negotiate ─────────────────────────────────────────────────────────────
+  // ── Negotiate — InDrive-style live bid drip ────────────────────────────────
   const handleNegotiate = async () => {
     setChat((prev) => [
       ...prev.filter((i) => i.kind !== 'actions'),
-      mk({ kind: 'text', role: 'agent', text: 'Moltol agent ko bhej rahi hun — woh providers se negotiate karenge. Thoda wait karein... 🤝' }),
+      mk({ kind: 'text', role: 'agent', text: 'Workers ko job broadcast kar diya — bids aa rahi hain! 🏃' }),
     ]);
     setUiState('negotiating');
+
+    // Push the live-bidding shell immediately (empty, loading open)
+    const liveItem = mk({ kind: 'livebidding' as const, bids: [], complete: false });
+    const liveId = liveItem.id;
+    setChat((prev) => [...prev, liveItem]);
+
     try {
       const res = await negotiateProviders(sessionId.current, user?.id || 'anonymous', providers);
       if (res.top_bids?.length) {
-        const biddingResult = toBiddingResponse(
-          requestId || 'req',
-          res.top_bids,
-          providers,
-          [],
-        );
-        const best = res.top_bids[0];
-        const saved = (best.savings ?? 0) > 0 ? ` Rs. ${best.savings!.toLocaleString()} bachaye!` : '';
-        setChat((prev) => [
-          ...prev,
-          mk({ kind: 'text', role: 'agent', text: `Moltol complete!${saved} Neeche se apna worker chunein aur confirm karein. ✅` }),
-          mk({ kind: 'bidding', result: biddingResult }),
-        ]);
+        const biddingResult = toBiddingResponse(requestId || 'req', res.top_bids, providers, []);
+        const recommendedId = biddingResult.recommended_bid.provider_id;
+
+        // Drip each bid in 1.2 s apart — InDrive style
+        biddingResult.bids.forEach((bid, index) => {
+          setTimeout(() => {
+            setChat((prev) =>
+              prev.map((item) =>
+                item.id === liveId && item.kind === 'livebidding'
+                  ? { ...item, bids: [...item.bids, bid] }
+                  : item,
+              ),
+            );
+          }, (index + 1) * 1200);
+        });
+
+        // Mark complete 600 ms after the last bid arrives
+        const totalDelay = (biddingResult.bids.length + 1) * 1200 + 600;
+        setTimeout(() => {
+          setChat((prev) =>
+            prev.map((item) =>
+              item.id === liveId && item.kind === 'livebidding'
+                ? { ...item, complete: true, recommendedId }
+                : item,
+            ),
+          );
+          setUiState('idle');
+        }, totalDelay);
       } else {
-        setChat((prev) => [...prev, mk({ kind: 'text', role: 'agent', text: 'Negotiate ka mauka nahi mila — seedha book kar sakte hain.' })]);
+        setChat((prev) => [
+          ...prev.filter((i) => i.id !== liveId),
+          mk({ kind: 'text', role: 'agent', text: 'Abhi koi bid nahi aayi — seedha book kar sakte hain.' }),
+        ]);
+        setUiState('idle');
       }
     } catch (e: any) {
       console.error('[negotiate]', e);
       const detail = e?.response?.data?.detail || e?.message || 'Unknown error';
-      setChat((prev) => [...prev, mk({ kind: 'text', role: 'agent', text: `Negotiate mein masla hua (${detail}). Seedha book kar sakte hain.` })]);
+      setChat((prev) => [
+        ...prev.filter((i) => i.id !== liveId),
+        mk({ kind: 'text', role: 'agent', text: `Negotiate mein masla hua (${detail}). Seedha book kar sakte hain.` }),
+      ]);
+      setUiState('idle');
     }
-    setUiState('idle');
   };
 
   // ── Direct book ───────────────────────────────────────────────────────────
@@ -330,6 +359,80 @@ export default function VoiceConversationScreen() {
           </View>
         );
 
+      case 'livebidding': {
+        if (uiState === 'done') return null;
+        return (
+          <View key={item.id} style={styles.liveBidContainer}>
+            {/* Header */}
+            <View style={styles.liveBidHeader}>
+              <Text style={styles.liveBidHeaderText}>🏁 Worker Bids</Text>
+              {!item.complete && (
+                <View style={styles.liveDot}>
+                  <ActivityIndicator size="small" color={Colors.warning} />
+                  <Text style={styles.liveDotText}>LIVE</Text>
+                </View>
+              )}
+              {item.complete && (
+                <Text style={styles.liveBidDoneTag}>✅ Bids aa gayi</Text>
+              )}
+            </View>
+
+            {/* Bid cards dripping in */}
+            {item.bids.map((bid) => {
+              const isRec = bid.provider_id === item.recommendedId;
+              return (
+                <View
+                  key={bid.provider_id}
+                  style={[styles.liveBidCard, isRec && styles.liveBidCardRec]}
+                >
+                  {isRec && (
+                    <View style={styles.liveBidRecBadge}>
+                      <Text style={styles.liveBidRecBadgeText}>⭐ BEST DEAL</Text>
+                    </View>
+                  )}
+                  <View style={styles.liveBidRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.liveBidName}>{bid.provider_name}</Text>
+                      <Text style={styles.liveBidMeta}>
+                        ⭐ {bid.rating}  ·  🛵 {bid.eta_minutes} min
+                        {bid.negotiated ? '  ·  💬 Negotiated' : ''}
+                      </Text>
+                    </View>
+                    <View style={styles.liveBidPriceCol}>
+                      {bid.negotiated && (
+                        <Text style={styles.liveBidOrigPrice}>
+                          Rs. {bid.bid_price.toLocaleString()}
+                        </Text>
+                      )}
+                      <Text style={[styles.liveBidFinalPrice, isRec && styles.liveBidFinalPriceRec]}>
+                        Rs. {bid.final_price.toLocaleString()}
+                      </Text>
+                    </View>
+                  </View>
+                  <Text style={styles.liveBidMessage}>"{bid.message}"</Text>
+                  <TouchableOpacity
+                    style={[styles.liveBidSelectBtn, isRec && styles.liveBidSelectBtnRec]}
+                    onPress={() => handleSelectBid(bid)}
+                  >
+                    <Text style={[styles.liveBidSelectText, isRec && styles.liveBidSelectTextRec]}>
+                      {isRec ? '✅ Ye Waala Chunein' : 'Is Se Book Karein'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              );
+            })}
+
+            {/* Waiting indicator while more bids expected */}
+            {!item.complete && (
+              <View style={styles.liveBidWaiting}>
+                <ActivityIndicator size="small" color={Colors.warning} />
+                <Text style={styles.liveBidWaitingText}>Aur bids aa rahi hain...</Text>
+              </View>
+            )}
+          </View>
+        );
+      }
+
       case 'negotiated':
         if (isLoading || uiState === 'done') return null;
         return (
@@ -405,40 +508,57 @@ export default function VoiceConversationScreen() {
         )}
       </ScrollView>
 
-      {/* Booking Done — receipt button */}
-      {uiState === 'done' && (
-        <TouchableOpacity
-          style={[styles.bookingDoneBtn, { marginBottom: insets.bottom + Spacing.md }]}
-          onPress={() => {
-            const fallbackProvider = bookingResult?.provider || providers[0];
-            if (bookingResult && fallbackProvider) {
-              router.replace({
-                pathname: '/booking',
-                params: {
-                  providerData: JSON.stringify(fallbackProvider),
-                  priceData: JSON.stringify({ total: fallbackProvider?.base_rate || 2500 }),
-                  confirmedData: JSON.stringify({
-                    booking_id: bookingResult.booking_id,
-                    receipt: bookingResult.receipt,
-                    confirmation_message: bookingResult.confirmation_message,
-                    reminders: bookingResult.reminders,
-                  }),
-                },
-              });
-            } else if (fallbackProvider) {
-              router.replace({
-                pathname: '/booking',
-                params: {
-                  providerData: JSON.stringify(fallbackProvider),
-                  priceData: JSON.stringify({ total: fallbackProvider?.base_rate || 2500 }),
-                },
-              });
-            }
-          }}
-        >
-          <Text style={styles.bookingDoneBtnText}>📋 Booking Details Dekhein →</Text>
-        </TouchableOpacity>
-      )}
+      {/* Booking Done — WhatsApp + receipt buttons */}
+      {uiState === 'done' && (() => {
+        const providerPhone = bookingResult?.provider?.phone || bookingResult?.provider?.contact_number;
+        const waText = encodeURIComponent(
+          `Assalam o Alaikum! Meri Haazir AI booking hai — ID: ${bookingResult?.booking_id || ''}. Aap kab aa rahe hain?`
+        );
+        const waUrl = providerPhone
+          ? `https://wa.me/92${String(providerPhone).replace(/^0/, '')}?text=${waText}`
+          : `https://wa.me/?text=${waText}`;
+        return (
+          <View style={[styles.doneButtonsRow, { marginBottom: insets.bottom + Spacing.md }]}>
+            <TouchableOpacity
+              style={styles.whatsappBtn}
+              onPress={() => Linking.openURL(waUrl).catch(() => Alert.alert('WhatsApp nahi khula', 'WhatsApp install hai?'))}
+            >
+              <Text style={styles.whatsappBtnText}>💬 WhatsApp par Contact Karein</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.bookingDoneBtn}
+              onPress={() => {
+                const fallbackProvider = bookingResult?.provider || providers[0];
+                if (bookingResult && fallbackProvider) {
+                  router.replace({
+                    pathname: '/booking',
+                    params: {
+                      providerData: JSON.stringify(fallbackProvider),
+                      priceData: JSON.stringify({ total: fallbackProvider?.base_rate || 2500 }),
+                      confirmedData: JSON.stringify({
+                        booking_id: bookingResult.booking_id,
+                        receipt: bookingResult.receipt,
+                        confirmation_message: bookingResult.confirmation_message,
+                        reminders: bookingResult.reminders,
+                      }),
+                    },
+                  });
+                } else if (fallbackProvider) {
+                  router.replace({
+                    pathname: '/booking',
+                    params: {
+                      providerData: JSON.stringify(fallbackProvider),
+                      priceData: JSON.stringify({ total: fallbackProvider?.base_rate || 2500 }),
+                    },
+                  });
+                }
+              }}
+            >
+              <Text style={styles.bookingDoneBtnText}>📋 Booking Details Dekhein →</Text>
+            </TouchableOpacity>
+          </View>
+        );
+      })()}
 
       {/* Input Bar */}
       {uiState !== 'done' && (
@@ -559,10 +679,78 @@ const styles = StyleSheet.create({
   },
   confirmBookBtnText: { color: '#fff', fontSize: FontSize.sm, fontWeight: '800' },
   biddingWrapper: { marginTop: Spacing.sm, marginBottom: Spacing.xs },
+  // Live bidding (InDrive-style)
+  liveBidContainer: {
+    marginTop: Spacing.sm, marginBottom: Spacing.xs,
+    backgroundColor: Colors.surface, borderRadius: Radius.lg,
+    borderWidth: 1, borderColor: Colors.border, overflow: 'hidden',
+    ...Shadow.card,
+  },
+  liveBidHeader: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm,
+    borderBottomWidth: 1, borderBottomColor: Colors.border,
+    backgroundColor: Colors.surfaceElevated,
+  },
+  liveBidHeaderText: { fontSize: FontSize.sm, fontWeight: '800', color: Colors.textPrimary },
+  liveDot: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  liveDotText: {
+    color: Colors.warning, fontSize: FontSize.xs, fontWeight: '800', letterSpacing: 1,
+  },
+  liveBidDoneTag: { fontSize: FontSize.xs, fontWeight: '700', color: Colors.success },
+  liveBidCard: {
+    marginHorizontal: Spacing.sm, marginTop: Spacing.sm,
+    backgroundColor: Colors.cardBg, borderRadius: Radius.md,
+    borderWidth: 1, borderColor: Colors.border, padding: Spacing.md,
+    position: 'relative',
+  },
+  liveBidCardRec: { borderColor: Colors.primary, backgroundColor: '#E6FAF5' },
+  liveBidRecBadge: {
+    position: 'absolute', top: -10, right: Spacing.sm,
+    backgroundColor: Colors.primary, borderRadius: Radius.full,
+    paddingHorizontal: 8, paddingVertical: 2,
+  },
+  liveBidRecBadgeText: { color: '#fff', fontSize: FontSize.xs, fontWeight: '800' },
+  liveBidRow: { flexDirection: 'row', alignItems: 'flex-start', marginTop: 4 },
+  liveBidName: { fontSize: FontSize.md, fontWeight: '700', color: Colors.textPrimary },
+  liveBidMeta: { fontSize: FontSize.xs, color: Colors.textSecondary, marginTop: 2 },
+  liveBidPriceCol: { alignItems: 'flex-end', marginLeft: Spacing.sm },
+  liveBidOrigPrice: {
+    fontSize: FontSize.xs, color: Colors.textMuted, textDecorationLine: 'line-through',
+  },
+  liveBidFinalPrice: { fontSize: FontSize.lg, fontWeight: '800', color: Colors.textPrimary },
+  liveBidFinalPriceRec: { color: Colors.primary },
+  liveBidMessage: {
+    fontSize: FontSize.xs, color: Colors.textMuted, fontStyle: 'italic',
+    marginTop: Spacing.xs, marginBottom: Spacing.sm,
+  },
+  liveBidSelectBtn: {
+    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md,
+    padding: Spacing.sm, alignItems: 'center',
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  liveBidSelectBtnRec: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  liveBidSelectText: { color: Colors.textPrimary, fontSize: FontSize.sm, fontWeight: '600' },
+  liveBidSelectTextRec: { color: '#fff', fontWeight: '800' },
+  liveBidWaiting: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    padding: Spacing.md, margin: Spacing.sm,
+    backgroundColor: Colors.warningDim, borderRadius: Radius.md,
+    borderWidth: 1, borderColor: Colors.warning,
+  },
+  liveBidWaitingText: { color: Colors.warning, fontSize: FontSize.xs, fontWeight: '600' },
   // Booking done
+  doneButtonsRow: {
+    marginHorizontal: Spacing.lg, marginTop: Spacing.md, gap: Spacing.sm,
+  },
+  whatsappBtn: {
+    backgroundColor: '#25D366', borderRadius: Radius.lg, padding: Spacing.md + 4,
+    alignItems: 'center', ...Shadow.card,
+  },
+  whatsappBtnText: { color: '#fff', fontSize: FontSize.md, fontWeight: '800' },
   bookingDoneBtn: {
     backgroundColor: Colors.primary, borderRadius: Radius.lg, padding: Spacing.md + 4,
-    alignItems: 'center', marginHorizontal: Spacing.lg, marginTop: Spacing.md, ...Shadow.primary,
+    alignItems: 'center', ...Shadow.primary,
   },
   bookingDoneBtnText: { color: '#fff', fontSize: FontSize.md, fontWeight: '800' },
   // Input bar

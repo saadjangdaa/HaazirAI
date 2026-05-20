@@ -281,7 +281,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const myToken = sessionTokenRef.current;
 
       // Use a short timeout so a slow/down backend doesn't block the splash screen.
-      let profile = await fetchServerProfile(fbUser.uid, 8000);
+      let profile = await fetchServerProfile(fbUser.uid, 4000);
 
       if (sessionTokenRef.current !== myToken) return mapProfileToAuthUser(fbUser, null);
 

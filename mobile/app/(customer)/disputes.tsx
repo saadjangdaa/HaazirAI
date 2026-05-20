@@ -5,6 +5,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import CustomerSidebar from '../../components/CustomerSidebar';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '../../constants/theme';
 import { useAuth } from '../../context/AuthContext';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -28,7 +29,7 @@ const DISPUTE_TYPES = [
 
 const AGENT_STEPS = [
   'Masla samjha gaya',
-  'Provider history check ho rahi hai',
+  'Case details review ho rahe hain',
   'Resolution tayar ki ja rahi hai',
 ];
 
@@ -105,6 +106,7 @@ export default function DisputesScreen() {
   const [disputes, setDisputes] = useState<MockDispute[]>([]);
   const [closingId, setClosingId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // Pulse animation for agent shield
   const pulse = useRef(new Animated.Value(1)).current;
@@ -215,7 +217,9 @@ export default function DisputesScreen() {
   // ── Agent Active Screen ───────────────────────────────────────────────
   if (agentActive) {
     return (
-      <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 32 }]}>
+      <View style={styles.rootWrap}>
+        <DisputeHeader insets={insets} onMenu={() => setSidebarOpen(true)} />
+        <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 32 }]}>
         <View style={styles.agentScreen}>
           <Animated.View style={{ transform: [{ scale: pulse }] }}>
             <View style={styles.shieldCircle}>
@@ -256,7 +260,7 @@ export default function DisputesScreen() {
           {/* Resolution if available */}
           {resolution && (
             <View style={styles.resolutionBox}>
-              <Text style={styles.resolutionHeading}>JHAGRA Agent ka Faisla</Text>
+              <Text style={styles.resolutionHeading}>Hifazat Agent ka Faisla</Text>
               <Text style={styles.resolutionText}>{resolution.resolution}</Text>
               {(resolution.refund_amount || 0) > 0 && (
                 <View style={styles.refundBadge}>
@@ -285,21 +289,23 @@ export default function DisputesScreen() {
             <Text style={styles.newAgainBtnText}>Naya Dispute Darj Karein</Text>
           </TouchableOpacity>
         </View>
-      </ScrollView>
+        </ScrollView>
+        <CustomerSidebar visible={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+      </View>
     );
   }
 
   // ── Main Screen ───────────────────────────────────────────────────────
   return (
-    <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 32 }]}>
+    <View style={styles.rootWrap}>
+      <DisputeHeader insets={insets} onMenu={() => setSidebarOpen(true)} />
+      <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 32 }]}>
 
       {isMockMode && (
         <View style={styles.mockBanner}>
           <Text style={styles.mockBannerText}>🎭 DEMO MODE — Booking: Electrician (HAZ-MOCK-003)</Text>
         </View>
       )}
-
-      <Text style={styles.pageTitle}>Masla / Dispute</Text>
 
       {/* Tab bar */}
       <View style={styles.tabBar}>
@@ -377,7 +383,7 @@ export default function DisputesScreen() {
           </View>
 
           <View style={[styles.aiCard, Shadow.sm]}>
-            <Text style={styles.aiTitle}>✨ JHAGRA Dispute Agent active hai</Text>
+            <Text style={styles.aiTitle}>✨ Hifazat Dispute Agent active hai</Text>
             <Text style={styles.aiText}>
               {isMockMode
                 ? 'Provider Rashid Hussain: 1 complaint in 60 days — re-service eligible'
@@ -388,7 +394,7 @@ export default function DisputesScreen() {
           {submitting ? (
             <View style={styles.loadingRow}>
               <ActivityIndicator color={Colors.danger} />
-              <Text style={styles.loadingText}>JHAGRA agent masla dekh raha hai...</Text>
+              <Text style={styles.loadingText}>Hifazat Agent masla dekh raha hai...</Text>
             </View>
           ) : (
             <TouchableOpacity style={[styles.submitBtn, Shadow.primary]} onPress={handleSubmit} activeOpacity={0.85}>
@@ -446,7 +452,7 @@ export default function DisputesScreen() {
 
                       {d.status === 'resolved' && d.resolution && (
                         <View style={styles.resolvedBox}>
-                          <Text style={styles.resolvedLabel}>✅ JHAGRA Agent ka Faisla:</Text>
+                          <Text style={styles.resolvedLabel}>✅ Hifazat Agent ka Faisla:</Text>
                           <Text style={styles.resolvedText}>{d.resolution}</Text>
                           {(d.refundAmount || 0) > 0 && (
                             <Text style={styles.resolvedRefund}>Refund: Rs {d.refundAmount?.toLocaleString()}</Text>
@@ -475,11 +481,41 @@ export default function DisputesScreen() {
           )}
         </>
       )}
-    </ScrollView>
+      </ScrollView>
+      <CustomerSidebar visible={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+    </View>
   );
 }
 
+function DisputeHeader({ insets, onMenu }: { insets: { top: number }; onMenu: () => void }) {
+  return (
+    <View style={[disputeHeaderStyle.header, { paddingTop: insets.top + 6 }]}>
+      <TouchableOpacity style={disputeHeaderStyle.menuBtn} onPress={onMenu}>
+        <Ionicons name="menu" size={22} color={Colors.textPrimary} />
+      </TouchableOpacity>
+      <Text style={disputeHeaderStyle.title}>Masla / Dispute</Text>
+      <View style={{ width: 38 }} />
+    </View>
+  );
+}
+
+const disputeHeaderStyle = StyleSheet.create({
+  header: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: Spacing.md, paddingBottom: Spacing.sm,
+    backgroundColor: Colors.surface,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: Colors.border,
+  },
+  title: { flex: 1, textAlign: 'center', fontSize: FontSize.lg, fontWeight: '700', color: Colors.textPrimary },
+  menuBtn: {
+    width: 38, height: 38, borderRadius: 19,
+    backgroundColor: Colors.background,
+    justifyContent: 'center', alignItems: 'center',
+  },
+});
+
 const styles = StyleSheet.create({
+  rootWrap: { flex: 1, backgroundColor: Colors.background },
   root: { flex: 1, backgroundColor: Colors.background },
   content: { padding: Spacing.md, paddingBottom: 48 },
 
