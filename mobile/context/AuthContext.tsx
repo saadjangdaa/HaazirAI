@@ -13,7 +13,8 @@ import {
   signOut as firebaseSignOut,
   User,
 } from 'firebase/auth';
-import { auth } from '../services/firebase';
+import { doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
+import { auth, db } from '../services/firebase';
 import {
   formatApiError,
   getUserProfile,
@@ -75,6 +76,36 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType>({} as AuthContextType);
 
+async function writeUserToFirestore(
+  uid: string,
+  data: { email: string; username: string; name: string; role: UserRole; displayName?: string }
+): Promise<void> {
+  try {
+    const ref = doc(db, 'users', uid);
+    const snap = await getDoc(ref);
+    const existing = snap.exists() ? snap.data() : {};
+    await setDoc(
+      ref,
+      {
+        ...existing,
+        user_id: uid,
+        uid,
+        email: data.email,
+        username: data.username,
+        name: data.name,
+        display_name: data.displayName || data.name,
+        role: data.role,
+        profile_complete: true,
+        last_login: serverTimestamp(),
+        ...(snap.exists() ? {} : { created_at: serverTimestamp(), booking_history: [] }),
+      },
+      { merge: true }
+    );
+  } catch (e) {
+    if (__DEV__) console.warn('[Auth] Firestore write failed:', e);
+  }
+}
+
 function parseWorkerData(profile: UserProfile | null): WorkerData | undefined {
   if (!profile || profile.role !== 'worker') return undefined;
 
@@ -115,7 +146,7 @@ function nameToUsername(name: string, uid: string): string {
 
 /** Backfill display name for legacy accounts (Firebase-only signup, partial server sync). */
 function deriveProfileUsername(fbUser: User, profile?: UserProfile | null): string {
-  const fromProfile = (profile?.username || profile?.name || '').trim();
+  const fromProfile = (profile?.display_name || profile?.username || profile?.name || '').trim();
   if (fromProfile) return fromProfile;
   const display = (fbUser.displayName || '').trim();
   if (display) return nameToUsername(display, fbUser.uid);
@@ -230,11 +261,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [needsLanguagePicker, setNeedsLanguagePicker] = useState(false);
   const authOpRef = useRef(false);
   const mountedRef = useRef(true);
+  // Incremented on every signOut — stale bootstrap calls check this and bail if it changed.
+  const sessionTokenRef = useRef(0);
 
   const bootstrapFromFirebase = useCallback(
     async (fbUser: User, options: { sync: boolean; roleHint?: UserRole }) => {
+      // Snapshot session token — if user signs out while this is running, token changes and we bail.
+      const myToken = sessionTokenRef.current;
+
       // Use a short timeout so a slow/down backend doesn't block the splash screen.
       let profile = await fetchServerProfile(fbUser.uid, 8000);
+
+      if (sessionTokenRef.current !== myToken) return mapProfileToAuthUser(fbUser, null);
+
+      // Fallback: backend in MOCK_MODE may have lost the doc (Render restart) — read from real Firestore.
+      if (!profile) {
+        const snap = await getDoc(doc(db, 'users', fbUser.uid)).catch(() => null);
+        if (snap?.exists()) profile = snap.data() as UserProfile;
+      }
 
       if (options.sync) {
         try {
@@ -256,6 +300,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           if (__DEV__) console.warn('[Auth] Bootstrap sync failed (using cached profile):', syncErr);
         }
       }
+
+      if (sessionTokenRef.current !== myToken) return mapProfileToAuthUser(fbUser, null);
 
       const mapped = mapProfileToAuthUser(
         fbUser,
@@ -334,6 +380,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const fbUser = await waitForAuthUser(cred.user.uid);
       const username = nameToUsername(name, fbUser.uid);
 
+      // Write to real Firestore immediately — backend may be in MOCK_MODE (Render w/o FIREBASE_PROJECT_ID).
+      await writeUserToFirestore(fbUser.uid, {
+        email: fbUser.email || email.trim(),
+        username,
+        name: username,
+        displayName: name.trim(),
+        role,
+      });
+
       let profile: UserProfile | null = null;
       try {
         profile = await syncToBackend(fbUser, role, { username });
@@ -343,7 +398,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       const mapped = mapProfileToAuthUser(
         fbUser,
-        profile ?? { user_id: fbUser.uid, username, email: fbUser.email || email.trim(), role },
+        profile ?? { user_id: fbUser.uid, username, display_name: name.trim(), email: fbUser.email || email.trim(), role },
         role
       );
       if (mountedRef.current) {
@@ -371,6 +426,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         ...data,
         availability: data.availability ?? true,
         rating: data.rating ?? 0,
+      });
+      // Persist worker profile to real Firestore (backend may be in MOCK_MODE).
+      await writeUserToFirestore(fbUser.uid, {
+        email: fbUser.email || '',
+        username: fields.username || user?.username || '',
+        name: fields.username || user?.username || '',
+        displayName: user?.username || fields.username || '',
+        role: 'worker',
       });
       const mapped = mapProfileToAuthUser(fbUser, profile);
       setUser(mapped);
@@ -415,6 +478,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [user]);
 
   const signOut = async (): Promise<void> => {
+    // Invalidate any in-flight bootstrap calls before signing out.
+    sessionTokenRef.current += 1;
     return runAuthOperation(async () => {
       await firebaseSignOut(auth);
       if (mountedRef.current) {

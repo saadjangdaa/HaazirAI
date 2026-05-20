@@ -7,6 +7,7 @@ import { AuthProvider, useAuth, AuthUser } from '../context/AuthContext';
 import AuthSplash from '../components/AuthSplash';
 import { auth } from '../services/firebase';
 import { LanguageProvider } from '../context/LanguageContext';
+import { MockDataProvider } from '../context/MockDataContext';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -30,6 +31,10 @@ function isLangSelectPath(pathname: string): boolean {
   return pathname === '/language-select';
 }
 
+function isOnboardingPath(pathname: string): boolean {
+  return pathname === '/onboarding';
+}
+
 /**
  * Single routing gate — runs only after Firebase auth + profile bootstrap (loading=false).
  * hasSessionThisLaunch: user signed in this app session (not just Firebase storage restore).
@@ -51,11 +56,11 @@ function AuthNavigationGuard() {
     let target: string | null = null;
 
     if (!isAuthenticated) {
-      if (!isAuthPath(pathname)) {
+      // Unauthenticated — allow onboarding or login/signup, redirect everything else to login
+      if (!isAuthPath(pathname) && !isOnboardingPath(pathname)) {
         target = '/login';
       }
     } else if (!hasSessionThisLaunch) {
-      // Firebase restored from storage — require login this app session.
       if (!isAuthPath(pathname) && !isWorkerSignupPath(pathname)) {
         target = '/login';
       }
@@ -79,7 +84,6 @@ function AuthNavigationGuard() {
       }
     }
 
-    // Skip only if we're already on the target route (not merely navigated there before).
     if (!target || (lastNav.current === target && pathname === target)) return;
     lastNav.current = target;
     router.replace(target as '/login');
@@ -127,6 +131,7 @@ function RootLayoutNav() {
           animation: 'slide_from_right',
         }}
       >
+        <Stack.Screen name="onboarding" options={{ headerShown: false, animation: 'fade' }} />
         <Stack.Screen name="login" options={{ headerShown: false }} />
         <Stack.Screen name="signup" options={{ title: 'Account Banayein', headerBackVisible: false }} />
         <Stack.Screen name="worker-signup" options={{ title: 'Worker Registration', headerBackVisible: false }} />
@@ -151,10 +156,12 @@ export default function RootLayout() {
   }, []);
 
   return (
-    <LanguageProvider>
-      <AuthProvider>
-        <RootLayoutNav />
-      </AuthProvider>
-    </LanguageProvider>
+    <MockDataProvider>
+      <LanguageProvider>
+        <AuthProvider>
+          <RootLayoutNav />
+        </AuthProvider>
+      </LanguageProvider>
+    </MockDataProvider>
   );
 }

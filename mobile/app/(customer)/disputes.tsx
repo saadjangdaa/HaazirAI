@@ -14,6 +14,8 @@ import {
   resolveUserId,
   submitDispute,
 } from '../../services/api';
+import { useMockData } from '../../context/MockDataContext';
+import { MOCK_CUSTOMER_BOOKINGS } from '../../data/mockData';
 
 const DISPUTE_TYPES = [
   { id: 'noshow', label: 'Provider No-Show', icon: '😤' },
@@ -43,6 +45,20 @@ const RESOLUTIONS = [
   },
 ];
 
+const MOCK_RESOLUTION: DisputeResolution = {
+  booking_id: 'HAZ-MOCK-003',
+  dispute_type: 'quality_complaint',
+  dispute_id: 'DSP-MOCK-9F3A',
+  dispute_status: 'resolved',
+  resolution:
+    'JHAGRA agent ne faisle kiya: Provider Rashid Hussain ko 2 din mein wapas bheja jaega service dobara karne ke liye — bilkul free. Provider ki profile pe warning flag lag gaya hai.',
+  refund_amount: 0,
+  provider_penalty: 'Warning issued — 3rd complaint in 30 days would result in suspension.',
+  case_summary:
+    'Customer ne incomplete electrician job report ki. Provider history check ki gayi: 1 previous complaint in 60 days. Re-service grant ki gayi.',
+  escalated_to_human: false,
+};
+
 function pickBookingForDispute(
   bookings: { booking_id?: string; status?: string; created_at?: string }[],
   preferredBookingId?: string
@@ -66,6 +82,7 @@ export default function DisputesScreen() {
   const router = useRouter();
   const { bookingId: routeBookingId } = useLocalSearchParams<{ bookingId?: string }>();
   const { user } = useAuth();
+  const { isMockMode } = useMockData();
   const [sel, setSel] = useState('quality');
   const [description, setDescription] = useState('');
   const [submitted, setSubmitted] = useState(false);
@@ -80,6 +97,19 @@ export default function DisputesScreen() {
       Alert.alert('Tafseel likhein', 'Masle ki poori tafseel darj karein.');
       return;
     }
+
+    // Mock mode: instant resolution without backend
+    if (isMockMode) {
+      setSubmitting(true);
+      await new Promise((r) => setTimeout(r, 1200));
+      setLastDisputeId(MOCK_RESOLUTION.dispute_id || null);
+      setLastBookingId(MOCK_RESOLUTION.booking_id);
+      setResolution(MOCK_RESOLUTION);
+      setSubmitted(true);
+      setSubmitting(false);
+      return;
+    }
+
     setSubmitting(true);
     try {
       const uid = await resolveUserId(user);
@@ -92,8 +122,9 @@ export default function DisputesScreen() {
       const target = pickBookingForDispute(bookings, preferredId);
       if (!target?.booking_id) {
         Alert.alert(
-          'Booking nahi mili',
-          'Pehle koi booking banayein ya tracking screen se dispute darj karein.'
+          'Pehle booking banayein',
+          'Dispute file karne ke liye pehle Home se ek service book karein, phir yahan aayein.',
+          [{ text: 'Home Jao', onPress: () => router.push('/') }, { text: 'Theek Hai', style: 'cancel' }]
         );
         return;
       }
@@ -124,6 +155,11 @@ export default function DisputesScreen() {
     const escalated = resolution.escalated_to_human;
     return (
       <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
+        {isMockMode && (
+          <View style={styles.mockBanner}>
+            <Text style={styles.mockBannerText}>🎭 DEMO MODE — Sample resolution</Text>
+          </View>
+        )}
         <View style={styles.resolutionCard}>
           <Text style={styles.resolutionIcon}>{escalated ? '👨‍💼' : refund > 0 ? '💚' : 'ℹ️'}</Text>
           <Text style={styles.resolutionTitle}>JHAGRA Agent ka Faisla</Text>
@@ -171,8 +207,24 @@ export default function DisputesScreen() {
 
   return (
     <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
+
+      {isMockMode && (
+        <View style={styles.mockBanner}>
+          <Text style={styles.mockBannerText}>🎭 DEMO MODE — Booking: Electrician (HAZ-MOCK-003)</Text>
+        </View>
+      )}
+
       <Text style={styles.title}>Masla Darj Karein 🚨</Text>
       <Text style={styles.sub}>Koi masla? Haazir AI aapki madad karega.</Text>
+
+      {/* No booking warning for real mode */}
+      {!isMockMode && (
+        <View style={styles.infoCard}>
+          <Text style={styles.infoText}>
+            💡 Dispute submit hoga aapki latest booking ke against. Agar abhi koi booking nahi hai toh pehle Home se service book karein.
+          </Text>
+        </View>
+      )}
 
       {/* Dispute Types */}
       <Text style={styles.sectionLabel}>Masle ki qisam:</Text>
@@ -197,7 +249,7 @@ export default function DisputesScreen() {
       <View style={[styles.textAreaCard, Shadow.card]}>
         <TextInput
           style={styles.textArea}
-          placeholder="Masle ki poori tafseelaat likhein..."
+          placeholder={isMockMode ? 'Electrician ne kaam adhoora chor diya — wire connection nahi ki...' : 'Masle ki poori tafseelaat likhein...'}
           placeholderTextColor={Colors.textMuted}
           value={description}
           onChangeText={setDescription}
@@ -212,10 +264,14 @@ export default function DisputesScreen() {
 
       {/* AI Agent Status */}
       <View style={[styles.aiCard, Shadow.card]}>
-        <Text style={styles.aiTitle}>✨ Dispute Agent active hai</Text>
+        <Text style={styles.aiTitle}>✨ JHAGRA Dispute Agent active hai</Text>
         <Text style={styles.aiText}>Provider ki history check ho rahi hai...</Text>
         <View style={styles.aiResult}>
-          <Text style={styles.aiResultText}>📊 Last 30 din mein 2 complaints — review warranted</Text>
+          <Text style={styles.aiResultText}>
+            {isMockMode
+              ? '📊 Provider Rashid Hussain: 1 complaint in 60 days — re-service eligible'
+              : '📊 Last 30 din mein provider ki history check ho rahi hai'}
+          </Text>
         </View>
       </View>
 
@@ -253,8 +309,23 @@ export default function DisputesScreen() {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: Colors.background },
   content: { padding: Spacing.md, paddingBottom: 48 },
+
+  mockBanner: {
+    backgroundColor: Colors.primary, borderRadius: Radius.md,
+    padding: Spacing.sm, alignItems: 'center', marginBottom: Spacing.md,
+  },
+  mockBannerText: { color: Colors.textInverse, fontSize: FontSize.sm, fontWeight: '700' },
+
   title: { fontSize: FontSize.xxl, fontWeight: '800', color: Colors.danger, marginBottom: 4 },
-  sub: { fontSize: FontSize.sm, color: Colors.textMuted, marginBottom: Spacing.lg },
+  sub: { fontSize: FontSize.sm, color: Colors.textMuted, marginBottom: Spacing.md },
+
+  infoCard: {
+    backgroundColor: Colors.warningDim, borderRadius: Radius.md,
+    borderWidth: 1, borderColor: Colors.warning,
+    padding: Spacing.sm, marginBottom: Spacing.md,
+  },
+  infoText: { color: Colors.warning, fontSize: FontSize.xs, lineHeight: 18 },
+
   sectionLabel: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.textSecondary, marginBottom: Spacing.sm, marginTop: Spacing.sm },
   typeGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, marginBottom: Spacing.sm },
   typeCard: {
@@ -279,14 +350,12 @@ const styles = StyleSheet.create({
   resBtnWarning: { backgroundColor: Colors.warning, borderColor: Colors.warning },
   resBtnText: { fontSize: FontSize.md, fontWeight: '700', color: Colors.textPrimary },
   resBtnTextWhite: { color: Colors.background },
+  loadingRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm, padding: Spacing.md },
+  loadingText: { color: Colors.danger, fontSize: FontSize.sm },
+
   resolutionCard: {
-    backgroundColor: Colors.cardBg,
-    borderRadius: Radius.xl,
-    padding: Spacing.xl,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: Colors.primary,
-    marginBottom: Spacing.lg,
+    backgroundColor: Colors.cardBg, borderRadius: Radius.xl, padding: Spacing.xl,
+    alignItems: 'center', borderWidth: 1, borderColor: Colors.primary, marginBottom: Spacing.lg,
   },
   resolutionIcon: { fontSize: 56, marginBottom: Spacing.md },
   resolutionTitle: { color: Colors.primary, fontSize: FontSize.xl, fontWeight: '800', marginBottom: Spacing.sm },
@@ -301,6 +370,4 @@ const styles = StyleSheet.create({
   trackBtnText: { color: Colors.background, fontSize: FontSize.md, fontWeight: '700' },
   newBtn: { borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border, padding: Spacing.md, alignItems: 'center' },
   newBtnText: { color: Colors.textSecondary, fontSize: FontSize.md, fontWeight: '600' },
-  loadingRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm, padding: Spacing.md },
-  loadingText: { color: Colors.danger, fontSize: FontSize.sm },
 });
