@@ -160,37 +160,44 @@ def _load_providers() -> list:
 
 
 def _fallback_ranked_providers(intent: dict, limit: int = 8) -> list:
-    """When Dhundho/Chunno return empty, only inject providers in the SAME service category."""
+    """When Dhundho/Chunno return empty, show SAME-SERVICE providers from seed data."""
+    from agents.dhundho import _service_matches
     from services.providers_integrity import format_provider_record
     from services.service_categories import filter_providers_by_category, intent_category
 
     intent = intent or {}
-    category = intent_category(intent)
-    if not category:
-        return []
+    service_type = (intent.get("service_type") or "").strip()
+    city = (intent.get("city") or "").strip()
+    pool = list(_load_providers())  # flat list, not wrapped
 
-    city = (intent.get("city") or "Islamabad").strip()
-    pool = [format_provider_record(p, p.get("id")) for p in _load_providers()]
-    pool = filter_providers_by_category(pool, category)
+    # Always filter by service first — never show unrelated categories
+    if service_type:
+        matched = [p for p in pool if _service_matches(service_type, p)]
+        pool = matched if matched else pool  # only fall back to all if truly no match
+
+    # Then narrow by city
     if city:
         same_city = [p for p in pool if (p.get("city") or "").lower() == city.lower()]
         if same_city:
             pool = same_city
-    ranked = pool[:limit]
+        # else keep the city-unfiltered set (still same-service)
+
+    ranked = [format_provider_record(p, p.get("id")) for p in pool[:limit]]
     for i, p in enumerate(ranked):
         p.setdefault("ranking_score", 1.0 - i * 0.05)
         p.setdefault("ranking_reason_urdu", "Aapki request ke liye qareeb technician")
     return ranked
 
 
-def _safeguard_providers_ranked(intent: dict, providers_ranked: list) -> list:
-    """Final API guard: drop providers that do not match intent category."""
-    from services.service_categories import filter_providers_by_category, intent_category
-
-    category = intent_category(intent or {})
-    if not category:
-        return []
-    return filter_providers_by_category(list(providers_ranked or []), category)
+def _filter_providers_by_service(providers: list, intent: dict) -> list:
+    """Final safeguard: strip providers that don't match the requested service.
+    If filtering would leave 0 results, return original (better some than none)."""
+    from agents.dhundho import _service_matches
+    service_type = (intent.get("service_type") or "").strip()
+    if not service_type or not providers:
+        return providers
+    filtered = [p for p in providers if _service_matches(service_type, p)]
+    return filtered if filtered else providers
 
 
 _AGENT_URDU = {
@@ -300,10 +307,10 @@ async def handle_service_request(body: ServiceRequest):
     chunno_warnings = final_state.get("chunno_warnings") or []
 
     if not providers_ranked:
-        providers_ranked = _fallback_ranked_providers(intent)
+        providers_ranked = _fallback_ranked_providers(intent, limit=8)
 
-    providers_ranked = _safeguard_providers_ranked(intent, providers_ranked)
-
+    # Safeguard: remove any cross-category providers that slipped through
+    providers_ranked = _filter_providers_by_service(providers_ranked, intent)
     best_provider = providers_ranked[0] if providers_ranked else None
 
     _request_store[request_id] = {
@@ -696,7 +703,16 @@ async def conversation(body: ConversationRequest):
 
         providers = list((orch.get("providers_ranked") or []))[:3]
         if not providers:
-            providers = _load_providers()[:3]
+            # Use service-filtered fallback — never inject unrelated categories
+            fallback_intent = orch.get("intent") or {
+                "service_type": service,
+                "city": location,
+            }
+            providers = _fallback_ranked_providers(fallback_intent, limit=3)
+
+        # Safeguard: strip any cross-category providers before sending to frontend
+        search_intent = orch.get("intent") or {"service_type": service, "city": location}
+        providers = _filter_providers_by_service(providers, search_intent)
 
         # Cache for book_trigger + negotiate endpoint
         _session_search_cache[body.session_id] = {

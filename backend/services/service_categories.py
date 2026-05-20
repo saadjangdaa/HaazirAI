@@ -22,6 +22,10 @@ NORMALIZED_CATEGORIES = frozenset(
         "beautician",
         "carpenter",
         "painter",
+        "mechanic",
+        "cook",
+        "maid",
+        "gardener",
     }
 )
 
@@ -33,6 +37,10 @@ _CATEGORY_LABELS: Dict[str, str] = {
     "beautician": "Beautician",
     "carpenter": "Carpenter",
     "painter": "Painter",
+    "mechanic": "Mechanic",
+    "cook": "Cook",
+    "maid": "Maid",
+    "gardener": "Gardener",
 }
 
 # Provider ``service`` / specialization → category
@@ -56,6 +64,18 @@ _PROVIDER_SERVICE_MAP: tuple[tuple[str, str], ...] = (
     ("carpentry", "carpenter"),
     ("painter", "painter"),
     ("painting", "painter"),
+    ("mechanic", "mechanic"),
+    ("auto repair", "mechanic"),
+    ("car repair", "mechanic"),
+    ("cook", "cook"),
+    ("cooking", "cook"),
+    ("chef", "cook"),
+    ("maid", "maid"),
+    ("house help", "maid"),
+    ("cleaning", "maid"),
+    ("gardener", "gardener"),
+    ("gardening", "gardener"),
+    ("lawn", "gardener"),
 )
 
 # User text / SAMAJH labels → category (order: more specific first)
@@ -68,6 +88,10 @@ _TEXT_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
     (("beautician", "beauty", "salon", "makeup", "hair", "threading"), "beautician"),
     (("carpenter", "carpentry", "furniture", "wood work"), "carpenter"),
     (("painter", "painting", "rang", "wall paint"), "painter"),
+    (("mechanic", "auto repair", "car repair", "motorcycle repair", "engine", "gearbox", "tyre", "puncture", "oil change", "garage"), "mechanic"),
+    (("cook", "chef", "cooking", "khana", "biryani", "catering", "daily meals", "food"), "cook"),
+    (("maid", "house help", "kaam wali", "cleaning", "jhaadu", "pocha", "laundry", "safai"), "maid"),
+    (("gardener", "gardening", "lawn", "plant", "tree trim", "garden"), "gardener"),
 )
 
 
@@ -126,8 +150,13 @@ def provider_normalized_category(provider: dict) -> Optional[str]:
     """Derive category from provider.service / specialization (no new Firestore fields)."""
     p_service = _norm(provider.get("service") or provider.get("service_type") or "")
     specs = " ".join(_norm(s) for s in (provider.get("specialization") or []))
-    blob = f"{p_service} {specs}".strip()
 
+    # Check primary service field first — avoids spec keywords overriding the service
+    for needle, category in _PROVIDER_SERVICE_MAP:
+        if needle in p_service:
+            return category
+
+    blob = f"{p_service} {specs}".strip()
     for needle, category in _PROVIDER_SERVICE_MAP:
         if needle in blob:
             return category

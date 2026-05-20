@@ -9,6 +9,7 @@ import { useRouter } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
 import { useMockData } from '../context/MockDataContext';
+import { useLang } from '../context/LanguageContext';
 
 const { width: SCREEN_W } = Dimensions.get('window');
 const SIDEBAR_W = Math.min(300, SCREEN_W * 0.82);
@@ -22,17 +23,7 @@ type SidebarItem = {
   dividerBefore?: boolean;
 };
 
-const SIDEBAR_NAV: SidebarItem[] = [
-  { label: 'Services (Home)',  icon: 'home-outline',          path: '/(customer)/' },
-  { label: 'My Bookings',      icon: 'calendar-outline',      path: '/(customer)/bookings' },
-  { label: 'My Disputes',      icon: 'shield-outline',        path: '/(customer)/disputes' },
-  { label: 'Profile',          icon: 'person-outline',        path: '/(customer)/profile' },
-  { label: 'Agent Traces',     icon: 'git-network-outline',   path: '/agent-traces', highlight: true, badge: 'NEW', dividerBefore: true },
-  { label: 'Agent Logs',       icon: 'flask-outline',         path: '/logs' },
-  { label: 'Nearby Workers',   icon: 'people-outline',        path: '/nearby', dividerBefore: true },
-  { label: 'Notifications',    icon: 'notifications-outline', path: '/logs' },
-  { label: 'Help & Support',   icon: 'help-circle-outline' },
-];
+// Nav items built dynamically inside the component using tr
 
 interface Props {
   visible: boolean;
@@ -43,7 +34,20 @@ export default function CustomerSidebar({ visible, onClose }: Props) {
   const router = useRouter();
   const { user, signOut } = useAuth();
   const { isMockMode, toggleMockMode } = useMockData();
+  const { tr } = useLang();
   const insets = useSafeAreaInsets();
+
+  const SIDEBAR_NAV: SidebarItem[] = [
+    { label: tr.navHome,       icon: 'home-outline',          path: '/(customer)/' },
+    { label: tr.navBookings,   icon: 'calendar-outline',      path: '/(customer)/bookings' },
+    { label: tr.navDisputes,   icon: 'shield-outline',        path: '/(customer)/disputes' },
+    { label: tr.navProfile,    icon: 'person-outline',        path: '/(customer)/profile' },
+    { label: 'Agent Traces',   icon: 'git-network-outline',   path: '/agent-traces', highlight: true, badge: 'NEW', dividerBefore: true },
+    { label: tr.agentLogs,     icon: 'flask-outline',         path: '/logs' },
+    { label: 'Nearby Workers', icon: 'people-outline',        path: '/nearby', dividerBefore: true },
+    { label: 'Notifications',  icon: 'notifications-outline', path: '/logs' },
+    { label: 'Help & Support', icon: 'help-circle-outline' },
+  ];
 
   const drawerAnim = useRef(new Animated.Value(0)).current;
 
@@ -76,10 +80,10 @@ export default function CustomerSidebar({ visible, onClose }: Props) {
   const handleLogout = () => {
     onClose();
     setTimeout(() => {
-      Alert.alert('Logout', 'Kya aap logout karna chahte hain?', [
-        { text: 'Cancel', style: 'cancel' },
+      Alert.alert(tr.logout, tr.logoutConfirm, [
+        { text: tr.cancel, style: 'cancel' },
         {
-          text: 'Logout', style: 'destructive', onPress: async () => {
+          text: tr.logout, style: 'destructive', onPress: async () => {
             try { await signOut(); } finally { router.replace('/login'); }
           },
         },
@@ -152,7 +156,7 @@ export default function CustomerSidebar({ visible, onClose }: Props) {
             <View style={s.itemIcon}>
               <Ionicons name="color-wand-outline" size={18} color={Colors.textSecondary} />
             </View>
-            <Text style={s.itemLabel}>Demo Mode</Text>
+            <Text style={s.itemLabel}>{tr.demoMode}</Text>
             <Switch
               value={isMockMode}
               onValueChange={toggleMockMode}
@@ -169,7 +173,7 @@ export default function CustomerSidebar({ visible, onClose }: Props) {
             <View style={[s.itemIcon, { backgroundColor: Colors.dangerDim }]}>
               <Ionicons name="log-out-outline" size={18} color={Colors.danger} />
             </View>
-            <Text style={[s.itemLabel, { color: Colors.danger }]}>Logout</Text>
+            <Text style={[s.itemLabel, { color: Colors.danger }]}>{tr.logout}</Text>
           </TouchableOpacity>
         </ScrollView>
 

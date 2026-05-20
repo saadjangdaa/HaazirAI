@@ -22,6 +22,7 @@ import {
   UserBooking,
 } from '../../services/api';
 import { useMockData } from '../../context/MockDataContext';
+import { useLang } from '../../context/LanguageContext';
 import { MOCK_CUSTOMER_BOOKINGS, MOCK_DISPUTES, MockDispute } from '../../data/mockData';
 import { isDisputeAwaitingResolution } from '../../utils/disputeStatus';
 import { isDisputeEligibleStatus } from '../../utils/disputeEligibility';
@@ -112,6 +113,7 @@ export default function DisputesScreen() {
   const { bookingId: routeBookingId } = useLocalSearchParams<{ bookingId?: string }>();
   const { user } = useAuth();
   const { isMockMode } = useMockData();
+  const { tr } = useLang();
   const insets = useSafeAreaInsets();
 
   const [tab, setTab] = useState<'new' | 'history'>('new');
@@ -320,13 +322,13 @@ export default function DisputesScreen() {
 
           <Text style={styles.agentHeading}>
             {resolution && isDisputeAwaitingResolution(resolution)
-              ? 'Shikayat Darj Ho Gayi'
-              : 'Hifazat Agent kaam par hai!'}
+              ? tr.submitDispute
+              : tr.agentWorking}
           </Text>
           <Text style={styles.agentSub}>
             {resolution && isDisputeAwaitingResolution(resolution)
               ? 'Worker ko jawab dene ka moqa — phir review'
-              : 'Aapka dispute jaldi resolve ho jaega'}
+              : tr.disputeResolveSoon}
           </Text>
 
           {disputeId && (
@@ -435,14 +437,14 @@ export default function DisputesScreen() {
           style={[styles.tab, tab === 'new' && styles.tabActive]}
           onPress={() => setTab('new')}
         >
-          <Text style={[styles.tabText, tab === 'new' && styles.tabTextActive]}>Naya Dispute</Text>
+          <Text style={[styles.tabText, tab === 'new' && styles.tabTextActive]}>{tr.newDispute}</Text>
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.tab, tab === 'history' && styles.tabActive]}
           onPress={() => setTab('history')}
         >
           <Text style={[styles.tabText, tab === 'history' && styles.tabTextActive]}>
-            Purane Disputes{openCount > 0 ? ` (${openCount})` : ''}
+            {tr.disputeHistory}{openCount > 0 ? ` (${openCount})` : ''}
           </Text>
         </TouchableOpacity>
       </View>
@@ -521,7 +523,7 @@ export default function DisputesScreen() {
           ) : (
             <TouchableOpacity style={[styles.submitBtn, Shadow.primary]} onPress={handleSubmit} activeOpacity={0.85}>
               <Ionicons name="shield-checkmark-outline" size={20} color={Colors.textInverse} />
-              <Text style={styles.submitBtnText}>Dispute Darj Karein</Text>
+              <Text style={styles.submitBtnText}>{tr.submitDispute}</Text>
             </TouchableOpacity>
           )}
         </>
@@ -539,8 +541,8 @@ export default function DisputesScreen() {
           {!historyLoading && disputes.length === 0 ? (
             <View style={styles.emptyState}>
               <Text style={styles.emptyIcon}>📋</Text>
-              <Text style={styles.emptyTitle}>Koi dispute nahi</Text>
-              <Text style={styles.emptyText}>Abhi tak koi dispute file nahi kiya gaya.</Text>
+              <Text style={styles.emptyTitle}>{tr.noDisputes}</Text>
+              <Text style={styles.emptyText}>{tr.noDisputesSub}</Text>
               <TouchableOpacity style={styles.emptyBtn} onPress={() => setTab('new')}>
                 <Text style={styles.emptyBtnText}>Naya Dispute Darj Karein</Text>
               </TouchableOpacity>
@@ -627,7 +629,7 @@ function DisputeHeader({ insets, onMenu }: { insets: { top: number }; onMenu: ()
       <TouchableOpacity style={disputeHeaderStyle.menuBtn} onPress={onMenu}>
         <Ionicons name="menu" size={22} color={Colors.textPrimary} />
       </TouchableOpacity>
-      <Text style={disputeHeaderStyle.title}>Masla / Dispute</Text>
+      <Text style={disputeHeaderStyle.title}>{tr.pageDispute}</Text>
       <View style={{ width: 38 }} />
     </View>
   );

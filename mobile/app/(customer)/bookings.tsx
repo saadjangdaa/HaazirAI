@@ -10,6 +10,7 @@ import { Colors, Spacing, Radius, FontSize, Shadow } from '../../constants/theme
 import { getUserBookings, UserBooking, formatApiError, requireUserId } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import { useMockData } from '../../context/MockDataContext';
+import { useLang } from '../../context/LanguageContext';
 import { MOCK_CUSTOMER_BOOKINGS } from '../../data/mockData';
 import CustomerSidebar from '../../components/CustomerSidebar';
 
@@ -49,6 +50,7 @@ export default function BookingsScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const { isMockMode } = useMockData();
+  const { tr } = useLang();
   const [bookings, setBookings] = useState<UserBooking[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -96,7 +98,7 @@ export default function BookingsScreen() {
           <TouchableOpacity style={styles.menuBtn} onPress={() => setSidebarOpen(true)}>
             <Ionicons name="menu" size={22} color={Colors.textPrimary} />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>Meri Bookings</Text>
+          <Text style={styles.headerTitle}>{tr.pageBookings}</Text>
           <View style={{ width: 38 }} />
         </View>
         <View style={styles.center}>
@@ -115,7 +117,7 @@ export default function BookingsScreen() {
         <TouchableOpacity style={styles.menuBtn} onPress={() => setSidebarOpen(true)}>
           <Ionicons name="menu" size={22} color={Colors.textPrimary} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Meri Bookings</Text>
+        <Text style={styles.headerTitle}>{tr.pageBookings}</Text>
         <View style={{ width: 38 }} />
       </View>
 
@@ -124,7 +126,7 @@ export default function BookingsScreen() {
         contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
         refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={Colors.primary} />}
       >
-      <Text style={styles.title}>Meri Bookings</Text>
+      <Text style={styles.title}>{tr.pageBookings}</Text>
 
       <View style={styles.summaryRow}>
         <View style={styles.summaryItem}>
@@ -150,7 +152,7 @@ export default function BookingsScreen() {
 
       {!error && bookings.length === 0 && (
         <View style={styles.emptyCard}>
-          <Text style={styles.emptyText}>Abhi koi booking nahi — home se service request karein.</Text>
+          <Text style={styles.emptyText}>{tr.noBookings} — {tr.noBookingsSub}</Text>
         </View>
       )}
 

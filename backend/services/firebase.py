@@ -13,6 +13,7 @@ Environment is loaded from ``config`` (``backend/config.py``) when available; do
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import uuid
