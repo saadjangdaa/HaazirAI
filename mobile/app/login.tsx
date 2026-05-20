@@ -78,14 +78,14 @@ export default function LoginScreen() {
         </View>
       </View>
 
-      {/* Floating card */}
-      <ScrollView
-        style={styles.scrollView}
-        contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + Spacing.xl }]}
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
-      >
-        <View style={[styles.card, Shadow.modal]}>
+      {/* White card — flex:1 ensures it always fills to the bottom */}
+      <View style={styles.cardShell}>
+        <ScrollView
+          style={styles.scrollView}
+          contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + Spacing.xl }]}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
           <Text style={styles.heading}>{tr.welcome}</Text>
           <Text style={styles.sub}>{tr.loginSub}</Text>
 
@@ -144,8 +144,8 @@ export default function LoginScreen() {
           <TouchableOpacity style={styles.secondaryBtn} onPress={() => router.push('/signup')} activeOpacity={0.75}>
             <Text style={styles.secondaryBtnText}>{tr.signupBtn}</Text>
           </TouchableOpacity>
-        </View>
-      </ScrollView>
+        </ScrollView>
+      </View>
 
       {/* Language Picker */}
       <Modal visible={showLangPicker} transparent animationType="slide">
@@ -200,14 +200,16 @@ const styles = StyleSheet.create({
   brandName: { fontSize: 38, fontWeight: FontWeight.black, color: Colors.textInverse, letterSpacing: -0.5 },
   brandTagline: { fontSize: FontSize.sm, color: 'rgba(255,255,255,0.75)', marginTop: 4, textAlign: 'center' },
 
-  scrollView: { backgroundColor: Colors.surface },
-  scroll: { flexGrow: 1 },
-  card: {
+  cardShell: {
+    flex: 1,
     backgroundColor: Colors.surface,
-    borderTopLeftRadius: Radius.xxl, borderTopRightRadius: Radius.xxl,
-    padding: Spacing.xl,
+    borderTopLeftRadius: Radius.xxl,
+    borderTopRightRadius: Radius.xxl,
     marginTop: -Spacing.xl,
+    overflow: 'hidden',
   },
+  scrollView: { flex: 1 },
+  scroll: { flexGrow: 1, padding: Spacing.xl },
   heading: { fontSize: FontSize.xxl, fontWeight: FontWeight.black, color: Colors.textPrimary, marginBottom: 4 },
   sub: { fontSize: FontSize.sm, color: Colors.textMuted, marginBottom: Spacing.xl },
 
