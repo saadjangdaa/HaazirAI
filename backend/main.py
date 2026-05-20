@@ -602,6 +602,7 @@ async def conversation(body: ConversationRequest):
         user_message=body.user_text,
         providers=body.providers,
         user_name=body.user_name,
+        history=body.history,
     )
 
     if result.get("search_trigger"):
@@ -643,6 +644,7 @@ async def conversation(body: ConversationRequest):
             user_message="[system: search complete]",
             providers=providers,
             user_name=body.user_name,
+            history=None,  # session already exists at this point
         )
         result["response_text"] = follow_up["response_text"]
         result["phase"] = follow_up["phase"]
