@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  ActivityIndicator, Animated, Easing, Alert,
+  ActivityIndicator, Animated, Easing, Alert, TextInput, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -9,20 +9,28 @@ import { Colors, Spacing, Radius, FontSize, Shadow } from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
 import { requestMicPermission, startRecording, stopAndTranscribe } from '../services/voiceRecord';
 import { playBase64Audio, stopSpeaking } from '../services/voicePlayback';
-import { startConversation, sendMessage, ConversationTurn, ConversationPhase, BookingResult } from '../services/conversationApi';
+import {
+  startConversation, sendMessage, negotiateProviders, directBook,
+  ConversationTurn, ConversationPhase, BookingResult, NegotiatedBid,
+} from '../services/conversationApi';
 import ProviderCard from '../components/ProviderCard';
 
-export const options = {
-  headerShown: false,
-};
+export const options = { headerShown: false };
 
-type Message = { id: string; role: 'user' | 'agent'; text: string };
+// ── Chat item types — everything in one ordered array ──────────────────────
+type ChatItem =
+  | { id: string; kind: 'text'; role: 'user' | 'agent'; text: string }
+  | { id: string; kind: 'providers'; items: any[] }
+  | { id: string; kind: 'actions' }
+  | { id: string; kind: 'negotiated'; bid: NegotiatedBid };
 
-let _msgCounter = 0;
-function newMsg(role: Message['role'], text: string): Message {
-  return { id: `${role}-${++_msgCounter}`, role, text };
+let _idCtr = 0;
+function mk<T extends Omit<ChatItem, 'id'>>(item: T): ChatItem {
+  return { ...item, id: `ci-${++_idCtr}` } as ChatItem;
 }
-type UIState = 'greeting' | 'idle' | 'recording' | 'processing' | 'speaking' | 'searching' | 'done';
+
+type UIState = 'greeting' | 'idle' | 'recording' | 'processing' | 'speaking'
+             | 'searching' | 'negotiating' | 'done';
 
 function generateSessionId() {
   return 'sess_' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
@@ -45,12 +53,13 @@ export default function VoiceConversationScreen() {
   const sessionId = useRef(generateSessionId());
   const userName = user?.name || '';
 
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [chat, setChat] = useState<ChatItem[]>([]);
   const [uiState, setUiState] = useState<UIState>('greeting');
   const [phase, setPhase] = useState<ConversationPhase>('intake');
   const [providers, setProviders] = useState<any[]>([]);
   const [requestId, setRequestId] = useState<string | null>(null);
   const [bookingResult, setBookingResult] = useState<BookingResult | null>(null);
+  const [textInput, setTextInput] = useState('');
 
   // ── Pulse animation ────────────────────────────────────────────────────────
   const startPulse = useCallback(() => {
@@ -67,21 +76,22 @@ export default function VoiceConversationScreen() {
     Animated.timing(pulseAnim, { toValue: 1.0, duration: 150, useNativeDriver: true }).start();
   }, [pulseAnim]);
 
-  // ── Play agent audio & update state ───────────────────────────────────────
+  // ── Play agent audio & push items into chat array ─────────────────────────
   const playAgentTurn = useCallback((turn: ConversationTurn) => {
     setPhase(turn.phase);
-    // Always add agent message — even empty text gets a placeholder so chat stays continuous
     const agentText = turn.response_text?.trim() || '...';
-    setMessages((prev) => [...prev, newMsg('agent', agentText)]);
+
+    const additions: ChatItem[] = [mk({ kind: 'text', role: 'agent', text: agentText })];
+
     if (turn.providers?.length) {
       setProviders(turn.providers);
+      additions.push(mk({ kind: 'providers', items: turn.providers }));
+      additions.push(mk({ kind: 'actions' }));
     }
-    if (turn.request_id) {
-      setRequestId(turn.request_id);
-    }
-    if (turn.booking_result) {
-      setBookingResult(turn.booking_result);
-    }
+    if (turn.request_id) setRequestId(turn.request_id);
+    if (turn.booking_result) setBookingResult(turn.booking_result);
+
+    setChat((prev) => [...prev, ...additions]);
 
     if (turn.audio_base64) {
       setUiState('speaking');
@@ -95,17 +105,16 @@ export default function VoiceConversationScreen() {
     }
   }, [startPulse, stopPulse]);
 
-  // ── Initial greeting on mount ─────────────────────────────────────────────
+  // ── Initial greeting ──────────────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const turn = await startConversation(sessionId.current, user?.uid || 'anonymous', userName);
+        const turn = await startConversation(sessionId.current, user?.uid || 'user_001', userName);
         if (!cancelled) playAgentTurn(turn);
-      } catch (e) {
+      } catch {
         if (!cancelled) {
-          console.error('[conv] greeting failed:', e);
-          setMessages([newMsg('agent', 'Haazir AI mein khush amdeed! Kya chahiye?')]);
+          setChat([mk({ kind: 'text', role: 'agent', text: 'Haazir AI mein khush amdeed! Kya chahiye?' })]);
           setUiState('idle');
         }
       }
@@ -113,53 +122,119 @@ export default function VoiceConversationScreen() {
     return () => { cancelled = true; };
   }, []);
 
-  // ── Auto-scroll on new message ────────────────────────────────────────────
+  // ── Auto-scroll ───────────────────────────────────────────────────────────
   useEffect(() => {
-    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
-  }, [messages]);
+    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 120);
+  }, [chat, uiState]);
 
-  // ── Mic button handler ────────────────────────────────────────────────────
+  // ── Mic button ────────────────────────────────────────────────────────────
   const handleMic = async () => {
     if (uiState === 'recording') {
-      // Stop recording → transcribe → send
       setUiState('processing');
       stopPulse();
       try {
         const { text } = await stopAndTranscribe();
         if (!text) { setUiState('idle'); return; }
-        setMessages((prev) => [...prev, newMsg('user', text)]);
+        setChat((prev) => [...prev, mk({ kind: 'text', role: 'user', text })]);
         setUiState('searching');
         const turn = await sendMessage(sessionId.current, text, user?.uid || 'anonymous', userName);
         playAgentTurn(turn);
       } catch (e: any) {
-        console.error('[conv] send error:', e);
         Alert.alert('Error', e?.message || 'Masla hua — dobara try karein');
         setUiState('idle');
       }
     } else if (uiState === 'idle') {
-      // Start recording
       const granted = await requestMicPermission();
-      if (!granted) {
-        Alert.alert('Permission Chahiye', 'Microphone access allow karein settings mein');
-        return;
-      }
+      if (!granted) { Alert.alert('Permission Chahiye', 'Microphone access allow karein settings mein'); return; }
       try {
         await stopSpeaking();
         await startRecording();
         setUiState('recording');
         startPulse();
-      } catch (e) {
+      } catch {
         Alert.alert('Error', 'Recording shuru nahi ho saki');
       }
     } else if (uiState === 'speaking') {
-      // Interrupt agent
       await stopSpeaking();
       stopPulse();
       setUiState('idle');
     }
   };
 
-  // ── Provider select from card (visual) ────────────────────────────────────
+  // ── Text send ─────────────────────────────────────────────────────────────
+  const handleSendText = async () => {
+    const text = textInput.trim();
+    if (!text || uiState === 'done') return;
+    setTextInput('');
+    setChat((prev) => [...prev, mk({ kind: 'text', role: 'user', text })]);
+    setUiState('searching');
+    try {
+      const turn = await sendMessage(sessionId.current, text, user?.uid || 'anonymous', userName);
+      playAgentTurn(turn);
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'Masla hua — dobara try karein');
+      setUiState('idle');
+    }
+  };
+
+  // ── Negotiate ─────────────────────────────────────────────────────────────
+  const handleNegotiate = async () => {
+    // Remove the actions card, add the initiation message right after where it was
+    setChat((prev) => [
+      ...prev.filter((i) => i.kind !== 'actions'),
+      mk({ kind: 'text', role: 'agent', text: 'Moltol agent ko bhej rahi hun — woh providers se negotiate karenge. Thoda wait karein... 🤝' }),
+    ]);
+    setUiState('negotiating');
+    try {
+      const res = await negotiateProviders(sessionId.current, user?.uid || 'anonymous', providers);
+      const best = res.top_bids?.[0];
+      if (best) {
+        const saved = (best.savings ?? 0) > 0 ? ` Rs. ${best.savings!.toLocaleString()} bachaye!` : '';
+        setChat((prev) => [
+          ...prev,
+          mk({ kind: 'text', role: 'agent', text: `Moltol complete! ${best.provider_name} Rs. ${best.bid_price.toLocaleString()} par agree ho gaye.${saved} ✅` }),
+          mk({ kind: 'negotiated', bid: best }),
+        ]);
+      } else {
+        setChat((prev) => [...prev, mk({ kind: 'text', role: 'agent', text: 'Negotiate ka mauka nahi mila — seedha book kar sakte hain.' })]);
+      }
+    } catch (e: any) {
+      console.error('[negotiate]', e);
+      const detail = e?.response?.data?.detail || e?.message || 'Unknown error';
+      setChat((prev) => [...prev, mk({ kind: 'text', role: 'agent', text: `Negotiate mein masla hua (${detail}). Seedha book kar sakte hain.` })]);
+    }
+    setUiState('idle');
+  };
+
+  // ── Direct book ───────────────────────────────────────────────────────────
+  const handleDirectBook = async (providerId?: string, priceAccepted?: number) => {
+    const uid = user?.uid;
+    if (!uid) { Alert.alert('Login Karein', 'Booking ke liye pehle login karein'); return; }
+    const top = providers[0];
+    const pid = providerId || top?.id;
+    const price = priceAccepted || top?.base_rate || 2500;
+    if (!pid) return;
+
+    setChat((prev) => [
+      ...prev.filter((i) => i.kind !== 'actions' && i.kind !== 'negotiated'),
+      mk({ kind: 'text', role: 'user', text: 'Booking karo' }),
+    ]);
+    setUiState('searching');
+    try {
+      const result = await directBook(sessionId.current, uid, pid, price, 'cash');
+      setBookingResult(result);
+      const waNote = result.whatsapp_sent ? ' 📱 WhatsApp confirmation bhej di gayi.' : '';
+      setChat((prev) => [...prev, mk({ kind: 'text', role: 'agent', text: `✅ Booking confirm! ID: ${result.booking_id}.${waNote}` })]);
+      setPhase('done');
+      setUiState('done');
+    } catch (e: any) {
+      const detail = e?.response?.data?.detail || e?.message || 'Server error';
+      Alert.alert('Booking Error', detail);
+      setUiState('idle');
+    }
+  };
+
+  // ── Provider card tap → go to booking screen ──────────────────────────────
   const handleSelectProvider = (provider: any) => {
     router.replace({
       pathname: '/booking',
@@ -171,10 +246,77 @@ export default function VoiceConversationScreen() {
     });
   };
 
-  // ── Mic icon & colour based on state ─────────────────────────────────────
   const micIcon = uiState === 'recording' ? '⏹' : uiState === 'speaking' ? '🔇' : '🎙';
   const micColor = uiState === 'recording' ? Colors.danger : uiState === 'speaking' ? Colors.warning : Colors.primary;
-  const micDisabled = uiState === 'processing' || uiState === 'searching' || uiState === 'greeting' || uiState === 'done';
+  const micDisabled = ['processing', 'searching', 'greeting', 'done', 'negotiating'].includes(uiState);
+  const isLoading = uiState === 'searching' || uiState === 'negotiating' || uiState === 'processing';
+
+  // ── Render a single chat item ─────────────────────────────────────────────
+  const renderItem = (item: ChatItem) => {
+    switch (item.kind) {
+      case 'text':
+        return (
+          <View key={item.id} style={[styles.bubble, item.role === 'user' ? styles.userBubble : styles.agentBubble]}>
+            {item.role === 'agent' && <Text style={styles.bubbleLabel}>🤖 Haazir AI</Text>}
+            <Text style={[styles.bubbleText, item.role === 'user' && styles.userBubbleText]}>{item.text}</Text>
+          </View>
+        );
+
+      case 'providers':
+        return (
+          <View key={item.id} style={styles.providersSection}>
+            <Text style={styles.providersLabel}>Yeh providers mile:</Text>
+            {item.items.map((p, i) => (
+              <ProviderCard key={p.id || i} provider={p} rank={i + 1} onSelect={() => handleSelectProvider(p)} />
+            ))}
+          </View>
+        );
+
+      case 'actions':
+        if (isLoading || uiState === 'done') return null;
+        return (
+          <View key={item.id} style={styles.actionBar}>
+            <Text style={styles.actionLabel}>Kya karna chahte hain?</Text>
+            <View style={styles.actionRow}>
+              <TouchableOpacity style={[styles.actionBtn, styles.negotiateBtn]} onPress={handleNegotiate}>
+                <Text style={styles.actionBtnIcon}>🤝</Text>
+                <Text style={styles.actionBtnTitle}>Moltol Karein</Text>
+                <Text style={styles.actionBtnSub}>Price negotiate karo</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.actionBtn, styles.directBookBtn]} onPress={() => handleDirectBook()}>
+                <Text style={styles.actionBtnIcon}>⚡</Text>
+                <Text style={styles.actionBtnTitle}>Seedha Book</Text>
+                <Text style={styles.actionBtnSub}>
+                  Rs. {(providers[0]?.base_rate || 2500).toLocaleString()}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        );
+
+      case 'negotiated':
+        if (isLoading || uiState === 'done') return null;
+        return (
+          <View key={item.id} style={styles.negotiatedCard}>
+            <Text style={styles.negotiatedTitle}>🎉 Moltol Ho Gaya!</Text>
+            <Text style={styles.negotiatedProvider}>{item.bid.provider_name}</Text>
+            <Text style={styles.negotiatedPrice}>Rs. {item.bid.bid_price.toLocaleString()}</Text>
+            {(item.bid.savings ?? 0) > 0 && (
+              <Text style={styles.negotiatedSavings}>✂️ Rs. {item.bid.savings!.toLocaleString()} bachaye!</Text>
+            )}
+            <TouchableOpacity
+              style={styles.confirmBookBtn}
+              onPress={() => handleDirectBook(item.bid.provider_id, item.bid.bid_price)}
+            >
+              <Text style={styles.confirmBookBtnText}>✅ Confirm Booking Karein →</Text>
+            </TouchableOpacity>
+          </View>
+        );
+
+      default:
+        return null;
+    }
+  };
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -190,55 +332,44 @@ export default function VoiceConversationScreen() {
         <View style={{ width: 36 }} />
       </View>
 
-      {/* Conversation transcript */}
+      {/* Chat transcript — single ordered list */}
       <ScrollView
         ref={scrollRef}
         style={styles.transcript}
         contentContainerStyle={styles.transcriptContent}
         showsVerticalScrollIndicator={false}
       >
-        {messages.length === 0 && uiState === 'greeting' && (
+        {chat.length === 0 && uiState === 'greeting' && (
           <View style={styles.loadingRow}>
             <ActivityIndicator color={Colors.primary} />
             <Text style={styles.loadingText}>Haazir AI bol raha hai...</Text>
           </View>
         )}
 
-        {messages.map((m) => (
-          <View key={m.id} style={[styles.bubble, m.role === 'user' ? styles.userBubble : styles.agentBubble]}>
-            {m.role === 'agent' && <Text style={styles.bubbleLabel}>🤖 Haazir AI</Text>}
-            <Text style={[styles.bubbleText, m.role === 'user' && styles.userBubbleText]}>{m.text}</Text>
-          </View>
-        ))}
+        {chat.map(renderItem)}
 
-        {/* Searching indicator — only while API call is in flight */}
+        {/* Transient loading indicators — always at the bottom */}
         {uiState === 'searching' && (
           <View style={styles.searchingCard}>
             <ActivityIndicator color={Colors.primary} size="small" />
             <Text style={styles.searchingText}>Agents kaam par hain... providers dhoondh rahe hain 🤖</Text>
           </View>
         )}
-
-        {/* Provider cards — hide after booking is done */}
-        {providers.length > 0 && uiState !== 'done' && (
-          <View style={styles.providersSection}>
-            <Text style={styles.providersLabel}>Yeh providers mile:</Text>
-            {providers.map((p, i) => (
-              <ProviderCard key={p.id} provider={p} rank={i + 1} onSelect={() => handleSelectProvider(p)} />
-            ))}
+        {uiState === 'negotiating' && (
+          <View style={[styles.searchingCard, styles.negotiatingCard]}>
+            <ActivityIndicator color={Colors.warning} size="small" />
+            <Text style={[styles.searchingText, { color: Colors.warning }]}>Moltol agent negotiate kar raha hai... 🤝</Text>
+          </View>
+        )}
+        {uiState === 'processing' && (
+          <View style={styles.searchingCard}>
+            <ActivityIndicator color={Colors.primary} size="small" />
+            <Text style={styles.searchingText}>Samajh raha hun...</Text>
           </View>
         )}
       </ScrollView>
 
-      {/* Processing state */}
-      {(uiState === 'processing') && (
-        <View style={styles.processingBar}>
-          <ActivityIndicator color={Colors.primary} size="small" />
-          <Text style={styles.processingText}>Samajh raha hun...</Text>
-        </View>
-      )}
-
-      {/* Booking Done — show receipt button always when conversation ends */}
+      {/* Booking Done — receipt button */}
       {uiState === 'done' && (
         <TouchableOpacity
           style={[styles.bookingDoneBtn, { marginBottom: insets.bottom + Spacing.md }]}
@@ -273,23 +404,47 @@ export default function VoiceConversationScreen() {
         </TouchableOpacity>
       )}
 
-      {/* Mic Button */}
+      {/* Input Bar */}
       {uiState !== 'done' && (
-        <View style={[styles.micRow, { paddingBottom: insets.bottom + Spacing.md }]}>
-          <Text style={styles.micHint}>
-            {uiState === 'recording' ? 'Bol dein — phir roko' :
-             uiState === 'speaking' ? 'Tap karo agent ko rokne ke liye' :
-             uiState === 'idle' ? 'Tap karo aur bolein' : ''}
-          </Text>
-          <Animated.View style={[styles.micBtn, { backgroundColor: micColor, transform: [{ scale: pulseAnim }] }]}>
-            <TouchableOpacity onPress={handleMic} disabled={micDisabled} style={styles.micInner}>
-              {micDisabled && uiState !== 'speaking'
-                ? <ActivityIndicator color="#fff" />
-                : <Text style={styles.micIcon}>{micIcon}</Text>
-              }
-            </TouchableOpacity>
-          </Animated.View>
-        </View>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <View style={[styles.inputBar, { paddingBottom: insets.bottom + Spacing.sm }]}>
+            <View style={styles.textRow}>
+              <TextInput
+                style={styles.textField}
+                value={textInput}
+                onChangeText={setTextInput}
+                placeholder="Type karein..."
+                placeholderTextColor={Colors.textMuted}
+                editable={!isLoading && uiState !== 'greeting'}
+                onSubmitEditing={handleSendText}
+                returnKeyType="send"
+                multiline={false}
+              />
+              <TouchableOpacity
+                style={[styles.sendBtn, (!textInput.trim() || isLoading) && styles.sendBtnDisabled]}
+                onPress={handleSendText}
+                disabled={!textInput.trim() || isLoading}
+              >
+                <Text style={styles.sendBtnIcon}>➤</Text>
+              </TouchableOpacity>
+            </View>
+            <View style={styles.micRow}>
+              <Text style={styles.micHint}>
+                {uiState === 'recording' ? 'Bol dein — phir roko' :
+                 uiState === 'speaking' ? 'Tap karo agent ko rokne ke liye' :
+                 uiState === 'idle' ? 'Ya bolein:' : ''}
+              </Text>
+              <Animated.View style={[styles.micBtn, { backgroundColor: micColor, transform: [{ scale: pulseAnim }] }]}>
+                <TouchableOpacity onPress={handleMic} disabled={micDisabled} style={styles.micInner}>
+                  {micDisabled && uiState !== 'speaking'
+                    ? <ActivityIndicator color="#fff" />
+                    : <Text style={styles.micIcon}>{micIcon}</Text>
+                  }
+                </TouchableOpacity>
+              </Animated.View>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
       )}
     </View>
   );
@@ -313,19 +468,18 @@ const styles = StyleSheet.create({
   loadingRow: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: Spacing.md },
   loadingText: { color: Colors.textMuted, fontSize: FontSize.sm },
   bubble: {
-    maxWidth: '80%', borderRadius: Radius.lg, padding: Spacing.sm + 2,
-    marginBottom: Spacing.sm,
+    maxWidth: '80%', borderRadius: Radius.lg, padding: Spacing.sm + 2, marginBottom: Spacing.sm,
   },
   agentBubble: {
     backgroundColor: Colors.surfaceElevated, alignSelf: 'flex-start',
     borderWidth: 1, borderColor: Colors.border,
   },
-  userBubble: {
-    backgroundColor: Colors.primary, alignSelf: 'flex-end',
-  },
+  userBubble: { backgroundColor: Colors.primary, alignSelf: 'flex-end' },
   bubbleLabel: { fontSize: FontSize.xs, color: Colors.textMuted, marginBottom: 3, fontWeight: '700' },
   bubbleText: { fontSize: FontSize.sm, color: Colors.textPrimary, lineHeight: 20 },
   userBubbleText: { color: '#fff' },
+  providersSection: { marginTop: Spacing.sm, marginBottom: Spacing.xs },
+  providersLabel: { color: Colors.textSecondary, fontSize: FontSize.sm, fontWeight: '700', marginBottom: Spacing.sm },
   searchingCard: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
     backgroundColor: Colors.primaryDim, borderRadius: Radius.md,
@@ -333,31 +487,65 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: Colors.primary,
   },
   searchingText: { color: Colors.primary, fontSize: FontSize.sm, fontWeight: '600', flex: 1 },
-  providersSection: { marginTop: Spacing.md },
-  providersLabel: { color: Colors.textSecondary, fontSize: FontSize.sm, fontWeight: '700', marginBottom: Spacing.sm },
-  processingBar: {
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: Colors.cardBg, paddingVertical: 8, paddingHorizontal: Spacing.md,
-    borderTopWidth: 1, borderTopColor: Colors.border,
+  negotiatingCard: { backgroundColor: Colors.warningDim, borderColor: Colors.warning },
+  // Action buttons
+  actionBar: {
+    marginTop: Spacing.sm, marginBottom: Spacing.xs,
+    backgroundColor: Colors.surface, borderRadius: Radius.lg,
+    padding: Spacing.md, borderWidth: 1, borderColor: Colors.border, ...Shadow.card,
   },
-  processingText: { color: Colors.textMuted, fontSize: FontSize.sm },
-  micRow: {
-    alignItems: 'center', paddingTop: Spacing.md,
-    borderTopWidth: 1, borderTopColor: Colors.border,
-    backgroundColor: Colors.surface,
+  actionLabel: {
+    fontSize: FontSize.sm, fontWeight: '700', color: Colors.textPrimary,
+    marginBottom: Spacing.sm, textAlign: 'center',
   },
+  actionRow: { flexDirection: 'row', gap: Spacing.sm },
+  actionBtn: { flex: 1, borderRadius: Radius.md, padding: Spacing.md, alignItems: 'center', gap: 4 },
+  negotiateBtn: { backgroundColor: Colors.warningDim, borderWidth: 1, borderColor: Colors.warning },
+  directBookBtn: { backgroundColor: Colors.primaryDim, borderWidth: 1, borderColor: Colors.primary },
+  actionBtnIcon: { fontSize: 22 },
+  actionBtnTitle: { fontSize: FontSize.sm, fontWeight: '800', color: Colors.textPrimary },
+  actionBtnSub: { fontSize: FontSize.xs, color: Colors.textMuted },
+  // Negotiated bid card
+  negotiatedCard: {
+    marginTop: Spacing.sm, marginBottom: Spacing.xs,
+    backgroundColor: Colors.successDim, borderRadius: Radius.lg,
+    padding: Spacing.md + 4, borderWidth: 1, borderColor: Colors.success,
+    alignItems: 'center', ...Shadow.card,
+  },
+  negotiatedTitle: { fontSize: FontSize.md, fontWeight: '800', color: Colors.textPrimary, marginBottom: 4 },
+  negotiatedProvider: { fontSize: FontSize.sm, color: Colors.textSecondary, marginBottom: 2 },
+  negotiatedPrice: { fontSize: FontSize.xl, fontWeight: '800', color: Colors.success, marginBottom: 4 },
+  negotiatedSavings: { fontSize: FontSize.sm, color: Colors.success, fontWeight: '600', marginBottom: Spacing.sm },
+  confirmBookBtn: {
+    backgroundColor: Colors.success, borderRadius: Radius.lg,
+    paddingVertical: Spacing.sm + 2, paddingHorizontal: Spacing.lg,
+    marginTop: Spacing.xs, ...Shadow.sm,
+  },
+  confirmBookBtnText: { color: '#fff', fontSize: FontSize.sm, fontWeight: '800' },
+  // Booking done
   bookingDoneBtn: {
     backgroundColor: Colors.primary, borderRadius: Radius.lg, padding: Spacing.md + 4,
-    alignItems: 'center', marginHorizontal: Spacing.lg, marginTop: Spacing.md,
-    ...Shadow.primary,
+    alignItems: 'center', marginHorizontal: Spacing.lg, marginTop: Spacing.md, ...Shadow.primary,
   },
   bookingDoneBtnText: { color: '#fff', fontSize: FontSize.md, fontWeight: '800' },
-  micHint: { color: Colors.textMuted, fontSize: FontSize.xs, marginBottom: Spacing.sm },
-  micBtn: {
-    width: 80, height: 80, borderRadius: 40,
-    justifyContent: 'center', alignItems: 'center',
-    ...Shadow.primary,
+  // Input bar
+  inputBar: {
+    borderTopWidth: 1, borderTopColor: Colors.border,
+    backgroundColor: Colors.surface, paddingTop: Spacing.sm, paddingHorizontal: Spacing.md,
   },
+  textRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: Spacing.sm },
+  textField: {
+    flex: 1, backgroundColor: Colors.cardBg, borderRadius: Radius.xl,
+    paddingHorizontal: Spacing.md, paddingVertical: 10,
+    fontSize: FontSize.sm, color: Colors.textPrimary,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  sendBtn: { width: 42, height: 42, borderRadius: 21, backgroundColor: Colors.primary, justifyContent: 'center', alignItems: 'center' },
+  sendBtnDisabled: { backgroundColor: Colors.border },
+  sendBtnIcon: { color: '#fff', fontSize: 16, fontWeight: '700' },
+  micRow: { alignItems: 'center' },
+  micHint: { color: Colors.textMuted, fontSize: FontSize.xs, marginBottom: Spacing.sm },
+  micBtn: { width: 80, height: 80, borderRadius: 40, justifyContent: 'center', alignItems: 'center', ...Shadow.primary },
   micInner: { justifyContent: 'center', alignItems: 'center' },
   micIcon: { fontSize: 30, color: '#fff' },
 });

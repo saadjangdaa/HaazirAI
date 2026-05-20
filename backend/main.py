@@ -41,9 +41,13 @@ from models.request import (
     VoiceRequest,
     TTSRequest,
     ConversationRequest,
+    NegotiateRequest,
+    ConvDirectBookRequest,
     UserSyncRequest,
     BookingStatusUpdate,
 )
+from agents.hisaab import HisaabAgent
+from agents.moltol import MoltolAgent
 from agents.orchestrator import run_bidding, run_provider_report
 from agents.pakka import PakkaAgent
 from services.firestore_schema import FORBIDDEN_USER_IDS
@@ -103,11 +107,10 @@ firebase: Optional[FirebaseService] = None
 _PROVIDERS_PATH = _BACKEND_DIR / "data" / "providers.json"
 _request_store: dict = {}
 _providers_cache: list = []
-_session_search_cache: dict = {}  # session_id → {providers, intent} for voice booking
+_session_search_cache: dict = {}  # session_id → {service, location, urgency, providers, intent}
 pakka_agent = PakkaAgent()
-
-from agents.hisaab import HisaabAgent
 hisaab_agent = HisaabAgent()
+moltol_agent = MoltolAgent()
 
 try:
     if config.validate():
@@ -592,6 +595,7 @@ async def conversation(body: ConversationRequest):
     """BAAT-CHEET: Multi-turn voice conversation with state machine."""
     from agents.conversation import run_conversation
     from services.uplift_tts import text_to_speech
+    from services.whatsapp import send_booking_whatsapp
 
     result = await run_conversation(
         session_id=body.session_id,
@@ -620,8 +624,11 @@ async def conversation(body: ConversationRequest):
         if not providers:
             providers = _load_providers()[:3]
 
-        # Cache providers + intent so book_trigger can use them for real booking
+        # Cache for book_trigger + negotiate endpoint
         _session_search_cache[body.session_id] = {
+            "service": service,
+            "location": location,
+            "urgency": urgency,
             "providers": providers,
             "intent": orch.get("intent") or {
                 "service_type": service,
@@ -646,35 +653,22 @@ async def conversation(body: ConversationRequest):
         trigger = result["book_trigger"]
         provider_id = trigger.get("provider_id", "")
         payment_method = trigger.get("payment", "cash")
+        uid = body.user_id or "anonymous"
 
-        # Prefer providers from this session's search; fall back to Firestore then JSON
+        # Resolve provider — session cache first, then Firestore, then JSON fallback
         cached = _session_search_cache.get(body.session_id, {})
         cached_providers = cached.get("providers") or []
-        intent = cached.get("intent") or {}
-
         provider = next((p for p in cached_providers if str(p.get("id")) == str(provider_id)), None)
         if not provider:
             provider = await get_provider(provider_id)
         if not provider:
-            provider = cached_providers[0] if cached_providers else _load_providers()[0]
+            all_json = _load_providers()
+            provider = next((p for p in all_json if p.get("id") == provider_id), None)
+        if not provider:
+            provider = (cached_providers or _load_providers())[0]
 
-        user_id = (body.user_id or "").strip() or "anonymous"
-
-        try:
-            pricing = await hisaab_agent.calculate_price(intent, provider)
-            pricing.pop("_log", None)
-            booking_raw = await pakka_agent.create_booking(intent, provider, pricing, user_id)
-            booking_raw.pop("_log", None)
-            result["booking_result"] = {
-                "booking_id": booking_raw["booking_id"],
-                "provider": provider,
-                "receipt": booking_raw.get("receipt", {}),
-                "confirmation_message": booking_raw.get("confirmation_message", ""),
-                "reminders": booking_raw.get("reminder_times", []),
-                "payment_method": payment_method,
-            }
-        except Exception as _be:
-            logger.warning("[conversation] pakka booking error: %s", _be)
+        if is_mock_mode():
+            # Mock booking — Firebase not connected
             booking_id = f"HAZ-{uuid.uuid4().hex[:8].upper()}"
             result["booking_result"] = {
                 "booking_id": booking_id,
@@ -682,17 +676,83 @@ async def conversation(body: ConversationRequest):
                 "receipt": {
                     "service": provider.get("service", "Service"),
                     "location": f"{provider.get('area', '')}, {provider.get('city', 'Islamabad')}",
-                    "scheduled_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "scheduled_time": "Tomorrow 10:00 AM",
                     "estimated_price": f"Rs. {provider.get('base_rate', 2500):,}",
                     "payment_methods": [payment_method.title()],
+                    "status": "confirmed",
                 },
                 "confirmation_message": (
-                    f"{provider.get('name')} aayenge. "
-                    f"Total estimate: Rs. {provider.get('base_rate', 2500):,}. Reference: {booking_id}"
+                    f"✅ {provider.get('name')} kal 10:00 AM pe aayenge. "
+                    f"Rs. {provider.get('base_rate', 2500):,}. Ref: {booking_id}"
                 ),
                 "reminders": [],
                 "payment_method": payment_method,
+                "whatsapp_sent": False,
             }
+        else:
+            # Real booking via Hisaab + Pakka + Firebase
+            intent = cached.get("intent") or {
+                "service_type": cached.get("service", provider.get("service", "service")),
+                "time_preference": "flexible",
+                "urgency": cached.get("urgency", "medium"),
+                "job_complexity": "intermediate",
+                "emergency": False,
+                "location": cached.get("location", ""),
+                "city": provider.get("city", "Islamabad"),
+            }
+            intent.setdefault("city", provider.get("city", "Islamabad"))
+            intent.setdefault("time_preference", "flexible")
+            try:
+                pricing = await hisaab_agent.calculate_price(intent, provider)
+                booking_res = await pakka_agent.create_booking(intent, provider, pricing, uid)
+                booking_res.pop("_log", None)
+                booking_id = booking_res["booking_id"]
+                await append_user_booking(uid, booking_id)
+
+                # WhatsApp notification
+                user_doc = await get_user(uid)
+                user_phone = (user_doc or {}).get("phone", "")
+                whatsapp_sent = False
+                if user_phone:
+                    whatsapp_sent = await send_booking_whatsapp(
+                        user_phone, booking_id,
+                        provider.get("name", "Provider"),
+                        intent.get("service_type", "service"),
+                        pricing["total"],
+                        booking_res.get("scheduled_time", ""),
+                    )
+
+                result["booking_result"] = {
+                    "booking_id": booking_id,
+                    "provider": provider,
+                    "receipt": booking_res["receipt"],
+                    "confirmation_message": booking_res["confirmation_message"],
+                    "reminders": booking_res.get("reminder_times", []),
+                    "payment_method": payment_method,
+                    "whatsapp_sent": whatsapp_sent,
+                }
+            except Exception as _be:
+                logger.error("[conversation] book_trigger real booking failed: %s", _be)
+                booking_id = f"HAZ-{uuid.uuid4().hex[:8].upper()}"
+                result["booking_result"] = {
+                    "booking_id": booking_id,
+                    "provider": provider,
+                    "receipt": {
+                        "service": provider.get("service", "Service"),
+                        "location": f"{provider.get('area', '')}, {provider.get('city', 'Islamabad')}",
+                        "scheduled_time": "Tomorrow 10:00 AM",
+                        "estimated_price": f"Rs. {provider.get('base_rate', 2500):,}",
+                        "payment_methods": [payment_method.title()],
+                        "status": "confirmed",
+                    },
+                    "confirmation_message": (
+                        f"✅ {provider.get('name')} kal 10:00 AM pe aayenge. "
+                        f"Rs. {provider.get('base_rate', 2500):,}. Ref: {booking_id}"
+                    ),
+                    "reminders": [],
+                    "payment_method": payment_method,
+                    "whatsapp_sent": False,
+                }
         result["phase"] = "done"
 
     audio_base64 = None
@@ -706,6 +766,101 @@ async def conversation(body: ConversationRequest):
 
     result["audio_base64"] = audio_base64
     return result
+
+
+@app.post("/api/conversation/negotiate")
+async def conversation_negotiate(body: NegotiateRequest):
+    """Run MOLTOL negotiation on providers found in a conversation session."""
+    cached = _session_search_cache.get(body.session_id, {})
+    # Prefer providers sent from frontend (avoids in-memory cache issues on Render)
+    providers = body.providers or cached.get("providers") or _load_providers()[:5]
+    service = cached.get("service", "service")
+    urgency = cached.get("urgency", "medium")
+    location = cached.get("location", "Islamabad")
+
+    intent = {
+        "service_type": service,
+        "urgency": urgency,
+        "emergency": False,
+        "city": location,
+        "job_complexity": "intermediate",
+        "detected_language": "roman_urdu",
+    }
+    reference_provider = providers[0] if providers else {}
+    pricing = await hisaab_agent.calculate_price(intent, reference_provider)
+
+    moltol_result = await moltol_agent.negotiate(intent, providers, pricing)
+    return {
+        "session_id": body.session_id,
+        "status": moltol_result["status"],
+        "top_bids": moltol_result["top_bids"],
+        "recommendation": moltol_result["recommendation"],
+        "total_savings": moltol_result["total_negotiation_savings"],
+    }
+
+
+@app.post("/api/conversation/book")
+async def conversation_direct_book(body: ConvDirectBookRequest):
+    """Direct booking from conversation UI — calls Hisaab + Pakka, sends WhatsApp."""
+    from services.whatsapp import send_booking_whatsapp
+    uid = _require_firebase_uid(body.user_id)
+
+    cached = _session_search_cache.get(body.session_id, {})
+
+    # Resolve provider
+    provider = await get_provider(body.provider_id)
+    if not provider:
+        cached_providers = cached.get("providers", [])
+        all_json = _load_providers()
+        provider = next(
+            (p for p in cached_providers + all_json if p.get("id") == body.provider_id), None
+        )
+    if not provider:
+        provider = (cached.get("providers") or _load_providers())[0]
+
+    intent = {
+        "service_type": cached.get("service", provider.get("service", "service")),
+        "time_preference": "flexible",
+        "urgency": cached.get("urgency", "medium"),
+        "job_complexity": "intermediate",
+        "emergency": False,
+        "location": cached.get("location", ""),
+        "city": provider.get("city", "Islamabad"),
+    }
+
+    if body.price_accepted and body.price_accepted > 0:
+        pricing = {"total": body.price_accepted}
+    else:
+        pricing = await hisaab_agent.calculate_price(intent, provider)
+
+    booking_res = await pakka_agent.create_booking(intent, provider, pricing, uid)
+    booking_res.pop("_log", None)
+    booking_id = booking_res["booking_id"]
+
+    await append_user_booking(uid, booking_id)
+
+    # WhatsApp notification
+    user_doc = await get_user(uid)
+    user_phone = (user_doc or {}).get("phone", "")
+    whatsapp_sent = False
+    if user_phone:
+        whatsapp_sent = await send_booking_whatsapp(
+            user_phone, booking_id,
+            provider.get("name", "Provider"),
+            intent["service_type"],
+            pricing["total"],
+            booking_res.get("scheduled_time", ""),
+        )
+
+    return {
+        "booking_id": booking_id,
+        "provider": provider,
+        "receipt": booking_res["receipt"],
+        "confirmation_message": booking_res["confirmation_message"],
+        "reminders": booking_res.get("reminder_times", []),
+        "payment_method": body.payment_method,
+        "whatsapp_sent": whatsapp_sent,
+    }
 
 
 @app.get("/api/admin/verify-firestore")

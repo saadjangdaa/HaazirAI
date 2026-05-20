@@ -11,6 +11,17 @@ export interface BookingResult {
   confirmation_message: string;
   reminders: string[];
   payment_method: string;
+  whatsapp_sent?: boolean;
+}
+
+export interface NegotiatedBid {
+  provider_id: string;
+  provider_name: string;
+  bid_price: number;
+  original_bid_price?: number;
+  savings?: number;
+  eta_minutes?: number;
+  composite_score?: number;
 }
 
 export interface ConversationTurn {
@@ -46,4 +57,34 @@ export async function startConversation(
   user_name?: string,
 ): Promise<ConversationTurn> {
   return sendMessage(session_id, '__init__', user_id, user_name);
+}
+
+export async function negotiateProviders(
+  session_id: string,
+  user_id: string,
+  providers?: any[],
+): Promise<{ top_bids: NegotiatedBid[]; recommendation: string; total_savings: number }> {
+  const { data } = await axios.post(`${BASE_URL}/api/conversation/negotiate`, {
+    session_id,
+    user_id,
+    providers,
+  });
+  return data;
+}
+
+export async function directBook(
+  session_id: string,
+  user_id: string,
+  provider_id: string,
+  price_accepted: number,
+  payment_method = 'cash',
+): Promise<BookingResult> {
+  const { data } = await axios.post(`${BASE_URL}/api/conversation/book`, {
+    session_id,
+    user_id,
+    provider_id,
+    price_accepted,
+    payment_method,
+  });
+  return data;
 }
