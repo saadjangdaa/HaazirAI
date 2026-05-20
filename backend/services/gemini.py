@@ -106,12 +106,17 @@ async def generate(prompt: str, system_prompt: str = "") -> str:
 # ── Mock responses (fallback when all keys exhausted) ─────────────────────────
 
 def _mock_gemini_response(prompt: str, system_prompt: str = "") -> str:
-    # Translation call — pass text through unchanged
-    if not system_prompt and "translate" in prompt.lower():
+    sp_lower = system_prompt.lower()
+
+    # Translation call — return input text unchanged so Uplift TTS still gets usable text
+    if (
+        "translator" in sp_lower
+        or "urdu script" in sp_lower
+        or "nastaliq" in sp_lower
+        or (not system_prompt and "translate" in prompt.lower())
+    ):
         parts = prompt.strip().split('\n\n')
         return parts[-1] if parts else prompt
-
-    sp_lower = system_prompt.lower()
 
     if "samajh" in sp_lower or ("extract" in sp_lower and "service" in sp_lower):
         p_lower = prompt.lower()
