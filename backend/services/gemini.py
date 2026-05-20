@@ -155,26 +155,93 @@ def _mock_gemini_response(prompt: str, system_prompt: str = "") -> str:
         })
 
     # Conversation agent mock (Fatima persona)
-    if "fatima" in sp_lower or "pakistan ka friendly" in sp_lower or "home services" in sp_lower:
+    # Detection: _BASE_LOGIC is always English, so "[search:" appears in all language system prompts
+    is_conversation = (
+        "[search:" in sp_lower
+        or "never ask for the user" in sp_lower
+        or "fatima" in sp_lower
+        or "فاطمه" in system_prompt
+        or "فاطمہ" in system_prompt
+    )
+    if is_conversation:
+        # Detect language from system prompt prefix (Arabic script not lowercased)
+        if "توهان فاطمه" in system_prompt:
+            lang = "sindhi"
+        elif "آپ فاطمہ" in system_prompt:
+            lang = "urdu"
+        elif "تاسو فاطمه" in system_prompt:
+            lang = "pashto"
+        elif "تو فاطمه" in system_prompt:
+            lang = "balochi"
+        else:
+            lang = "roman_urdu"
+
+        _GREETINGS = {
+            "roman_urdu": "Assalam-o-Alaikum! Main Fatima hun, Haazir AI ki assistant. Batayiye, aaj kya chahiye — AC, plumber, ya koi aur service?",
+            "urdu":       "السلام علیکم! میں فاطمہ ہوں — حاضر AI کی اسسٹنٹ۔ بتایئے، آج کیا سروس چاہیے؟",
+            "sindhi":     "السلام عليکم! مان فاطمه آهيان — حاضر AI جي مددگار. ٻڌايو، اڄ ڪهڙي خدمت گهرجي؟",
+            "pashto":     "السلام علیکم! زه فاطمه یم — د حاضر AI مرستیاله. ووایاست، نن ورځ کومه خدمت پکار ده؟",
+            "balochi":    "السلام علیکم! من فاطمه ئن — حاضر AI ءِ مددگار۔ امروز کئی خدمت لازم ءُ؟",
+        }
+        _ASK_LOCATION = {
+            "roman_urdu": "Achha! Kahan chahiye — area batao (jaise G-13, DHA)?",
+            "urdu":       "اچھا! کہاں چاہیے — علاقہ بتائیں (جیسے G-13، DHA)؟",
+            "sindhi":     "ٺيڪ آهي! ڪٿي گهرجي — علائقو ٻڌايو (جهڙوڪ DHA، Clifton)؟",
+            "pashto":     "ښه! چیرته پکار ده — سیمه ووایاست (لکه DHA، F-7)؟",
+            "balochi":    "خیر! کجا لازم ءُ — ناحیه بگوش (مثال DHA، Clifton)؟",
+        }
+        _SEARCH_CONFIRM = {
+            "roman_urdu": "Theek hai, main abhi providers dhundh rahi hun!",
+            "urdu":       "ٹھیک ہے، میں ابھی پرووائیڈرز ڈھونڈ رہی ہوں!",
+            "sindhi":     "ٺيڪ آهي، مان هاڻي مددگار ڳولي رهي آهيان!",
+            "pashto":     "ښه، زه اوس چمتو کوونکي لټوم!",
+            "balochi":    "خیر، من ایستاک خدمتگار گردانی!",
+        }
+
         p_lower = prompt.lower()
-        if p_lower.strip().endswith("fatima:") or "greet karo" in p_lower:
-            return "Assalam-o-Alaikum! Main Fatima hun, Haazir AI ki assistant. Batayiye, aaj kya chahiye — AC, plumber, ya koi aur service?"
-        if any(svc in p_lower for svc in ["ac", "plumber", "electric", "tutor", "carpenter"]):
-            if any(loc in p_lower for loc in ["g-", "dha", "f-", "islamabad", "karachi", "lahore", "sector"]):
+        # Only return greeting if this is truly the __init__ turn (no prior User: lines)
+        is_init = "user:" not in p_lower and "greet" in p_lower
+        if is_init:
+            return _GREETINGS[lang]
+        if any(svc in p_lower for svc in ["ac", "plumb", "electric", "tutor", "carpent",
+                                           "mechanic", "cook", "maid", "garden", "painter",
+                                           "beautician", "beaut"]):
+            if any(loc in p_lower for loc in ["g-", "dha", "f-", "islamabad", "karachi",
+                                               "lahore", "sector", "clifton", "gulshan",
+                                               "bahria", "gulberg"]):
                 svc = "AC_repair"
-                if "plumb" in p_lower: svc = "plumber"
-                elif "electric" in p_lower: svc = "electrician"
-                elif "tutor" in p_lower: svc = "tutor"
-                loc = "G-13_Islamabad"
-                if "dha" in p_lower: loc = "DHA_Islamabad"
-                return f"[SEARCH: service={svc} location={loc} urgency=medium]\nTheek hai, main abhi providers dhundh rahi hun!"
-            return "Achha! Kahan chahiye — area batao (jaise G-13, DHA)?"
-        if any(kw in p_lower for kw in ["urgent", "abhi", "jaldi", "kal", "flexible"]):
-            return "Samajh gayi. Area batao please — kahan chahiye yeh service?"
+                if "plumb" in p_lower or "nal" in p_lower: svc = "plumber"
+                elif "electric" in p_lower or "bijli" in p_lower: svc = "electrician"
+                elif "tutor" in p_lower or "teacher" in p_lower: svc = "tutor"
+                elif "mechanic" in p_lower or "car" in p_lower: svc = "mechanic"
+                elif "cook" in p_lower or "chef" in p_lower: svc = "cook"
+                elif "maid" in p_lower or "safai" in p_lower: svc = "maid"
+                elif "garden" in p_lower or "lawn" in p_lower: svc = "gardener"
+                elif "paint" in p_lower: svc = "painter"
+                elif "beaut" in p_lower or "salon" in p_lower: svc = "beautician"
+                loc = "Islamabad"
+                if "karachi" in p_lower or "clifton" in p_lower or "dha" in p_lower and "karachi" in p_lower: loc = "Karachi"
+                elif "lahore" in p_lower or "gulberg" in p_lower: loc = "Lahore"
+                return f"[SEARCH: service={svc} location={loc} urgency=medium]\n{_SEARCH_CONFIRM[lang]}"
+            return _ASK_LOCATION[lang]
         if "[results:" in p_lower:
-            return "Yeh do options hain. Kise bulwana chahungi aapke liye?"
-        if any(kw in p_lower for kw in ["pehle", "first", "ali", "han", "haan", "yes", "ok"]):
+            _results_resp = {
+                "roman_urdu": "Yeh do options hain. Kise bulwana chahungi aapke liye?",
+                "urdu":       "یہ دو آپشن ہیں۔ کسے بلوانا چاہیں گے آپ؟",
+                "sindhi":     "هي ٻه آپشن آهن. ڪنهن کي سڏرائڻ چاهيو ٿا؟",
+                "pashto":     "دا دوه انتخابونه دي. چا ته وغواړئ چې راشي؟",
+                "balochi":    "ایں دو آپشن انت. کئی کس نا گشتیں؟",
+            }
+            return _results_resp[lang]
+        if any(kw in p_lower for kw in ["pehle", "first", "han", "haan", "yes", "ok", "پهريون", "ها"]):
             return "[BOOK: provider_id=prov_001]\nBilkul, booking confirm kar rahi hun!"
-        return "Zaroor! Thoda aur batao — kya masla hai exactly?"
+        _ask_more = {
+            "roman_urdu": "Zaroor! Thoda aur batao — kya masla hai exactly?",
+            "urdu":       "ضرور! تھوڑا اور بتائیں — مسئلہ کیا ہے بالکل؟",
+            "sindhi":     "ضرور! ٿورو وڌيڪ ٻڌايو — مسئلو ڇا آهي بلڪل؟",
+            "pashto":     "حتماً! یو څه نور ووایاست — مسئله سم ولمانئ؟",
+            "balochi":    "حتماً! کمی وتر بگوش — مسئله چیش ءُ دقیقاً؟",
+        }
+        return _ask_more[lang]
 
     return json.dumps({"response": "Mock OK", "prompt_preview": prompt[:80]})
