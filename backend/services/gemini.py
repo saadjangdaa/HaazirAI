@@ -96,49 +96,87 @@ async def generate_with_parts(parts: list) -> str:
 async def generate(prompt: str, system_prompt: str = "") -> str:
     if MOCK_MODE:
         return _mock_gemini_response(prompt, system_prompt)
-    result = await _try_generate_with_system(prompt, system_prompt)
+    full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
+    result = await _try_generate(full_prompt)
     if result is None:
         return _mock_gemini_response(prompt, system_prompt)
     return result
 
 
-async def _try_generate_with_system(prompt: str, system_prompt: str = "") -> str:
-    """Generate with proper system_instruction separation — prevents Gemini from echoing instructions."""
-    global _current_key_idx, MOCK_MODE
+async def generate_chat(
+    history: list,
+    system_prompt: str = "",
+    init_hint: str = "",
+) -> str:
+    """Proper Gemini chat format — prevents history echo on gemini-2.5-flash thinking model.
 
-    tried = 0
-    while tried < len(_ALL_KEYS):
-        try:
-            loop = asyncio.get_event_loop()
-            if system_prompt:
-                # Use system_instruction so Gemini treats it as config, not content to echo
-                model_instance = genai.GenerativeModel(
-                    _MODEL_NAME,
-                    system_instruction=system_prompt,
-                )
-            else:
-                model_instance = _model
+    history: list of {"role": "user"|"assistant", "content": "..."} dicts.
+    init_hint: Roman Urdu instruction when history is empty (__init__ turn).
+    """
+    if MOCK_MODE:
+        mock_prompt = init_hint or (history[-1]["content"] if history else "")
+        return _mock_gemini_response(mock_prompt, system_prompt)
 
-            response = await loop.run_in_executor(
-                None, lambda m=model_instance: m.generate_content(prompt)
-            )
-            return response.text
-        except Exception as e:
-            if _is_rate_limit(e):
-                next_idx = _current_key_idx + 1
-                if next_idx < len(_ALL_KEYS):
-                    print(f"[gemini] key #{_current_key_idx + 1} rate-limited → switching to key #{next_idx + 1}")
-                    _init_model(next_idx)
-                    tried += 1
+    async def _do_generate() -> str | None:
+        global _current_key_idx
+        tried = 0
+        while tried < len(_ALL_KEYS):
+            try:
+                # Build Content list: interleave user/model turns
+                contents = []
+                for entry in history:
+                    role = "user" if entry["role"] == "user" else "model"
+                    contents.append({"role": role, "parts": [{"text": entry["content"]}]})
+
+                # If no history yet (__init__), use init_hint as user message
+                if not contents and init_hint:
+                    contents = [{"role": "user", "parts": [{"text": init_hint}]}]
+                elif init_hint and contents[-1]["role"] != "user":
+                    # Add init_hint as extra context after last model turn (shouldn't normally happen)
+                    contents.append({"role": "user", "parts": [{"text": init_hint}]})
+
+                loop = asyncio.get_event_loop()
+                if system_prompt:
+                    model_instance = genai.GenerativeModel(
+                        _MODEL_NAME,
+                        system_instruction=system_prompt,
+                    )
                 else:
-                    print("[gemini] all keys rate-limited — falling back to mock")
-                    return None
-            else:
-                print(f"[gemini] API error: {e} — falling back to mock")
-                return None
-        tried += 1
+                    model_instance = _model
 
-    return None
+                response = await loop.run_in_executor(
+                    None, lambda m=model_instance, c=contents: m.generate_content(c)
+                )
+                # Extract only non-thought parts (gemini-2.5-flash thinking model)
+                text = ""
+                try:
+                    for part in response.candidates[0].content.parts:
+                        if not getattr(part, "thought", False):
+                            text += getattr(part, "text", "")
+                except Exception:
+                    text = response.text  # fallback for older SDK versions
+                return text.strip() or None
+            except Exception as e:
+                if _is_rate_limit(e):
+                    next_idx = _current_key_idx + 1
+                    if next_idx < len(_ALL_KEYS):
+                        print(f"[gemini] key #{_current_key_idx + 1} rate-limited → switching to key #{next_idx + 1}")
+                        _init_model(next_idx)
+                        tried += 1
+                    else:
+                        print("[gemini] all keys rate-limited — falling back to mock")
+                        return None
+                else:
+                    print(f"[gemini] API error: {e} — falling back to mock")
+                    return None
+            tried += 1
+        return None
+
+    result = await _do_generate()
+    if not result:
+        mock_prompt = init_hint or (history[-1]["content"] if history else "")
+        return _mock_gemini_response(mock_prompt, system_prompt)
+    return result
 
 
 # ── Mock responses (fallback when all keys exhausted) ─────────────────────────
