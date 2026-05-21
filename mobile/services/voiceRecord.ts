@@ -1,11 +1,14 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import {
-  AudioRecorder,
+  AudioModule,
   RecordingPresets,
   requestRecordingPermissionsAsync,
   setAudioModeAsync,
 } from 'expo-audio';
 import { formatApiError, transcribeVoiceAudio } from './api';
+
+// AudioRecorder is type-only in expo-audio's re-exports; the live constructor lives on AudioModule
+type AudioRecorder = InstanceType<typeof AudioModule.AudioRecorder>;
 
 let _recording: AudioRecorder | null = null;
 
@@ -19,7 +22,7 @@ export async function startRecording(): Promise<void> {
     allowsRecording: true,
     playsInSilentMode: true,
   });
-  const recorder = new AudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const recorder = new AudioModule.AudioRecorder(RecordingPresets.HIGH_QUALITY);
   await recorder.prepareToRecordAsync();
   recorder.record();
   _recording = recorder;

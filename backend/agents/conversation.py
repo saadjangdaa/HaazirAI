@@ -1,6 +1,6 @@
 """BAAT-CHEET: Conversational AI agent — Fatima (female persona), multi-turn dialogue."""
 import re
-from services.gemini import generate_chat
+from services.gemini import generate
 
 _BASE_LOGIC = """
 Your job — in this order:
@@ -123,30 +123,83 @@ async def run_conversation(
 
     system_prompt = SYSTEM_PROMPTS.get(language, SYSTEM_PROMPTS['roman_urdu'])
 
-    # Build structured chat history for generate_chat()
-    # Each entry: {"role": "user"|"assistant", "content": "..."}
-    chat_history: list = []
-
+    # Build text-completion prompt ending with "Fatima:" — forces model to complete
+    # Fatima's next line rather than echoing the user. Proven reliable on all Gemini models.
     if user_message == "__init__":
-        # First turn — no prior history, just an init hint as the user message
         if first_name:
-            init_hint = f"(User ka naam: {first_name}. Naam le kar warmly greet karo, phir poocho kya service chahiye.)"
+            prompt = (
+                f"(User ka naam: {first_name}. Naam le kar warmly greet karo, "
+                f"phir poocho kya service chahiye.)\nFatima:"
+            )
         else:
-            init_hint = "(Warmly greet karo, phir seedha poocho kya service chahiye — naam mat poocho.)"
-        response_text = await generate_chat([], system_prompt=system_prompt, init_hint=init_hint)
+            prompt = (
+                "(Warmly greet karo, phir seedha poocho kya service chahiye — naam mat poocho.)\nFatima:"
+            )
     else:
-        # Build proper chat history from session
-        for m in session["history"][:-1]:  # exclude current user message (last entry)
-            chat_history.append({"role": m["role"], "content": m["content"]})
+        history_lines = []
+        for m in session["history"][-12:]:  # last 12 turns keeps context tight
+            role = "User" if m["role"] == "user" else "Fatima"
+            history_lines.append(f"{role}: {m['content']}")
+        history_text = "\n".join(history_lines)
+        prompt = f"{history_text}{results_injection}\nFatima:"
 
-        # Last message is the current user message (already appended above)
-        # Append provider results to it if available
-        last_user_content = (session["history"][-1]["content"] if session["history"] else "") + results_injection
-        chat_history.append({"role": "user", "content": last_user_content})
-
-        response_text = await generate_chat(chat_history, system_prompt=system_prompt)
+    response_text = await generate(prompt, system_prompt=system_prompt)
 
     response_text = (response_text or "").strip()
+
+    # Echo guard: Gemini sometimes acknowledges by echoing the user's message verbatim
+    # without generating a [SEARCH: ...] tag. Detect and inject the correct trigger.
+    if (
+        user_message not in ("__init__",)
+        and '[SEARCH:' not in response_text
+        and '[BOOK:' not in response_text
+        and response_text
+        and response_text.strip().lower() == user_message.strip().lower()
+    ):
+        _u = user_message.lower()
+        # Detect service keyword
+        if 'plumb' in _u or 'nal' in _u or 'pipe' in _u:
+            _svc = 'plumber'
+        elif 'electric' in _u or 'bijli' in _u or 'wiring' in _u:
+            _svc = 'electrician'
+        elif 'mechanic' in _u or 'gaadi' in _u or 'car repair' in _u:
+            _svc = 'mechanic'
+        elif 'ac' in _u or 'air condition' in _u or 'cooling' in _u:
+            _svc = 'AC_repair'
+        elif 'cook' in _u or 'chef' in _u or 'khana' in _u:
+            _svc = 'cook'
+        elif 'maid' in _u or 'khaanasaaf' in _u or 'safai' in _u:
+            _svc = 'maid'
+        elif 'garden' in _u or 'baghban' in _u:
+            _svc = 'gardener'
+        elif 'tutor' in _u or 'teacher' in _u or 'teacher' in _u:
+            _svc = 'tutor'
+        elif 'carpent' in _u or 'wood' in _u or 'darwaza' in _u:
+            _svc = 'carpenter'
+        elif 'beaut' in _u or 'salon' in _u or 'mehendi' in _u:
+            _svc = 'beautician'
+        else:
+            _svc = 'electrician'
+        # Detect city
+        if 'karachi' in _u or 'clifton' in _u or 'dha khi' in _u or 'gulshan' in _u:
+            _loc = 'Karachi'
+        elif 'lahore' in _u or 'gulberg' in _u or 'johar' in _u:
+            _loc = 'Lahore'
+        elif 'islamabad' in _u or 'rawalpindi' in _u or 'g-' in _u or 'f-' in _u or 'i-' in _u:
+            _loc = 'Islamabad'
+        else:
+            _loc = 'Islamabad'
+        _confirm = {
+            'roman_urdu': 'Theek hai, main abhi providers dhundh rahi hun!',
+            'urdu': 'ٹھیک ہے، میں ابھی فراہم کنندگان تلاش کر رہی ہوں!',
+            'sindhi': 'ٺيڪ آهي، مان هاڻي فراهم ڪندڙن کي ڳوليندي آهيان!',
+            'pashto': 'سمه ده، زه اوس د چمتو کونکو لټول کوم!',
+            'balochi': 'ٹھیک ءُ، من ھنا فراہم کنندگان گرد دنباک!',
+        }
+        response_text = (
+            f"[SEARCH: service={_svc} location={_loc} urgency=medium]\n"
+            + _confirm.get(language, _confirm['roman_urdu'])
+        )
 
     # Safety: if Gemini returned raw JSON, use a language-appropriate fallback
     if response_text.startswith('{') and '"response"' in response_text:

@@ -529,15 +529,30 @@ async def list_provider_bookings(provider_id: str, status: str = None):
 @app.get("/api/bookings/worker/{user_id}")
 async def list_worker_bookings(user_id: str, status: str = None):
     uid = _require_firebase_uid(user_id)
-    return await get_worker_bookings(uid, status=status)
+    try:
+        return await get_worker_bookings(uid, status=status)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[Worker jobs] error for uid={uid}: {e}")
+        return {"user_id": uid, "provider_id": None, "bookings": [], "count": 0,
+                "message": f"Jobs load karne mein masla hua — {type(e).__name__}"}
 
 
 @app.get("/api/workers/{user_id}/earnings")
 async def worker_earnings(user_id: str):
     uid = _require_firebase_uid(user_id)
-    data = await get_worker_bookings(uid)
-    summary = summarize_worker_earnings(data.get("bookings") or [])
-    return {**summary, "provider_id": data.get("provider_id"), "user_id": uid}
+    try:
+        data = await get_worker_bookings(uid)
+        summary = summarize_worker_earnings(data.get("bookings") or [])
+        return {**summary, "provider_id": data.get("provider_id"), "user_id": uid}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[Worker earnings] error for uid={uid}: {e}")
+        return {"today_total": 0, "today_jobs": 0, "week_total": 0, "week_jobs": 0,
+                "week_by_day": [0]*7, "completed_count": 0, "recent_payments": [],
+                "provider_id": None, "user_id": uid}
 
 
 @app.patch("/api/booking/{booking_id}/status")

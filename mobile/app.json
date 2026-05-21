@@ -88,8 +88,9 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "0e8fd289-493e-4172-b9b2-cafbda8e43e7"
+        "projectId": "5248e7f0-9a27-45bd-9fe3-c3dafde66eab"
       }
-    }
+    },
+    "owner": "saadabdus"
   }
 }

@@ -74,6 +74,7 @@ export default function WorkerJobsScreen() {
   const [bookings, setBookings] = useState<UserBooking[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [acceptedId, setAcceptedId] = useState<string | null>(null);
   const [countdown, setCountdown] = useState(59);
   const [busy, setBusy] = useState(false);
@@ -82,18 +83,20 @@ export default function WorkerJobsScreen() {
   const load = useCallback(async () => {
     if (isMockMode) {
       setBookings([...MOCK_WORKER_BOOKINGS]);
+      setLoadError(null);
       setLoading(false);
       setRefreshing(false);
       return;
     }
     if (!user?.id) { setBookings([]); setLoading(false); return; }
+    setLoadError(null);
     try {
       const uid = requireUserId(user);
       const res = await getWorkerBookings(uid);
       setBookings(res.bookings || []);
     } catch (e) {
       setBookings([]);
-      Alert.alert('Jobs load nahi hue', formatApiError(e));
+      setLoadError(formatApiError(e));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -228,6 +231,17 @@ export default function WorkerJobsScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={Colors.primary} />}
         showsVerticalScrollIndicator={false}
       >
+        {/* Error banner */}
+        {loadError && (
+          <View style={styles.errorBanner}>
+            <Ionicons name="warning-outline" size={15} color={Colors.danger} />
+            <Text style={styles.errorBannerText} numberOfLines={3}>{loadError}</Text>
+            <TouchableOpacity onPress={() => { setLoadError(null); load(); }}>
+              <Text style={styles.errorBannerRetry}>Retry</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
         {/* Status banner */}
         <View style={[styles.statusBanner, online ? styles.statusBannerOnline : styles.statusBannerOffline]}>
           <Ionicons name={online ? 'radio-outline' : 'moon-outline'} size={16} color={online ? Colors.success : Colors.textMuted} />
@@ -566,6 +580,16 @@ const styles = StyleSheet.create({
 
   body: { flex: 1 },
   content: { padding: Spacing.md },
+
+  errorBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: Colors.dangerDim,
+    borderRadius: Radius.md, padding: Spacing.sm,
+    marginBottom: Spacing.sm,
+    borderWidth: 1, borderColor: Colors.danger,
+  },
+  errorBannerText: { flex: 1, fontSize: FontSize.xs, color: Colors.danger },
+  errorBannerRetry: { fontSize: FontSize.xs, color: Colors.primary, fontWeight: FontWeight.bold },
 
   statusBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 8,

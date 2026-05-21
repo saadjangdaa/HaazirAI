@@ -50,8 +50,12 @@ export default function WorkerProfileScreen() {
   const initial = displayName.charAt(0).toUpperCase();
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 110 }]}>
-      <Text style={styles.title}>{tr.profile}</Text>
+    <View style={styles.root}>
+    <View style={[styles.screenHeader, { paddingTop: insets.top + 8 }]}>
+      <Text style={styles.screenHeaderTitle}>{tr.profile}</Text>
+    </View>
+    <ScrollView style={{ flex: 1 }} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 110 }]}>
+      <Text style={[styles.title, { display: 'none' }]}>{tr.profile}</Text>
 
       {/* Identity Card */}
       <View style={[styles.profileCard, Shadow.card]}>
@@ -192,11 +196,18 @@ export default function WorkerProfileScreen() {
         </TouchableOpacity>
       </Modal>
     </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: Colors.background },
+  screenHeader: {
+    paddingHorizontal: 20, paddingBottom: 10,
+    backgroundColor: Colors.background,
+    borderBottomWidth: 1, borderBottomColor: Colors.border,
+  },
+  screenHeaderTitle: { fontSize: 18, fontWeight: '800', color: Colors.textPrimary },
   content: { padding: Spacing.md, paddingBottom: 48 },
   title: { fontSize: FontSize.xxl, fontWeight: '800', color: Colors.textPrimary, marginBottom: Spacing.md },
   profileCard: { backgroundColor: Colors.surface, borderRadius: Radius.xl, borderWidth: 1, borderColor: Colors.border, padding: Spacing.md, marginBottom: Spacing.md },
