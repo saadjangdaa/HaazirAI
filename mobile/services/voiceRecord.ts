@@ -17,7 +17,17 @@ export async function requestMicPermission(): Promise<boolean> {
   return granted;
 }
 
+export async function cleanupRecording(): Promise<void> {
+  if (_recording) {
+    try { await _recording.stop(); } catch { /* ignore */ }
+    _recording = null;
+  }
+}
+
 export async function startRecording(): Promise<void> {
+  // Clean up any leaked recorder from a previous session before starting fresh
+  await cleanupRecording();
+
   await setAudioModeAsync({
     allowsRecording: true,
     playsInSilentMode: true,

@@ -46,12 +46,10 @@ export async function playBase64Audio(base64: string, onDone?: () => void): Prom
     _statusSub = player.addListener('playbackStatusUpdate', (status) => {
       if (status.didJustFinish) {
         detachListener();
-        try {
-          player.remove();
-        } catch {
-          /* ignore */
-        }
+        try { player.remove(); } catch { /* ignore */ }
         if (_player === player) _player = null;
+        // Restore audio mode to allow recording after playback finishes
+        setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true }).catch(() => {});
         onDone?.();
       }
     });
