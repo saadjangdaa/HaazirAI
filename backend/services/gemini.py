@@ -55,11 +55,24 @@ def _is_rate_limit(error: Exception) -> bool:
     return "429" in s or "quota" in s.lower() or "rate" in s.lower()
 
 
+def _extract_response_text(response) -> str:
+    """Extract only non-thought text from Gemini response.
+    Gemini 2.5 Flash (thinking model) includes thought parts in response.candidates;
+    response.text concatenates ALL parts including thinking — we want only the final answer."""
+    try:
+        text = ""
+        for part in response.candidates[0].content.parts:
+            if not getattr(part, "thought", False):
+                text += getattr(part, "text", "")
+        return text.strip() if text.strip() else response.text
+    except Exception:
+        return response.text
+
+
 async def _try_generate(content) -> str:
     """Try all keys in sequence, rotating on 429. Falls back to mock if all exhausted."""
     global _current_key_idx, MOCK_MODE
 
-    start = _current_key_idx
     tried = 0
 
     while tried < len(_ALL_KEYS):
@@ -68,7 +81,7 @@ async def _try_generate(content) -> str:
             response = await loop.run_in_executor(
                 None, lambda: _model.generate_content(content)
             )
-            return response.text
+            return _extract_response_text(response)
         except Exception as e:
             if _is_rate_limit(e):
                 next_idx = _current_key_idx + 1
@@ -78,7 +91,7 @@ async def _try_generate(content) -> str:
                     tried += 1
                 else:
                     print("[gemini] all keys rate-limited — falling back to mock")
-                    return None  # signal caller to use mock
+                    return None
             else:
                 print(f"[gemini] API error: {e} — falling back to mock")
                 return None

@@ -151,6 +151,22 @@ async def run_conversation(
 
     response_text = (response_text or "").strip()
 
+    # Guard: if Gemini echoed the init instruction text, use hardcoded greeting
+    if user_message == "__init__" and (
+        "naam le kar warmly greet" in response_text.lower()
+        or "warmly greet karo" in response_text.lower()
+        or response_text.startswith("(User ka naam")
+        or response_text.startswith("(Warmly greet")
+    ):
+        _GREETINGS_INIT = {
+            'roman_urdu': f"Assalam-o-Alaikum{' ' + first_name + '!' if first_name else '!'} Main Fatima hun — Haazir AI ki assistant. Aaj kya chahiye?",
+            'urdu':       f"السلام علیکم{' ' + first_name + '!' if first_name else '!'} میں فاطمہ ہوں۔ آج کیا سروس چاہیے؟",
+            'sindhi':     f"السلام عليکم{' ' + first_name + '!' if first_name else '!'} مان فاطمه آهيان۔ اڄ ڪهڙي خدمت گهرجي؟",
+            'pashto':     f"السلام علیکم{' ' + first_name + '!' if first_name else '!'} زه فاطمه یم۔ نن ورځ کومه خدمت پکار ده؟",
+            'balochi':    f"السلام علیکم{' ' + first_name + '!' if first_name else '!'} من فاطمه ئن۔ امروز کئی خدمت لازم ءُ؟",
+        }
+        response_text = _GREETINGS_INIT.get(language, _GREETINGS_INIT['roman_urdu'])
+
     # Echo guard: Gemini sometimes acknowledges by echoing the user's message verbatim
     # without generating a [SEARCH: ...] tag. Detect and inject the correct trigger.
     if (
