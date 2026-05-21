@@ -871,16 +871,16 @@ async def conversation(body: ConversationRequest):
     audio_base64 = None
     if result.get("response_text"):
         try:
+            from services.uplift_tts import LANGUAGE_VOICE_MAP
             lang = body.language or 'roman_urdu'
-            tts_voice_id = body.voice_id or None
+            # Frontend sends voice_id; fall back to language map so server always uses correct voice
+            tts_voice_id = body.voice_id or LANGUAGE_VOICE_MAP.get(lang, LANGUAGE_VOICE_MAP["roman_urdu"])
             # roman_urdu needs translation (Roman → Urdu script); all others are already in their script
             tts_translate = (lang == 'roman_urdu')
-            tts_kwargs: dict = {"translate": tts_translate}
-            if tts_voice_id:
-                tts_kwargs["voice_id"] = tts_voice_id
+            tts_kwargs: dict = {"translate": tts_translate, "voice_id": tts_voice_id}
             tts = await text_to_speech(result["response_text"], **tts_kwargs)
             if tts.get("success"):
-                audio_base64 = tts["audio_base64"]
+                audio_base64 = tts.get("audio_base64")
         except Exception as e:
             logger.warning("[conversation] TTS error: %s", e)
 
