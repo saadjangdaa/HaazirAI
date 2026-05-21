@@ -35,6 +35,7 @@ from agents.pakka import PakkaAgent
 from graph import new_request_id, run_samajh_workflow
 from orchestration.reporter import ReportGenerator, zip_bytes_to_api_payload
 from orchestration.storage import TraceStorage
+from services.adk_runner import adk_runner
 from models.request import (
     ServiceRequest,
     BidRequest,
@@ -971,6 +972,35 @@ def _assert_routes_registered() -> None:
 
 
 _assert_routes_registered()
+
+@app.post("/api/adk/request")
+async def adk_request(request: ServiceRequest):
+    """
+    ADK Pipeline Endpoint - Google ADK orchestration for HaazirAI
+    Same as /api/request but uses Google ADK as orchestrator
+    """
+    
+    # Auth checks (same as /api/request)
+    user_id = _require_firebase_uid(request.user_id)
+    await _require_complete_profile(user_id)
+    
+    try:
+        # Run ADK pipeline
+        result = await adk_runner.run_adk_pipeline(
+            user_input=request.user_input,
+            user_location=request.user_location,
+            user_id=user_id,
+            auto_book=True
+        )
+        
+        return result
+    
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "orchestrator": "google-adk"
+        }
 
 if __name__ == "__main__":
     print(

@@ -17,3 +17,4 @@ python-multipart
 pytest
 pytest-asyncio
 mypy
+google-adk>=0.1.0
