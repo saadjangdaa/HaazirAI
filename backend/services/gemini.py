@@ -217,12 +217,30 @@ def _mock_gemini_response(prompt: str, system_prompt: str = "") -> str:
         ]
         user_text = user_lines[-1].split(":", 1)[-1].lower() if user_lines else p_lower
 
-        if any(svc in user_text for svc in ["ac", "plumb", "electric", "tutor", "carpent",
-                                             "mechanic", "cook", "maid", "garden", "painter",
-                                             "beautician", "beaut"]):
-            if any(loc in p_lower for loc in ["g-", "dha", "f-", "islamabad", "karachi",
-                                               "lahore", "sector", "clifton", "gulshan",
-                                               "bahria", "gulberg"]):
+        _ASK_URGENCY = {
+            "roman_urdu": "Theek hai! Yeh kaam urgent hai (aaj chahiye) ya baad mein schedule karein?",
+            "urdu":       "ٹھیک ہے! یہ کام فوری چاہیے (آج) یا بعد میں شیڈول کریں؟",
+            "sindhi":     "ٺيڪ آهي! هي ڪم فوري گهرجي (اڄ) يا پوءِ شيڊول ڪريو؟",
+            "pashto":     "ښه! دا کار ژر پکار دی (نن) که وروسته شیډول کړو؟",
+            "balochi":    "خیر! ایں کام ژلدی لازم ءُ (امروز) یا بعداً شیڈول کنیں؟",
+        }
+
+        has_service = any(svc in user_text for svc in ["ac", "plumb", "electric", "tutor", "carpent",
+                                                        "mechanic", "cook", "maid", "garden", "painter",
+                                                        "beautician", "beaut"])
+        has_location = any(loc in p_lower for loc in ["g-", "dha", "f-", "islamabad", "karachi",
+                                                       "lahore", "sector", "clifton", "gulshan",
+                                                       "bahria", "gulberg"])
+        has_urgency = any(kw in p_lower for kw in [
+            "urgent", "aaj", "abhi", "jaldi", "fori", "emergency",
+            "baad", "kal", "schedule", "later", "high", "medium", "low",
+        ])
+
+        if has_service:
+            if has_location:
+                if not has_urgency:
+                    return _ASK_URGENCY[lang]
+                # All three known — trigger search
                 svc = "AC_repair"
                 if "plumb" in user_text or "nal" in user_text: svc = "plumber"
                 elif "electric" in user_text or "bijli" in user_text: svc = "electrician"
@@ -236,7 +254,8 @@ def _mock_gemini_response(prompt: str, system_prompt: str = "") -> str:
                 loc = "Islamabad"
                 if "karachi" in p_lower or "clifton" in p_lower or ("dha" in p_lower and "karachi" in p_lower): loc = "Karachi"
                 elif "lahore" in p_lower or "gulberg" in p_lower: loc = "Lahore"
-                return f"[SEARCH: service={svc} location={loc} urgency=medium]\n{_SEARCH_CONFIRM[lang]}"
+                urgency = "high" if any(kw in p_lower for kw in ["urgent", "aaj", "abhi", "jaldi", "fori", "emergency"]) else "medium"
+                return f"[SEARCH: service={svc} location={loc} urgency={urgency}]\n{_SEARCH_CONFIRM[lang]}"
             return _ASK_LOCATION[lang]
         if "[results:" in p_lower:
             _results_resp = {
