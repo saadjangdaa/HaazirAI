@@ -22,18 +22,21 @@ for _suffix in ["", "2", "3", "4", "5"]:
 
 MOCK_MODE = len(_ALL_KEYS) == 0
 _MODEL_NAME = "gemini-2.5-flash"
+_STT_MODEL_NAME = "gemini-2.0-flash"  # non-thinking model for audio STT — reliable response.text
 
 _current_key_idx = 0
 _model: genai.GenerativeModel | None = None
+_stt_model: genai.GenerativeModel | None = None  # dedicated STT model
 
 
 def _init_model(idx: int) -> bool:
-    global _model, _current_key_idx
+    global _model, _stt_model, _current_key_idx
     if idx >= len(_ALL_KEYS):
         return False
     try:
         genai.configure(api_key=_ALL_KEYS[idx])
         _model = genai.GenerativeModel(_MODEL_NAME)
+        _stt_model = genai.GenerativeModel(_STT_MODEL_NAME)
         _current_key_idx = idx
         print(f"[gemini] using key #{idx + 1} of {len(_ALL_KEYS)}")
         return True
@@ -84,13 +87,30 @@ async def _try_generate(content) -> str:
 
 
 async def generate_with_parts(parts: list) -> str:
-    """Multimodal generation — used for audio STT."""
+    """Multimodal generation — used for audio STT.
+    Uses gemini-2.0-flash (non-thinking) so response.text is always reliable."""
     if MOCK_MODE:
         return '{"text": "AC bilkul kaam nahi kar raha, kal subah repair chahiye", "detected_language": "roman_urdu", "confidence": 0.95}'
-    result = await _try_generate(parts)
-    if result is None:
-        return '{"text": "", "detected_language": "unknown", "confidence": 0.0}'
-    return result
+
+    model = _stt_model or _model
+    for attempt in range(3):
+        try:
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None, lambda m=model: m.generate_content(parts)
+            )
+            text = (response.text or "").strip()
+            if text:
+                return text
+            # Empty on this attempt — short wait then retry
+            if attempt < 2:
+                await asyncio.sleep(1.5)
+        except Exception as e:
+            print(f"[gemini-stt] attempt {attempt + 1} error: {e}")
+            if attempt < 2:
+                await asyncio.sleep(1.5)
+
+    return '{"text": "", "detected_language": "unknown", "confidence": 0.0}'
 
 
 async def generate(prompt: str, system_prompt: str = "") -> str:

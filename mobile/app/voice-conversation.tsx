@@ -7,7 +7,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
-import { requestMicPermission, startRecording, stopAndTranscribe } from '../services/voiceRecord';
+import { requestMicPermission, startRecording, stopAndTranscribe, cleanupRecording } from '../services/voiceRecord';
 import { playBase64Audio, stopSpeaking } from '../services/voicePlayback';
 import {
   startConversation, sendMessage, negotiateProviders, directBook, toBiddingResponse,
@@ -124,6 +124,14 @@ export default function VoiceConversationScreen() {
       setUiState(turn.phase === 'done' ? 'done' : 'idle');
     }
   }, [startPulse, stopPulse]);
+
+  // ── Cleanup recording on unmount (prevents leaked recorder on next session) ──
+  useEffect(() => {
+    return () => {
+      stopSpeaking();
+      cleanupRecording();
+    };
+  }, []);
 
   // ── Initial greeting — wait for langReady so language is loaded from storage ──
   useEffect(() => {
