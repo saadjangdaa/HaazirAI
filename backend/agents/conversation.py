@@ -1,6 +1,6 @@
 """BAAT-CHEET: Conversational AI agent — Fatima (female persona), multi-turn dialogue."""
 import re
-from services.gemini import generate
+from services.gemini import generate_chat
 
 _BASE_LOGIC = """
 Your job — in this order:
@@ -112,14 +112,7 @@ async def run_conversation(
     if user_message != "__init__":
         session["history"].append({"role": "user", "content": user_message})
 
-    # Build conversation history
-    history_lines = []
-    for m in session["history"][-12:]:
-        role = "User" if m["role"] == "user" else "Fatima"
-        history_lines.append(f"{role}: {m['content']}")
-    history_text = "\n".join(history_lines)
-
-    # Inject provider results when search completes
+    # Inject provider results when search completes — append to last user turn
     results_injection = ""
     if providers:
         summary_parts = []
@@ -129,23 +122,35 @@ async def run_conversation(
                 f"Rate: Rs.{p.get('price_per_hour', p.get('base_rate', p.get('hourly_rate', 'N/A')))}, "
                 f"ID: {p.get('id', '?')})"
             )
-        results_injection = f"\n[RESULTS: {' | '.join(summary_parts)}]"
+        results_injection = f" [RESULTS: {' | '.join(summary_parts)}]"
         session["phase"] = "confirming"
 
-    # Build prompt — use English instructions so they don't override the language system prompt
-    if user_message == "__init__":
-        if first_name:
-            prompt = f"User: Hi\n[Context: user's name is {first_name}]\nFatima:"
-        else:
-            prompt = "User: Hi\nFatima:"
-    elif history_text:
-        prompt = f"{history_text}{results_injection}\nFatima:"
-    else:
-        prompt = "Fatima:"
-
     system_prompt = SYSTEM_PROMPTS.get(language, SYSTEM_PROMPTS['roman_urdu'])
-    response_text = await generate(prompt, system_prompt=system_prompt)
-    response_text = response_text.strip()
+
+    # Build structured chat history for generate_chat()
+    # Each entry: {"role": "user"|"assistant", "content": "..."}
+    chat_history: list = []
+
+    if user_message == "__init__":
+        # First turn — no prior history, just an init hint as the user message
+        if first_name:
+            init_hint = f"(User ka naam: {first_name}. Naam le kar warmly greet karo, phir poocho kya service chahiye.)"
+        else:
+            init_hint = "(Warmly greet karo, phir seedha poocho kya service chahiye — naam mat poocho.)"
+        response_text = await generate_chat([], system_prompt=system_prompt, init_hint=init_hint)
+    else:
+        # Build proper chat history from session
+        for m in session["history"][:-1]:  # exclude current user message (last entry)
+            chat_history.append({"role": m["role"], "content": m["content"]})
+
+        # Last message is the current user message (already appended above)
+        # Append provider results to it if available
+        last_user_content = (session["history"][-1]["content"] if session["history"] else "") + results_injection
+        chat_history.append({"role": "user", "content": last_user_content})
+
+        response_text = await generate_chat(chat_history, system_prompt=system_prompt)
+
+    response_text = (response_text or "").strip()
 
     # Safety: if Gemini returned raw JSON, use a language-appropriate fallback
     if response_text.startswith('{') and '"response"' in response_text:
