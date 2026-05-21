@@ -1225,8 +1225,7 @@ async def list_user_entries() -> List[tuple]:
         return list(_mock_bucket("users").items())
     db = _get_db()
     if db is None:
-    if is_mock_mode():
-        return list(_mock_bucket("users").items())
+        return []
     return [
         (snap.id, snap.to_dict() or {})
         for snap in db.collection("users").stream()
@@ -1297,8 +1296,7 @@ async def list_provider_entries() -> List[tuple]:
         return list(_mock_bucket("providers").items())
     db = _get_db()
     if db is None:
-    if is_mock_mode():
-        return list(_mock_bucket("providers").items())
+        return []
     return [
         (snap.id, snap.to_dict() or {})
         for snap in db.collection("providers").stream()
@@ -1642,8 +1640,7 @@ async def list_dispute_entries() -> List[tuple]:
         return list(_mock_bucket("disputes").items())
     db = _get_db()
     if db is None:
-    if is_mock_mode():
-        return list(_mock_bucket("disputes").items())
+        return []
     return [
         (snap.id, snap.to_dict() or {})
         for snap in db.collection("disputes").stream()
@@ -1749,8 +1746,7 @@ async def list_agent_log_entries() -> List[tuple]:
         return list(_mock_bucket("agent_logs").items())
     db = _get_db()
     if db is None:
-    if is_mock_mode():
-        return list(_mock_bucket("agent_logs").items())
+        return []
     return [
         (snap.id, snap.to_dict() or {})
         for snap in db.collection("agent_logs").stream()
@@ -1870,8 +1866,7 @@ async def list_notification_entries() -> List[tuple]:
         return list(_mock_bucket("notifications").items())
     db = _get_db()
     if db is None:
-    if is_mock_mode():
-        return list(_mock_bucket("notifications").items())
+        return []
     return [
         (snap.id, snap.to_dict() or {})
         for snap in db.collection("notifications").stream()
