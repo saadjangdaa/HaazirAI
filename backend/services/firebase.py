@@ -1020,8 +1020,7 @@ async def list_booking_entries() -> List[tuple]:
         return list(_mock_bucket("bookings").items())
     db = _get_db()
     if db is None:
-    if is_mock_mode():
-        return list(_mock_bucket("bookings").items())
+        return []
     return [
         (snap.id, snap.to_dict() or {})
         for snap in db.collection("bookings").stream()
