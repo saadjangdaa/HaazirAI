@@ -1,20 +1,17 @@
 import React, { useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
-  ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView, Alert, Modal,
+  ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView,
+  Alert, Modal, StatusBar,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { Colors, Spacing, Radius, FontSize, Shadow } from '../constants/theme';
-import { useAuth } from '../context/AuthContext';
+import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '../constants/theme';
+import { useAuth, formatAuthBootstrapError } from '../context/AuthContext';
+import { useLang, LANGUAGE_LABELS } from '../context/LanguageContext';
 import { formatAuthError } from '../utils/authErrors';
-import { formatAuthBootstrapError } from '../context/AuthContext';
-
-export default function LoginScreen() {
-  const router = useRouter();
-  const { signIn } = useAuth();
-import { useAuth, UserRole } from '../context/AuthContext';
-import { useLang, LANGUAGE_LABELS, Language } from '../context/LanguageContext';
+import type { Language } from '../constants/translations';
 
 const ALL_LANGS = Object.entries(LANGUAGE_LABELS) as [Language, string][];
 
@@ -26,9 +23,13 @@ export default function LoginScreen() {
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [role, setRole] = useState<UserRole>('customer');
   const [busy, setBusy] = useState(false);
   const [showLangPicker, setShowLangPicker] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [emailFocused, setEmailFocused] = useState(false);
+  const [passFocused, setPassFocused] = useState(false);
+
+  // Onboarding redirect is handled by AuthNavigationGuard in _layout.tsx
 
   const handleLogin = async () => {
     if (!email.trim() || !password.trim()) {
@@ -39,14 +40,10 @@ export default function LoginScreen() {
     try {
       await signIn(email.trim(), password);
     } catch (e) {
-      const msg =
-        (e as { code?: string })?.code?.startsWith('auth/')
-          ? formatAuthError(e)
-          : formatAuthBootstrapError(e);
+      const msg = (e as { code?: string })?.code?.startsWith('auth/')
+        ? formatAuthError(e)
+        : formatAuthBootstrapError(e);
       Alert.alert('Login fail', msg);
-      await signIn(email.trim(), password, role);
-    } catch {
-      Alert.alert('Login fail', 'Email ya password galat hai');
     } finally {
       setBusy(false);
     }
@@ -57,79 +54,77 @@ export default function LoginScreen() {
       style={styles.root}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      <ScrollView
-        contentContainerStyle={[styles.scroll, { paddingTop: insets.top + Spacing.md, paddingBottom: insets.bottom + Spacing.lg }]}
-        keyboardShouldPersistTaps="handled"
-      >
-        {/* Language picker button */}
+      <StatusBar barStyle="light-content" backgroundColor={Colors.primary} />
+
+      {/* Hero */}
+      <View style={[styles.hero, { paddingTop: insets.top + Spacing.md }]}>
         <TouchableOpacity style={styles.langBtn} onPress={() => setShowLangPicker(true)}>
-          <Text style={styles.langBtnText}>🌐 {LANGUAGE_LABELS[language]}</Text>
+          <Ionicons name="globe-outline" size={13} color="rgba(255,255,255,0.85)" />
+          <Text style={styles.langBtnText}>{LANGUAGE_LABELS[language]}</Text>
+          <Ionicons name="chevron-down" size={11} color="rgba(255,255,255,0.7)" />
         </TouchableOpacity>
 
-        {/* Brand */}
-        <View style={styles.brand}>
-          <Text style={styles.brandEmoji}>🤝</Text>
-          <Text style={styles.brandName}>Haazir AI</Text>
-          <Text style={styles.brandTagline}>Pakistan ka Pehla Agentic Home Services</Text>
+        <View style={styles.logoContainer}>
+          <View style={styles.logoCircle}>
+            <Text style={styles.logoEmoji}>🤝</Text>
+          </View>
+          <Text style={styles.brandName}>Haazir</Text>
+          <Text style={styles.brandTagline}>Pakistan ka Agentic Home Services</Text>
         </View>
+      </View>
 
-        {/* Card */}
-        <View style={styles.card}>
+      {/* White card — flex:1 ensures it always fills to the bottom */}
+      <View style={styles.cardShell}>
+        <ScrollView
+          style={styles.scrollView}
+          contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + Spacing.xl }]}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
           <Text style={styles.heading}>{tr.welcome}</Text>
           <Text style={styles.sub}>{tr.loginSub}</Text>
 
-          {/* Role Selector */}
-          <Text style={styles.roleLabel}>{tr.iAm}</Text>
-          <View style={styles.roleRow}>
-            <TouchableOpacity
-              style={[styles.roleBtn, role === 'customer' && styles.roleBtnActive]}
-              onPress={() => setRole('customer')}
-            >
-              <Text style={styles.roleEmoji}>🏠</Text>
-              <Text style={[styles.roleBtnText, role === 'customer' && styles.roleBtnTextActive]}>
-                {tr.customer}
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.roleBtn, styles.roleBtnWorker, role === 'worker' && styles.roleBtnWorkerActive]}
-              onPress={() => setRole('worker')}
-            >
-              <Text style={styles.roleEmoji}>🔧</Text>
-              <Text style={[styles.roleBtnText, role === 'worker' && { color: Colors.warning }]}>
-                {tr.worker}
-              </Text>
+          <View style={[styles.inputWrapper, emailFocused && styles.inputWrapperFocused]}>
+            <Ionicons name="mail-outline" size={18} color={emailFocused ? Colors.primary : Colors.textMuted} style={styles.inputIcon} />
+            <TextInput
+              style={styles.input}
+              placeholder="Email address"
+              placeholderTextColor={Colors.textMuted}
+              value={email}
+              onChangeText={setEmail}
+              keyboardType="email-address"
+              autoCapitalize="none"
+              autoComplete="email"
+              onFocus={() => setEmailFocused(true)}
+              onBlur={() => setEmailFocused(false)}
+            />
+          </View>
+
+          <View style={[styles.inputWrapper, passFocused && styles.inputWrapperFocused]}>
+            <Ionicons name="lock-closed-outline" size={18} color={passFocused ? Colors.primary : Colors.textMuted} style={styles.inputIcon} />
+            <TextInput
+              style={[styles.input, { flex: 1 }]}
+              placeholder="Password"
+              placeholderTextColor={Colors.textMuted}
+              value={password}
+              onChangeText={setPassword}
+              secureTextEntry={!showPassword}
+              onFocus={() => setPassFocused(true)}
+              onBlur={() => setPassFocused(false)}
+            />
+            <TouchableOpacity onPress={() => setShowPassword(!showPassword)} style={styles.eyeBtn}>
+              <Ionicons name={showPassword ? 'eye-outline' : 'eye-off-outline'} size={18} color={Colors.textMuted} />
             </TouchableOpacity>
           </View>
 
-          <Text style={styles.label}>{tr.email}</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="aapka@email.com"
-            placeholderTextColor={Colors.textMuted}
-            value={email}
-            onChangeText={setEmail}
-            keyboardType="email-address"
-            autoCapitalize="none"
-            autoComplete="email"
-          />
-
-          <Text style={styles.label}>{tr.password}</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="••••••••"
-            placeholderTextColor={Colors.textMuted}
-            value={password}
-            onChangeText={setPassword}
-            secureTextEntry
-          />
-
           <TouchableOpacity
-            style={[styles.btn, role === 'worker' && styles.btnWorker, Shadow.primary]}
+            style={[styles.btn, Shadow.primary]}
             onPress={handleLogin}
-            disabled={busy}
+            disabled={busy || loading}
+            activeOpacity={0.85}
           >
-            {busy ? (
-              <ActivityIndicator color={Colors.background} />
+            {busy || loading ? (
+              <ActivityIndicator color={Colors.textInverse} />
             ) : (
               <Text style={styles.btnText}>{tr.loginBtn}</Text>
             )}
@@ -141,38 +136,27 @@ export default function LoginScreen() {
             <View style={styles.dividerLine} />
           </View>
 
-          <TouchableOpacity
-            style={styles.secondaryBtn}
-            onPress={() => router.replace('/signup')}
-          >
-            <Text style={styles.secondaryBtnText}>Naya Account Banayein</Text>
-          </TouchableOpacity>
-        </View>
-          <TouchableOpacity style={styles.secondaryBtn} onPress={() => router.push('/signup')}>
+          <TouchableOpacity style={styles.secondaryBtn} onPress={() => router.push('/signup')} activeOpacity={0.75}>
             <Text style={styles.secondaryBtnText}>{tr.signupBtn}</Text>
           </TouchableOpacity>
-        </View>
+        </ScrollView>
+      </View>
 
-        <View style={styles.demoHint}>
-          <Text style={styles.demoText}>Demo: koi bhi email/password use karein</Text>
-        </View>
-      </ScrollView>
-
-      {/* Language Picker Modal */}
+      {/* Language Picker */}
       <Modal visible={showLangPicker} transparent animationType="slide">
-        <TouchableOpacity style={styles.modalOverlay} onPress={() => setShowLangPicker(false)}>
-          <View style={styles.modalSheet}>
-            <Text style={styles.modalTitle}>🌐 {tr.selectLanguage}</Text>
+        <TouchableOpacity style={styles.modalOverlay} onPress={() => setShowLangPicker(false)} activeOpacity={1}>
+          <View style={[styles.modalSheet, { paddingBottom: insets.bottom + Spacing.md }]}>
+            <View style={styles.modalHandle} />
+            <Text style={styles.modalTitle}>Zaban chunein</Text>
             {ALL_LANGS.map(([code, label]) => (
               <TouchableOpacity
                 key={code}
                 style={[styles.langOption, language === code && styles.langOptionActive]}
                 onPress={() => { setLanguage(code); setShowLangPicker(false); }}
+                activeOpacity={0.7}
               >
-                <Text style={[styles.langOptionText, language === code && styles.langOptionTextActive]}>
-                  {label}
-                </Text>
-                {language === code && <Text style={styles.langCheck}>✓</Text>}
+                <Text style={[styles.langOptionText, language === code && styles.langOptionTextActive]}>{label}</Text>
+                {language === code && <Ionicons name="checkmark-circle" size={20} color={Colors.primary} />}
               </TouchableOpacity>
             ))}
           </View>
@@ -183,56 +167,93 @@ export default function LoginScreen() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: Colors.background },
-  scroll: { flexGrow: 1, justifyContent: 'center', paddingHorizontal: Spacing.lg },
+  root: { flex: 1, backgroundColor: Colors.primary },
+
+  hero: {
+    backgroundColor: Colors.primary,
+    paddingHorizontal: Spacing.lg,
+    paddingBottom: Spacing.xxl + 20,
+  },
   langBtn: {
-    alignSelf: 'flex-end', backgroundColor: Colors.surface, borderRadius: Radius.full,
-    paddingHorizontal: Spacing.md, paddingVertical: 6,
-    borderWidth: 1, borderColor: Colors.border, marginBottom: Spacing.sm,
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    alignSelf: 'flex-end',
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    borderRadius: Radius.full,
+    paddingHorizontal: Spacing.md, paddingVertical: 7,
+    marginBottom: Spacing.xl,
   },
-  langBtnText: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: '700' },
-  brand: { alignItems: 'center', marginBottom: Spacing.xl },
-  brandEmoji: { fontSize: 56, marginBottom: Spacing.sm },
-  brandName: { fontSize: FontSize.xxxl, fontWeight: '800', color: Colors.primary },
-  brandTagline: { fontSize: FontSize.sm, color: Colors.textMuted, textAlign: 'center', marginTop: 4 },
-  card: { backgroundColor: Colors.surface, borderRadius: Radius.xl, padding: Spacing.lg, borderWidth: 1, borderColor: Colors.border },
-  heading: { fontSize: FontSize.xxl, fontWeight: '800', color: Colors.textPrimary, marginBottom: 4 },
-  sub: { fontSize: FontSize.sm, color: Colors.textMuted, marginBottom: Spacing.md },
-  roleLabel: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.textSecondary, marginBottom: Spacing.sm },
-  roleRow: { flexDirection: 'row', gap: Spacing.sm, marginBottom: Spacing.md },
-  roleBtn: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md, padding: Spacing.sm,
+  langBtnText: { fontSize: FontSize.xs, color: 'rgba(255,255,255,0.9)', fontWeight: FontWeight.semibold },
+  logoContainer: { alignItems: 'center', paddingBottom: Spacing.md },
+  logoCircle: {
+    width: 84, height: 84, borderRadius: 42,
+    backgroundColor: 'rgba(255,255,255,0.20)',
+    justifyContent: 'center', alignItems: 'center',
+    marginBottom: Spacing.md,
+    borderWidth: 2, borderColor: 'rgba(255,255,255,0.30)',
+  },
+  logoEmoji: { fontSize: 40 },
+  brandName: { fontSize: 38, fontWeight: FontWeight.black, color: Colors.textInverse, letterSpacing: -0.5 },
+  brandTagline: { fontSize: FontSize.sm, color: 'rgba(255,255,255,0.75)', marginTop: 4, textAlign: 'center' },
+
+  cardShell: {
+    flex: 1,
+    backgroundColor: Colors.surface,
+    borderTopLeftRadius: Radius.xxl,
+    borderTopRightRadius: Radius.xxl,
+    marginTop: -Spacing.xl,
+    overflow: 'hidden',
+  },
+  scrollView: { flex: 1 },
+  scroll: { flexGrow: 1, padding: Spacing.xl },
+  heading: { fontSize: FontSize.xxl, fontWeight: FontWeight.black, color: Colors.textPrimary, marginBottom: 4 },
+  sub: { fontSize: FontSize.sm, color: Colors.textMuted, marginBottom: Spacing.xl },
+
+  inputWrapper: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: Colors.inputBg,
+    borderRadius: Radius.lg,
     borderWidth: 1.5, borderColor: Colors.border,
+    paddingHorizontal: Spacing.md,
+    marginBottom: Spacing.md, height: 54,
   },
-  roleBtnActive: { borderColor: Colors.primary, backgroundColor: Colors.primaryDim },
-  roleBtnWorker: {},
-  roleBtnWorkerActive: { borderColor: Colors.warning, backgroundColor: '#FFFBEB' },
-  roleEmoji: { fontSize: 16 },
-  roleBtnText: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.textSecondary },
-  roleBtnTextActive: { color: Colors.primary },
-  label: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.textSecondary, marginBottom: 6 },
-  input: {
-    backgroundColor: Colors.inputBg, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border,
-    padding: Spacing.md, fontSize: FontSize.md, color: Colors.textPrimary, marginBottom: Spacing.md,
+  inputWrapperFocused: { borderColor: Colors.primary, backgroundColor: Colors.primaryLight },
+  inputIcon: { marginRight: Spacing.sm },
+  input: { flex: 1, fontSize: FontSize.md, color: Colors.textPrimary, fontWeight: FontWeight.medium },
+  eyeBtn: { padding: 4 },
+
+  btn: {
+    backgroundColor: Colors.primary,
+    borderRadius: Radius.lg, height: 54,
+    alignItems: 'center', justifyContent: 'center',
+    marginTop: Spacing.sm,
   },
-  btn: { backgroundColor: Colors.primary, borderRadius: Radius.md, padding: Spacing.md, alignItems: 'center', marginTop: Spacing.sm },
-  btnWorker: { backgroundColor: Colors.warning },
-  btnText: { color: Colors.background, fontSize: FontSize.md, fontWeight: '800' },
-  dividerRow: { flexDirection: 'row', alignItems: 'center', marginVertical: Spacing.md },
+  btnText: { color: Colors.textInverse, fontSize: FontSize.md, fontWeight: FontWeight.bold },
+
+  dividerRow: { flexDirection: 'row', alignItems: 'center', marginVertical: Spacing.lg },
   dividerLine: { flex: 1, height: 1, backgroundColor: Colors.border },
-  dividerText: { color: Colors.textMuted, fontSize: FontSize.sm, marginHorizontal: Spacing.sm },
-  secondaryBtn: { borderRadius: Radius.md, borderWidth: 1.5, borderColor: Colors.primary, padding: Spacing.md, alignItems: 'center' },
-  secondaryBtnText: { color: Colors.primary, fontSize: FontSize.md, fontWeight: '700' },
-  demoHint: { marginTop: Spacing.lg, alignItems: 'center' },
-  demoText: { fontSize: FontSize.xs, color: Colors.textMuted, textAlign: 'center' },
-  // Modal
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  modalSheet: { backgroundColor: Colors.surface, borderTopLeftRadius: Radius.xl, borderTopRightRadius: Radius.xl, padding: Spacing.lg, paddingBottom: 40 },
-  modalTitle: { fontSize: FontSize.lg, fontWeight: '800', color: Colors.textPrimary, marginBottom: Spacing.md, textAlign: 'center' },
-  langOption: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: Spacing.md, borderRadius: Radius.md, marginBottom: Spacing.xs },
-  langOptionActive: { backgroundColor: Colors.primaryDim },
-  langOptionText: { fontSize: FontSize.md, color: Colors.textPrimary, fontWeight: '600' },
-  langOptionTextActive: { color: Colors.primary, fontWeight: '800' },
-  langCheck: { color: Colors.primary, fontSize: FontSize.lg, fontWeight: '800' },
+  dividerText: { color: Colors.textMuted, fontSize: FontSize.sm, marginHorizontal: Spacing.md },
+
+  secondaryBtn: {
+    height: 54, borderRadius: Radius.lg,
+    borderWidth: 1.5, borderColor: Colors.primary,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  secondaryBtnText: { color: Colors.primary, fontSize: FontSize.md, fontWeight: FontWeight.bold },
+
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' },
+  modalSheet: {
+    backgroundColor: Colors.surface,
+    borderTopLeftRadius: Radius.xxl, borderTopRightRadius: Radius.xxl,
+    padding: Spacing.xl,
+    ...Shadow.modal,
+  },
+  modalHandle: { width: 38, height: 4, borderRadius: 2, backgroundColor: Colors.border, alignSelf: 'center', marginBottom: Spacing.lg },
+  modalTitle: { fontSize: FontSize.xl, fontWeight: FontWeight.bold, color: Colors.textPrimary, marginBottom: Spacing.md },
+  langOption: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    padding: Spacing.md, borderRadius: Radius.md, marginBottom: Spacing.xs,
+  },
+  langOptionActive: { backgroundColor: Colors.primaryLight },
+  langOptionText: { fontSize: FontSize.md, color: Colors.textPrimary, fontWeight: FontWeight.medium },
+  langOptionTextActive: { color: Colors.primary, fontWeight: FontWeight.bold },
 });

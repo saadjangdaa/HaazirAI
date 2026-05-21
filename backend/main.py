@@ -11,6 +11,12 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
+
+# Force UTF-8 on Windows so emoji log messages don't crash
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 from typing import Optional
 
 from fastapi import FastAPI
@@ -25,13 +31,9 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
 from backend.app import APP_INSTANCE_ID, app
-
-# Load config + logging first (single dotenv via config.py)
 from config import config
 from logging_config import logger
 
-from agents.orchestrator import run_bidding, run_dispute, run_provider_report
-from agents.pakka import PakkaAgent
 from graph import new_request_id, run_samajh_workflow
 from orchestration.reporter import ReportGenerator, zip_bytes_to_api_payload
 from orchestration.storage import TraceStorage
@@ -41,54 +43,28 @@ from models.request import (
     BidRequest,
     BookingRequest,
     DisputeRequest,
+    DisputeRespondRequest,
+    DisputeFinalizeRequest,
     FeedbackRequest,
     VoiceRequest,
     TTSRequest,
     ConversationRequest,
+    NegotiateRequest,
+    ConvDirectBookRequest,
     UserSyncRequest,
     BookingStatusUpdate,
 )
 from agents.orchestrator import run_full_orchestration
+from agents.hisaab import HisaabAgent
+from agents.moltol import MoltolAgent
+from agents.orchestrator import run_bidding, run_provider_report
+from agents.pakka import PakkaAgent
+from services.firestore_schema import FORBIDDEN_USER_IDS
 from services.firebase import (
     FirebaseService,
     get_booking,
     save_review,
     set_firebase_service,
-    update_booking_status,
-)
-
-firebase: Optional[FirebaseService] = None
-
-_PROVIDERS_PATH = Path(__file__).parent / "data" / "providers.json"
-_request_store: dict = {}
-_providers_cache: list = []
-pakka_agent = PakkaAgent()
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Startup: validate config, init Firebase singleton for agents + routes."""
-    global firebase
-    if not config.validate():
-        logger.error("Configuration validation failed — exiting")
-        sys.exit(1)
-
-    cred_path = str(config.resolved_credentials_path())
-    firebase = FirebaseService(cred_path)
-    set_firebase_service(firebase)
-    app.state.firebase = firebase
-
-    logger.info("Haazir backend started — environment=%s firebase_mock=%s", config.ENVIRONMENT, firebase.is_mock)
-    yield
-    logger.info("Haazir backend shutdown")
-
-from models.request import ServiceRequest, BidRequest, BookingRequest, DisputeRequest, FeedbackRequest, VoiceRequest, TTSRequest, ConversationRequest
-from agents.orchestrator import run_full_orchestration, run_bidding, run_dispute, run_provider_report
-from agents.pakka import PakkaAgent
-from services.firestore_schema import FORBIDDEN_USER_IDS
-from services.firebase import (
-    save_review,
-    get_booking,
     list_bookings,
     get_user,
     sync_user_profile,
@@ -112,6 +88,7 @@ from services.firebase import (
     repair_user_profile_roots,
     verify_bookings_integrity,
     repair_all_booking_history,
+    repair_all_dispute_history,
     cleanup_bookings_with_invalid_user_id,
     verify_providers_integrity,
     get_provider,
@@ -119,7 +96,14 @@ from services.firebase import (
 from services.users_integrity import normalize_role
 from services.worker_service import get_worker_bookings, resolve_worker_provider_id, summarize_worker_earnings
 from services.booking_service import set_booking_status, _enrich_booking
-from services.dispute_service import file_dispute
+from services.dispute_config import dispute_instant_resolve_enabled
+from services.dispute_service import (
+    file_dispute,
+    finalize_dispute,
+    list_worker_disputes,
+    respond_to_dispute,
+)
+from services.dispute_eligibility import NO_SHOW_GRACE_HOURS, assess_dispute_eligibility
 from services.push_notify import (
     notify_booking_created,
     notify_feedback_received,
@@ -139,14 +123,29 @@ from services.user_validation import (
     sanitize_worker_data,
 )
 
-_PROVIDERS_PATH = _BACKEND_DIR / "data" / "providers.json"
+# ── Module-level initialisation ───────────────────────────────────────────────
 
-# In-memory store for quick lookups during demo
+firebase: Optional[FirebaseService] = None
+_PROVIDERS_PATH = _BACKEND_DIR / "data" / "providers.json"
 _request_store: dict = {}
 _providers_cache: list = []
-
+_session_search_cache: dict = {}  # session_id → {service, location, urgency, providers, intent}
 pakka_agent = PakkaAgent()
+hisaab_agent = HisaabAgent()
+moltol_agent = MoltolAgent()
 
+try:
+    if config.validate():
+        _cred_path = str(config.resolved_credentials_path())
+        firebase = FirebaseService(_cred_path)
+        set_firebase_service(firebase)
+        logger.info("Firebase initialized mock=%s env=%s", firebase.is_mock, config.ENVIRONMENT)
+    else:
+        logger.warning("Config validation failed — Firebase not initialized (mock mode)")
+except Exception as _fe:
+    logger.error("Firebase init error: %s", _fe)
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _require_firebase_uid(user_id: str) -> str:
     uid = (user_id or "").strip()
@@ -173,25 +172,113 @@ def _load_providers() -> list:
     return _providers_cache
 
 
+def _fallback_ranked_providers(intent: dict, limit: int = 8) -> list:
+    """When Dhundho/Chunno return empty, show SAME-SERVICE providers from seed data."""
+    from agents.dhundho import _service_matches
+    from services.providers_integrity import format_provider_record
+    from services.service_categories import filter_providers_by_category, intent_category
+
+    intent = intent or {}
+    service_type = (intent.get("service_type") or "").strip()
+    city = (intent.get("city") or "").strip()
+    pool = list(_load_providers())  # flat list, not wrapped
+
+    # Always filter by service first — never show unrelated categories
+    if service_type:
+        matched = [p for p in pool if _service_matches(service_type, p)]
+        pool = matched if matched else pool  # only fall back to all if truly no match
+
+    # Then narrow by city
+    if city:
+        same_city = [p for p in pool if (p.get("city") or "").lower() == city.lower()]
+        if same_city:
+            pool = same_city
+        # else keep the city-unfiltered set (still same-service)
+
+    ranked = [format_provider_record(p, p.get("id")) for p in pool[:limit]]
+    for i, p in enumerate(ranked):
+        p.setdefault("ranking_score", 1.0 - i * 0.05)
+        p.setdefault("ranking_reason_urdu", "Aapki request ke liye qareeb technician")
+    return ranked
+
+
+def _filter_providers_by_service(providers: list, intent: dict) -> list:
+    """Final safeguard: strip providers that don't match the requested service.
+    If filtering would leave 0 results, return original (better some than none)."""
+    from agents.dhundho import _service_matches
+    service_type = (intent.get("service_type") or "").strip()
+    if not service_type or not providers:
+        return providers
+    filtered = [p for p in providers if _service_matches(service_type, p)]
+    return filtered if filtered else providers
+
+
+# Maps common misspellings / non-English words Gemini might use to canonical English service names
+_SERVICE_ALIASES: dict[str, str] = {
+    "mechanic": "mechanic", "car mechanic": "mechanic", "auto mechanic": "mechanic",
+    "مکينک": "mechanic", "مکینک": "mechanic",
+    "plumber": "plumber", "پلمبر": "plumber", "نلساز": "plumber",
+    "electrician": "electrician", "الیکٹریشن": "electrician", "بجلی": "electrician",
+    "ac repair": "AC repair", "ac": "AC repair", "اے سی": "AC repair",
+    "tutor": "tutor", "ٹیوٹر": "tutor", "استاد": "tutor",
+    "carpenter": "carpenter", "بڑھئی": "carpenter",
+    "beautician": "beautician", "بیوٹیشن": "beautician",
+}
+
+def _normalize_service(service: str) -> str:
+    """Map any service string (including non-English) to a canonical English service name."""
+    s = (service or "").strip().lower()
+    for alias, canonical in _SERVICE_ALIASES.items():
+        if alias.lower() in s:
+            return canonical
+    return service  # return as-is if no alias matched
+
+
+_AGENT_URDU = {
+    "Samajh": "سمجھ",
+    "Dhundho": "ڈھونڈو",
+    "Chunno": "چُنّو",
+}
+
+
+def _judge_logs_to_mobile_agent_logs(logs: list) -> list:
+    out = []
+    for entry in logs:
+        ts = entry.get("timestamp", "")
+        agent = entry.get("agent", "Samajh")
+        out.append({
+            "agent_name": agent.upper(),
+            "agent_name_urdu": _AGENT_URDU.get(agent, agent),
+            "start_time": ts,
+            "end_time": ts,
+            "input_summary": entry.get("reasoning", ""),
+            "output_summary": entry.get("decision", ""),
+            "decision_made": entry.get("decision", ""),
+            "confidence": float(entry.get("confidence", 0.0)),
+            "fallback_used": entry.get("status") == "failure",
+            "time_seconds": 0.0,
+        })
+    return out
+
+
+# ── Routes ────────────────────────────────────────────────────────────────────
+
 @app.post("/api/voice/transcribe")
 async def transcribe_voice(body: VoiceRequest):
     """Transcribe audio using Gemini 2.0 Flash. Supports Urdu, Roman Urdu, English, Sindhi."""
     from services.voice import transcribe_audio
-    result = await transcribe_audio(body.audio_base64, body.mime_type)
-    return result
+    return await transcribe_audio(body.audio_base64, body.mime_type)
 
 
 @app.post("/api/voice/tts")
 async def voice_tts(body: TTSRequest):
-    """Convert text to Urdu speech using Uplift AI. Auto-translates Roman Urdu/English to Urdu script."""
+    """Convert text to Urdu speech using Uplift AI."""
     from services.uplift_tts import text_to_speech
-    result = await text_to_speech(body.text, body.voice_id, body.translate)
-    return result
+    return await text_to_speech(body.text, body.voice_id, body.translate)
 
 
 @app.get("/health")
 async def health():
-    """Liveness + quick Firebase mode indicator for ops / mobile."""
     fb = getattr(app.state, "firebase", None) or firebase
     mode = "mock" if fb is None or fb.is_mock else "connected"
     return {
@@ -199,8 +286,16 @@ async def health():
         "timestamp": datetime.now().isoformat(),
         "service": "Haazir AI",
         "instance_id": APP_INSTANCE_ID,
+        "firebase": mode,
+        "environment": config.ENVIRONMENT,
         "features": {
             "dispute_repeat_allowed": True,
+            "dispute_two_sided": not dispute_instant_resolve_enabled(),
+            "dispute_instant_resolve": dispute_instant_resolve_enabled(),
+            "dispute_worker_respond": True,
+            "hifazat_dispute_eval": True,
+            "hifazat_feedback_trust": True,
+            "dispute_finalize_jhagra": True,
             "agent_logs_on_request": True,
             "fcm_pipeline": True,
             "notification_dedupe_seconds": 90,
@@ -212,13 +307,11 @@ async def health():
 
 @app.get("/test/firebase")
 async def test_firebase():
-    """Smoke-test Firestore (or mock store): list providers count."""
     fb = getattr(app.state, "firebase", None) or firebase
     if fb is None:
         raise HTTPException(status_code=503, detail="Firebase not initialized")
     try:
         providers = fb.get_all_providers()
-        logger.info("test_firebase: providers_count=%s mock=%s", len(providers), fb.is_mock)
         return {
             "status": "success",
             "firebase": "mock" if fb.is_mock else "connected",
@@ -265,7 +358,7 @@ def _judge_logs_to_mobile_agent_logs(logs: list) -> list:
 
 @app.post("/api/request")
 async def handle_service_request(body: ServiceRequest):
-    """Full Antigravity orchestration: Samajh → Dhundho → Chunno → Hifazat → Hisaab → Pakka."""
+    """Samajh → Dhundho → Chunno via LangGraph."""
     uid = _require_firebase_uid(body.user_id)
     await _require_complete_profile(uid)
     result = await run_full_orchestration(
@@ -300,10 +393,11 @@ async def handle_service_request(body: ServiceRequest):
         user_id=body.user_id,
         request_id=request_id,
     )
+
     intent = final_state.get("intent") or {}
     logs = final_state.get("logs") or []
-    providers_ranked = final_state.get("providers_ranked") or []
-    providers_discovered = final_state.get("providers") or []
+    providers_ranked = list(final_state.get("providers_ranked") or [])
+    providers_discovered = list(final_state.get("providers") or [])
     dh_meta = final_state.get("dhundho_meta") or {}
     chunno_warnings = final_state.get("chunno_warnings") or []
     trust_scores = final_state.get("trust_scores") or []
@@ -315,38 +409,26 @@ async def handle_service_request(body: ServiceRequest):
         providers_ranked[0] if providers_ranked else None
     )
 
+    if not providers_ranked:
+        providers_ranked = _fallback_ranked_providers(intent, limit=8)
+
+    # Safeguard: remove any cross-category providers that slipped through
+    providers_ranked = _filter_providers_by_service(providers_ranked, intent)
+    best_provider = providers_ranked[0] if providers_ranked else None
+
     _request_store[request_id] = {
-        "providers": result.get("providers_ranked", []),
-        "intent": result.get("extracted_intent", {}),
-        "user_id": uid,
         "user_input": body.user_input,
         "logs": logs,
         "intent": intent,
-        "user_id": body.user_id,
+        "user_id": uid,
         "providers": providers_ranked,
         "price_breakdown": price_breakdown,
         "moltol_result": moltol_result,
         "booking": booking,
     }
 
-    booking = result.get("booking") or {}
-    booking_id = booking.get("booking_id")
-    if booking_id and uid:
-        await append_user_booking(uid, booking_id)
-        reminder_times = booking.get("reminder_times") or []
-        if reminder_times:
-            await schedule_booking_reminders(
-                booking_id,
-                uid,
-                reminder_times,
-                "Haazir AI reminder: booking {booking_id} is coming up soon.",
-            )
-        stored = await get_booking(booking_id)
-        if stored:
-            await notify_booking_created(stored)
-
-    return result
     agent_logs = _judge_logs_to_mobile_agent_logs(logs)
+    await save_agent_logs(request_id, body.user_input, logs, user_id=uid)
 
     return {
         "request_id": request_id,
@@ -395,6 +477,7 @@ async def trigger_bidding(body: BidRequest):
 
     result = await run_bidding(body.request_id, providers, intent, pricing)
     return result
+    return await run_bidding(body.request_id, providers, intent)
 
 
 @app.post("/api/book")
@@ -402,10 +485,10 @@ async def confirm_booking(body: BookingRequest):
     """PAKKA agent confirms a specific booking."""
     uid = _require_firebase_uid(body.user_id)
     await _require_complete_profile(uid)
+
     provider = await get_provider(body.provider_id)
     if not provider:
         from services.providers_integrity import format_provider_record
-
         all_providers = _load_providers()
         raw = next((p for p in all_providers if p.get("id") == body.provider_id), None)
         provider = format_provider_record(raw, body.provider_id) if raw else None
@@ -425,12 +508,11 @@ async def confirm_booking(body: BookingRequest):
     result = await pakka_agent.create_booking(intent, provider, pricing, uid)
     log = result.pop("_log", None)
     booking_id = result["booking_id"]
+
     await append_user_booking(uid, booking_id)
     if result.get("reminder_times"):
         await schedule_booking_reminders(
-            booking_id,
-            uid,
-            result["reminder_times"],
+            booking_id, uid, result["reminder_times"],
             "Haazir AI reminder: booking {booking_id} is coming up soon.",
         )
     updated = await set_booking_status(booking_id, "confirmed")
@@ -446,7 +528,7 @@ async def confirm_booking(body: BookingRequest):
 
 @app.post("/api/dispute")
 async def handle_dispute(body: DisputeRequest):
-    """JHAGRA agent resolves a dispute; new disputes/{id} every submit (repeats allowed)."""
+    """File a dispute (default: open two-sided lifecycle; instant JHAGRA if DISPUTE_INSTANT_RESOLVE=true)."""
     uid = _require_firebase_uid(body.user_id)
     return await file_dispute(
         user_id=uid,
@@ -479,58 +561,106 @@ async def list_user_disputes(user_id: str):
     return {"user_id": uid, "disputes": await list_disputes_for_user(uid)}
 
 
+@app.get("/api/disputes/worker/{user_id}")
+async def list_worker_disputes_route(user_id: str, status: Optional[str] = None):
+    """Worker dashboard — disputes against linked provider (default: all statuses; use status=open)."""
+    uid = _require_firebase_uid(user_id)
+    return await list_worker_disputes(uid, status=status)
+
+
+@app.post("/api/dispute/{dispute_id}/respond")
+async def respond_to_dispute_route(dispute_id: str, body: DisputeRespondRequest):
+    """Worker response — open → under_review (does not modify booking)."""
+    uid = _require_firebase_uid(body.user_id)
+    return await respond_to_dispute(
+        worker_uid=uid,
+        dispute_id=dispute_id,
+        message=body.message,
+    )
+
+
+@app.post("/api/dispute/{dispute_id}/finalize")
+async def finalize_dispute_route(dispute_id: str, body: DisputeFinalizeRequest):
+    """Phase E — JHAGRA final resolution after HIFAZAT review (under_review)."""
+    uid = _require_firebase_uid(body.user_id)
+    return await finalize_dispute(user_id=uid, dispute_id=dispute_id)
+
+
 @app.get("/api/booking/{booking_id}")
 async def get_booking_status(booking_id: str):
-    """Fetch booking status + lifecycle tracking steps."""
     booking = await get_booking(booking_id)
     if not booking:
         raise HTTPException(status_code=404, detail=f"Booking {booking_id} not found")
-    enriched = await _enrich_booking(booking)
-    return enriched
+    return await _enrich_booking(booking)
+
+
+@app.get("/api/booking/{booking_id}/dispute-eligibility")
+async def get_booking_dispute_eligibility(booking_id: str):
+    """Phase A — whether customer can file a dispute (read-only; no auto-cancel)."""
+    bid = (booking_id or "").strip()
+    if not bid:
+        raise HTTPException(status_code=400, detail="booking_id is required")
+    booking = await get_booking(bid)
+    if not booking:
+        raise HTTPException(status_code=404, detail=f"Booking {bid} not found")
+    check = assess_dispute_eligibility(booking)
+    return {
+        "booking_id": bid,
+        "eligible": check.eligible,
+        "reason": check.reason,
+        "message": check.message,
+        "booking_status": check.booking_status,
+        "would_auto_cancel": check.would_auto_cancel,
+        "no_show_grace_hours": NO_SHOW_GRACE_HOURS,
+    }
 
 
 @app.get("/api/bookings/user/{user_id}")
 async def list_user_bookings(user_id: str):
-    """All bookings for Firebase Auth UID."""
     uid = _require_firebase_uid(user_id)
     rows = await list_bookings(user_id=uid)
     rows.sort(key=lambda b: b.get("created_at", ""), reverse=True)
-    out = []
-    for b in rows:
-        out.append(await _enrich_booking(b))
-    return {"bookings": out, "count": len(out)}
+    return {"bookings": [await _enrich_booking(b) for b in rows], "count": len(rows)}
 
 
 @app.get("/api/bookings/provider/{provider_id}")
 async def list_provider_bookings(provider_id: str, status: str = None):
-    """All bookings assigned to a provider (worker dashboard)."""
     rows = await list_bookings(provider_id=provider_id, status=status)
     rows.sort(key=lambda b: b.get("created_at", ""), reverse=True)
-    out = []
-    for b in rows:
-        out.append(await _enrich_booking(b))
-    return {"bookings": out, "count": len(out)}
+    return {"bookings": [await _enrich_booking(b) for b in rows], "count": len(rows)}
 
 
 @app.get("/api/bookings/worker/{user_id}")
 async def list_worker_bookings(user_id: str, status: str = None):
-    """Worker dashboard: bookings for users/{uid} linked provider_id."""
     uid = _require_firebase_uid(user_id)
-    return await get_worker_bookings(uid, status=status)
+    try:
+        return await get_worker_bookings(uid, status=status)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[Worker jobs] error for uid={uid}: {e}")
+        return {"user_id": uid, "provider_id": None, "bookings": [], "count": 0,
+                "message": f"Jobs load karne mein masla hua — {type(e).__name__}"}
 
 
 @app.get("/api/workers/{user_id}/earnings")
 async def worker_earnings(user_id: str):
-    """Earnings summary from completed bookings for worker's provider."""
     uid = _require_firebase_uid(user_id)
-    data = await get_worker_bookings(uid)
-    summary = summarize_worker_earnings(data.get("bookings") or [])
-    return {**summary, "provider_id": data.get("provider_id"), "user_id": uid}
+    try:
+        data = await get_worker_bookings(uid)
+        summary = summarize_worker_earnings(data.get("bookings") or [])
+        return {**summary, "provider_id": data.get("provider_id"), "user_id": uid}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[Worker earnings] error for uid={uid}: {e}")
+        return {"today_total": 0, "today_jobs": 0, "week_total": 0, "week_jobs": 0,
+                "week_by_day": [0]*7, "completed_count": 0, "recent_payments": [],
+                "provider_id": None, "user_id": uid}
 
 
 @app.patch("/api/booking/{booking_id}/status")
 async def patch_booking_status(booking_id: str, body: BookingStatusUpdate):
-    """Update booking lifecycle state (triggers push on real change)."""
     return await set_booking_status(booking_id, body.status)
 
 
@@ -610,7 +740,6 @@ async def get_user_profile(user_id: str):
     if not doc:
         raise HTTPException(status_code=404, detail="User not found")
     normalized = mirror_profile_root_fields({**doc})
-    # Persist fix if legacy doc had identity only in worker_data
     if normalized.get("phone") and not (doc.get("phone") or "").strip():
         await sync_user_profile(uid, normalized)
     return {**normalized, "profile_complete": is_profile_complete(normalized)}
@@ -618,7 +747,6 @@ async def get_user_profile(user_id: str):
 
 @app.get("/api/logs/{request_id}")
 async def get_agent_logs(request_id: str):
-    """Return agent trace logs from Firestore or in-memory cache."""
     rid = (request_id or "").strip()
     doc = await get_agent_logs_doc(rid)
     if doc:
@@ -664,147 +792,345 @@ async def download_trace_report(request_id: str):
 
 @app.get("/api/provider/report/{provider_id}")
 async def get_provider_report(provider_id: str):
-    """REPORT agent generates daily income report for a provider."""
     all_providers = _load_providers()
     provider = next((p for p in all_providers if p["id"] == provider_id), None)
     if not provider:
         raise HTTPException(status_code=404, detail=f"Provider {provider_id} not found")
-    result = await run_provider_report(provider_id, provider)
-    return result
+    return await run_provider_report(provider_id, provider)
 
 
 @app.get("/api/providers")
 async def list_providers(city: str = None, service: str = None):
-    """List providers from Firestore, falling back to local JSON."""
     from services.providers_integrity import format_provider_record
-
     providers = await firestore_list_providers(city=city, service=service)
     if not providers:
-        providers = [
-            format_provider_record(p, p.get("id"))
-            for p in _load_providers()
-        ]
+        providers = [format_provider_record(p, p.get("id")) for p in _load_providers()]
         if city:
             providers = [p for p in providers if p["city"].lower() == city.lower()]
         if service:
             providers = [
-                p
-                for p in providers
+                p for p in providers
                 if service.lower() in (p.get("service") or "").lower()
-                or any(
-                    service.lower() in s.lower()
-                    for s in (p.get("specialization") or [])
-                )
+                or any(service.lower() in s.lower() for s in (p.get("specialization") or []))
             ]
     return {"providers": providers, "count": len(providers)}
 
 
 @app.post("/api/admin/seed-providers")
 async def seed_providers():
-    """Seed Firestore providers collection from backend/data/providers.json."""
     if os.getenv("ENVIRONMENT", "development") != "development":
         raise HTTPException(status_code=403, detail="Seed only allowed in development")
     count = await seed_providers_from_json(str(_PROVIDERS_PATH))
-    return {
-        "seeded": count,
-        "mock_mode": is_mock_mode(),
-        "message": "Providers written to Firestore (or mock DB)",
-    }
+    return {"seeded": count, "mock_mode": is_mock_mode(), "message": "Providers written to Firestore"}
 
 
 @app.post("/api/conversation")
 async def conversation(body: ConversationRequest):
-    """BAAT-CHEET: Multi-turn voice conversation with state machine.
-
-    Flow: intake → [SEARCH] auto-triggers orchestration → results injected →
-    agent presents providers → [BOOK] triggers booking.
-    """
+    """BAAT-CHEET: Multi-turn voice conversation with state machine."""
     from agents.conversation import run_conversation
     from services.uplift_tts import text_to_speech
+    from services.whatsapp import send_booking_whatsapp
 
     result = await run_conversation(
         session_id=body.session_id,
         user_message=body.user_text,
         providers=body.providers,
         user_name=body.user_name,
+        history=body.history,
+        language=body.language or 'roman_urdu',
     )
 
-    # Auto-trigger orchestration when agent outputs [SEARCH: ...]
     if result.get("search_trigger"):
         trigger = result["search_trigger"]
-        service = trigger.get("service", "service")
+        service = _normalize_service(trigger.get("service", "service"))
         location = trigger.get("location", "Islamabad")
         urgency = trigger.get("urgency", "medium")
 
-        orch_result = await run_full_orchestration(
-            user_input=f"Mujhe {service} chahiye, location: {location}, urgency: {urgency}",
-            user_location=location,
-            user_id=body.user_id,
-        )
-        providers = orch_result.get("providers_ranked", [])[:3]
-        if not providers:
-            providers = _load_providers()[:3]
+        orch: dict = {}
+        try:
+            orch = await run_samajh_workflow(
+                user_input=f"Mujhe {service} chahiye, location: {location}, urgency: {urgency}",
+                source="text",
+                user_location=location,
+            )
+        except Exception as _se:
+            logger.warning("[conversation] run_samajh_workflow failed: %s", _se)
 
-        # Feed results back — agent will now present options to user
+        providers = list((orch.get("providers_ranked") or []))[:3]
+        if not providers:
+            # Use service-filtered fallback — never inject unrelated categories
+            fallback_intent = orch.get("intent") or {
+                "service_type": service,
+                "city": location,
+            }
+            providers = _fallback_ranked_providers(fallback_intent, limit=3)
+
+        # Safeguard: strip any cross-category providers before sending to frontend
+        search_intent = orch.get("intent") or {"service_type": service, "city": location}
+        providers = _filter_providers_by_service(providers, search_intent)
+
+        # Cache for book_trigger + negotiate endpoint
+        _session_search_cache[body.session_id] = {
+            "service": service,
+            "location": location,
+            "urgency": urgency,
+            "providers": providers,
+            "intent": orch.get("intent") or {
+                "service_type": service,
+                "location": location,
+                "urgency": urgency,
+                "job_complexity": "intermediate",
+            },
+        }
+
         follow_up = await run_conversation(
             session_id=body.session_id,
             user_message="[system: search complete]",
             providers=providers,
             user_name=body.user_name,
+            history=None,  # session already exists at this point
         )
         result["response_text"] = follow_up["response_text"]
-        result["phase"] = follow_up["phase"]
         result["providers"] = providers
-        result["request_id"] = orch_result.get("request_id")
+        result["request_id"] = new_request_id()
 
-    # Auto-confirm booking when agent outputs [BOOK: ...]
+        # If follow_up AI prematurely generated [BOOK:] (before user picked provider),
+        # ignore it and keep phase at "confirming" so user sees the provider list.
+        if follow_up.get("book_trigger"):
+            logger.warning("[conversation] follow_up book_trigger ignored — search results just arrived, user hasn't picked a provider yet")
+            result["phase"] = "confirming"
+        else:
+            result["phase"] = follow_up["phase"]
+
+    # Safety: if both search and book triggered in the same response, ignore book.
+    # [BOOK: ...] can only fire AFTER [RESULTS: ...] shown in a separate turn.
+    if result.get("search_trigger") and result.get("book_trigger"):
+        logger.warning("[conversation] book_trigger ignored — appeared with search_trigger in same turn (premature booking prevented)")
+        result["book_trigger"] = None
+
     if result.get("book_trigger"):
         trigger = result["book_trigger"]
         provider_id = trigger.get("provider_id", "")
         payment_method = trigger.get("payment", "cash")
+        uid = body.user_id or "anonymous"
 
-        all_providers = _load_providers()
-        provider = next((p for p in all_providers if p["id"] == provider_id), None)
+        # Resolve provider — session cache first, then Firestore, then JSON fallback
+        cached = _session_search_cache.get(body.session_id, {})
+        cached_providers = cached.get("providers") or []
+        provider = next((p for p in cached_providers if str(p.get("id")) == str(provider_id)), None)
         if not provider:
-            provider = all_providers[0]
+            provider = await get_provider(provider_id)
+        if not provider:
+            all_json = _load_providers()
+            provider = next((p for p in all_json if p.get("id") == provider_id), None)
+        if not provider:
+            provider = (cached_providers or _load_providers())[0]
 
-        booking_id = f"HAZ-{uuid.uuid4().hex[:8].upper()}"
-        result["booking_result"] = {
-            "booking_id": booking_id,
-            "provider": provider,
-            "receipt": {
-                "service": provider.get("service", "Service"),
-                "location": f"{provider.get('area', '')}, {provider.get('city', 'Islamabad')}",
-                "scheduled_time": "2026-05-17 10:00",
-                "estimated_price": f"Rs. {provider.get('base_rate', 2500):,}",
-                "payment_methods": [payment_method.title()],
-            },
-            "confirmation_message": (
-                f"{provider.get('name')} 17 May 2026, 10:00 AM pe {provider.get('city', 'Islamabad')} aayenge. "
-                f"Total estimate: Rs. {provider.get('base_rate', 2500):,}. Reference: {booking_id}"
-            ),
-            "reminders": [],
-            "payment_method": payment_method,
-        }
+        if is_mock_mode():
+            # Mock booking — Firebase not connected
+            booking_id = f"HAZ-{uuid.uuid4().hex[:8].upper()}"
+            result["booking_result"] = {
+                "booking_id": booking_id,
+                "provider": provider,
+                "receipt": {
+                    "service": provider.get("service", "Service"),
+                    "location": f"{provider.get('area', '')}, {provider.get('city', 'Islamabad')}",
+                    "scheduled_time": "Tomorrow 10:00 AM",
+                    "estimated_price": f"Rs. {provider.get('price_per_hour', provider.get('base_rate', 2500)):,}",
+                    "payment_methods": [payment_method.title()],
+                    "status": "confirmed",
+                },
+                "confirmation_message": (
+                    f"✅ {provider.get('name')} kal 10:00 AM pe aayenge. "
+                    f"Rs. {provider.get('price_per_hour', provider.get('base_rate', 2500)):,}. Ref: {booking_id}"
+                ),
+                "reminders": [],
+                "payment_method": payment_method,
+                "whatsapp_sent": False,
+            }
+        else:
+            # Real booking via Hisaab + Pakka + Firebase
+            intent = cached.get("intent") or {
+                "service_type": cached.get("service", provider.get("service", "service")),
+                "time_preference": "flexible",
+                "urgency": cached.get("urgency", "medium"),
+                "job_complexity": "intermediate",
+                "emergency": False,
+                "location": cached.get("location", ""),
+                "city": provider.get("city", "Islamabad"),
+            }
+            intent.setdefault("city", provider.get("city", "Islamabad"))
+            intent.setdefault("time_preference", "flexible")
+            try:
+                pricing = await hisaab_agent.calculate_price(intent, provider)
+                booking_res = await pakka_agent.create_booking(intent, provider, pricing, uid)
+                booking_res.pop("_log", None)
+                booking_id = booking_res["booking_id"]
+                await append_user_booking(uid, booking_id)
+
+                # WhatsApp notification
+                user_doc = await get_user(uid)
+                user_phone = (user_doc or {}).get("phone", "")
+                whatsapp_sent = False
+                if user_phone:
+                    whatsapp_sent = await send_booking_whatsapp(
+                        user_phone, booking_id,
+                        provider.get("name", "Provider"),
+                        intent.get("service_type", "service"),
+                        pricing["total"],
+                        booking_res.get("scheduled_time", ""),
+                    )
+
+                result["booking_result"] = {
+                    "booking_id": booking_id,
+                    "provider": provider,
+                    "receipt": booking_res["receipt"],
+                    "confirmation_message": booking_res["confirmation_message"],
+                    "reminders": booking_res.get("reminder_times", []),
+                    "payment_method": payment_method,
+                    "whatsapp_sent": whatsapp_sent,
+                }
+            except Exception as _be:
+                logger.error("[conversation] book_trigger real booking failed: %s", _be)
+                booking_id = f"HAZ-{uuid.uuid4().hex[:8].upper()}"
+                result["booking_result"] = {
+                    "booking_id": booking_id,
+                    "provider": provider,
+                    "receipt": {
+                        "service": provider.get("service", "Service"),
+                        "location": f"{provider.get('area', '')}, {provider.get('city', 'Islamabad')}",
+                        "scheduled_time": "Tomorrow 10:00 AM",
+                        "estimated_price": f"Rs. {provider.get('price_per_hour', provider.get('base_rate', 2500)):,}",
+                        "payment_methods": [payment_method.title()],
+                        "status": "confirmed",
+                    },
+                    "confirmation_message": (
+                        f"✅ {provider.get('name')} kal 10:00 AM pe aayenge. "
+                        f"Rs. {provider.get('price_per_hour', provider.get('base_rate', 2500)):,}. Ref: {booking_id}"
+                    ),
+                    "reminders": [],
+                    "payment_method": payment_method,
+                    "whatsapp_sent": False,
+                }
         result["phase"] = "done"
 
-    # Generate Uplift TTS audio for agent response
     audio_base64 = None
     if result.get("response_text"):
         try:
-            tts = await text_to_speech(result["response_text"], translate=True)
+            from services.uplift_tts import LANGUAGE_VOICE_MAP
+            lang = body.language or 'roman_urdu'
+            # Frontend sends voice_id; fall back to language map so server always uses correct voice
+            tts_voice_id = body.voice_id or LANGUAGE_VOICE_MAP.get(lang, LANGUAGE_VOICE_MAP["roman_urdu"])
+            # roman_urdu needs translation (Roman → Urdu script); all others are already in their script
+            tts_translate = (lang == 'roman_urdu')
+            tts_kwargs: dict = {"translate": tts_translate, "voice_id": tts_voice_id}
+            tts = await text_to_speech(result["response_text"], **tts_kwargs)
             if tts.get("success"):
-                audio_base64 = tts["audio_base64"]
+                audio_base64 = tts.get("audio_base64")
         except Exception as e:
-            print(f"[conversation] TTS error: {e}")
+            logger.warning("[conversation] TTS error: %s", e)
 
     result["audio_base64"] = audio_base64
     return result
 
 
+@app.post("/api/conversation/negotiate")
+async def conversation_negotiate(body: NegotiateRequest):
+    """Run MOLTOL negotiation on providers found in a conversation session."""
+    cached = _session_search_cache.get(body.session_id, {})
+    # Prefer providers sent from frontend (avoids in-memory cache issues on Render)
+    providers = body.providers or cached.get("providers") or _load_providers()[:5]
+    service = cached.get("service", "service")
+    urgency = cached.get("urgency", "medium")
+    location = cached.get("location", "Islamabad")
+
+    intent = {
+        "service_type": service,
+        "urgency": urgency,
+        "emergency": False,
+        "city": location,
+        "job_complexity": "intermediate",
+        "detected_language": "roman_urdu",
+    }
+    reference_provider = providers[0] if providers else {}
+    pricing = await hisaab_agent.calculate_price(intent, reference_provider)
+
+    moltol_result = await moltol_agent.negotiate(intent, providers, pricing)
+    return {
+        "session_id": body.session_id,
+        "status": moltol_result["status"],
+        "top_bids": moltol_result["top_bids"],
+        "recommendation": moltol_result["recommendation"],
+        "total_savings": moltol_result["total_negotiation_savings"],
+    }
+
+
+@app.post("/api/conversation/book")
+async def conversation_direct_book(body: ConvDirectBookRequest):
+    """Direct booking from conversation UI — calls Hisaab + Pakka, sends WhatsApp."""
+    from services.whatsapp import send_booking_whatsapp
+    uid = _require_firebase_uid(body.user_id)
+
+    cached = _session_search_cache.get(body.session_id, {})
+
+    # Resolve provider
+    provider = await get_provider(body.provider_id)
+    if not provider:
+        cached_providers = cached.get("providers", [])
+        all_json = _load_providers()
+        provider = next(
+            (p for p in cached_providers + all_json if p.get("id") == body.provider_id), None
+        )
+    if not provider:
+        provider = (cached.get("providers") or _load_providers())[0]
+
+    intent = {
+        "service_type": cached.get("service", provider.get("service", "service")),
+        "time_preference": "flexible",
+        "urgency": cached.get("urgency", "medium"),
+        "job_complexity": "intermediate",
+        "emergency": False,
+        "location": cached.get("location", ""),
+        "city": provider.get("city", "Islamabad"),
+    }
+
+    if body.price_accepted and body.price_accepted > 0:
+        pricing = {"total": body.price_accepted}
+    else:
+        pricing = await hisaab_agent.calculate_price(intent, provider)
+
+    booking_res = await pakka_agent.create_booking(intent, provider, pricing, uid)
+    booking_res.pop("_log", None)
+    booking_id = booking_res["booking_id"]
+
+    await append_user_booking(uid, booking_id)
+
+    # WhatsApp notification
+    user_doc = await get_user(uid)
+    user_phone = (user_doc or {}).get("phone", "")
+    whatsapp_sent = False
+    if user_phone:
+        whatsapp_sent = await send_booking_whatsapp(
+            user_phone, booking_id,
+            provider.get("name", "Provider"),
+            intent["service_type"],
+            pricing["total"],
+            booking_res.get("scheduled_time", ""),
+        )
+
+    return {
+        "booking_id": booking_id,
+        "provider": provider,
+        "receipt": booking_res["receipt"],
+        "confirmation_message": booking_res["confirmation_message"],
+        "reminders": booking_res.get("reminder_times", []),
+        "payment_method": body.payment_method,
+        "whatsapp_sent": whatsapp_sent,
+    }
+
+
 @app.get("/api/admin/verify-firestore")
 async def verify_firestore():
-    """Step 1: audit active collections, UID rules, and document counts."""
     if os.getenv("ENVIRONMENT", "development") != "development":
         raise HTTPException(status_code=403, detail="Verify only allowed in development")
     return await verify_firestore_structure()
@@ -812,7 +1138,6 @@ async def verify_firestore():
 
 @app.get("/api/admin/verify-users")
 async def verify_users():
-    """Step 2: audit users/{uid} integrity (roles, UID mapping, no workers collection)."""
     if os.getenv("ENVIRONMENT", "development") != "development":
         raise HTTPException(status_code=403, detail="Verify only allowed in development")
     return await verify_users_integrity()
@@ -820,7 +1145,6 @@ async def verify_users():
 
 @app.post("/api/admin/repair-profile-roots")
 async def repair_profile_roots():
-    """Mirror identity fields from worker_data to users/{uid} root for all users."""
     if os.getenv("ENVIRONMENT", "development") != "development":
         raise HTTPException(status_code=403, detail="Repair only allowed in development")
     result = await repair_user_profile_roots()
@@ -830,7 +1154,6 @@ async def repair_profile_roots():
 
 @app.post("/api/admin/cleanup-invalid-users")
 async def cleanup_invalid_users():
-    """Remove legacy users/{fake_id} documents (e.g. user_aapka_email_com)."""
     if os.getenv("ENVIRONMENT", "development") != "development":
         raise HTTPException(status_code=403, detail="Cleanup only allowed in development")
     result = await cleanup_invalid_user_documents()
@@ -840,7 +1163,6 @@ async def cleanup_invalid_users():
 
 @app.get("/api/admin/verify-bookings")
 async def verify_bookings():
-    """Step 3: audit bookings lifecycle, UIDs, and user booking_history linkage."""
     if os.getenv("ENVIRONMENT", "development") != "development":
         raise HTTPException(status_code=403, detail="Verify only allowed in development")
     return await verify_bookings_integrity()
@@ -848,7 +1170,6 @@ async def verify_bookings():
 
 @app.post("/api/admin/repair-booking-history")
 async def repair_booking_history():
-    """Sync users/{uid}.booking_history from all valid bookings."""
     if os.getenv("ENVIRONMENT", "development") != "development":
         raise HTTPException(status_code=403, detail="Repair only allowed in development")
     result = await repair_all_booking_history()
@@ -856,9 +1177,18 @@ async def repair_booking_history():
     return {**result, "verify": verify}
 
 
+@app.post("/api/admin/repair-dispute-history")
+async def repair_dispute_history():
+    """Backfill users/{uid}.dispute_history from disputes/* (development only)."""
+    if os.getenv("ENVIRONMENT", "development") != "development":
+        raise HTTPException(status_code=403, detail="Repair only allowed in development")
+    result = await repair_all_dispute_history()
+    verify = await verify_disputes_integrity()
+    return {**result, "verify": verify}
+
+
 @app.get("/api/admin/verify-providers")
 async def verify_providers():
-    """Step 4: audit providers collection, ids, canonical fields, booking refs."""
     if os.getenv("ENVIRONMENT", "development") != "development":
         raise HTTPException(status_code=403, detail="Verify only allowed in development")
     return await verify_providers_integrity()
@@ -866,7 +1196,6 @@ async def verify_providers():
 
 @app.get("/api/admin/verify-disputes")
 async def verify_disputes():
-    """Step 6: audit disputes collection, booking linkage, resolution fields."""
     if os.getenv("ENVIRONMENT", "development") != "development":
         raise HTTPException(status_code=403, detail="Verify only allowed in development")
     return await verify_disputes_integrity()
@@ -874,7 +1203,6 @@ async def verify_disputes():
 
 @app.get("/api/admin/verify-agent-logs")
 async def verify_agent_logs():
-    """Step 7: audit agent_logs/{request_id} — user_input, timestamp, logs array."""
     if os.getenv("ENVIRONMENT", "development") != "development":
         raise HTTPException(status_code=403, detail="Verify only allowed in development")
     return await verify_agent_logs_integrity()
@@ -882,7 +1210,6 @@ async def verify_agent_logs():
 
 @app.get("/api/admin/verify-notifications")
 async def verify_notifications():
-    """Step 8: audit notifications/{notif_id} and push_token coverage."""
     if os.getenv("ENVIRONMENT", "development") != "development":
         raise HTTPException(status_code=403, detail="Verify only allowed in development")
     return await verify_notifications_integrity()
@@ -890,7 +1217,6 @@ async def verify_notifications():
 
 @app.post("/api/admin/process-notifications")
 async def process_notifications():
-    """Send due scheduled notifications (reminders)."""
     if os.getenv("ENVIRONMENT", "development") != "development":
         raise HTTPException(status_code=403, detail="Process only allowed in development")
     return await process_pending_notifications()
@@ -898,7 +1224,6 @@ async def process_notifications():
 
 @app.post("/api/admin/cleanup-invalid-bookings")
 async def cleanup_invalid_bookings():
-    """Delete bookings with fake user_id values (legacy demo data)."""
     if os.getenv("ENVIRONMENT", "development") != "development":
         raise HTTPException(status_code=403, detail="Cleanup only allowed in development")
     result = await cleanup_bookings_with_invalid_user_id()
@@ -909,7 +1234,6 @@ async def cleanup_invalid_bookings():
 
 @app.post("/api/admin/migrate-reviews")
 async def migrate_reviews():
-    """Move legacy reviews/* into bookings/* and delete the reviews collection."""
     if os.getenv("ENVIRONMENT", "development") != "development":
         raise HTTPException(status_code=403, detail="Migrate only allowed in development")
     result = await migrate_reviews_to_bookings()
@@ -919,7 +1243,6 @@ async def migrate_reviews():
 
 @app.get("/api/routes")
 async def list_routes():
-    """Dev helper: list mounted API routes (same app instance as /health and /docs)."""
     routes = []
     for r in app.routes:
         if not hasattr(r, "methods") or not hasattr(r, "path"):
@@ -936,7 +1259,6 @@ async def list_routes():
 
 @app.post("/api/feedback")
 async def submit_feedback(body: FeedbackRequest):
-    """Submit post-service rating + review."""
     _require_firebase_uid(body.user_id)
     if not 1 <= body.rating <= 5:
         raise HTTPException(status_code=400, detail="Rating must be between 1 and 5")
@@ -951,15 +1273,50 @@ async def submit_feedback(body: FeedbackRequest):
     booking = await get_booking(body.booking_id)
     status = (booking.get("status") or "").lower() if booking else ""
     if booking and status != "completed":
-        await set_booking_status(body.booking_id, "completed")
+        booking = await set_booking_status(body.booking_id, "completed")
     elif booking:
         await notify_feedback_received(booking, body.provider_id, body.rating)
+
+    hifazat_result: dict = {}
+    trust_applied: dict = {}
+    try:
+        from agents.hifazat import HifazatAgent
+        from services.trust_service import apply_feedback_trust, build_feedback_payload
+
+        booking = booking or await get_booking(body.booking_id) or {}
+        payload = await build_feedback_payload(
+            booking=booking,
+            rating=body.rating,
+            review=body.review,
+            tags=body.tags or [],
+        )
+        hifazat_result = await HifazatAgent().process_feedback(payload)
+        trust_applied = await apply_feedback_trust(
+            hifazat_result,
+            provider_id=body.provider_id,
+            customer_id=body.user_id,
+        )
+    except Exception as exc:
+        print(f"[HIFAZAT] feedback trust failed: {exc}")
+
+    msg = f"Shukriya! Aapka feedback submit ho gaya. Rating: {body.rating}/5"
+    if hifazat_result.get("provider_message"):
+        msg = str(hifazat_result["provider_message"])
+
     return {
         "success": True,
         "review_id": review_id,
-        "message": f"Shukriya! Aapka feedback submit ho gaya. Rating: {body.rating}/5",
+        "message": msg,
+        "hifazat": {
+            "severity": hifazat_result.get("severity"),
+            "action_taken": hifazat_result.get("action_taken"),
+            "trust_point_change": hifazat_result.get("trust_point_change"),
+        },
+        "trust_applied": trust_applied,
     }
 
+
+# ── Sanity check ──────────────────────────────────────────────────────────────
 
 def _assert_routes_registered() -> None:
     paths = {getattr(r, "path", None) for r in app.routes}
@@ -1008,7 +1365,6 @@ if __name__ == "__main__":
         file=sys.stderr,
     )
     import uvicorn
-
     uvicorn.run(
         "backend.main:app",
         host=os.getenv("HOST", "0.0.0.0"),

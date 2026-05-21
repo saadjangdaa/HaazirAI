@@ -13,6 +13,7 @@ Environment is loaded from ``config`` (``backend/config.py``) when available; do
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import uuid
@@ -38,7 +39,15 @@ from services.firestore_schema import (
 )
 
 _BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-load_dotenv(os.path.join(_BACKEND_ROOT, ".env"))
+
+# Collection name constants
+COL_USERS = "users"
+COL_PROVIDERS = "providers"
+COL_BOOKINGS = "bookings"
+COL_AGENT_LOGS = "agent_logs"
+COL_DISPUTES = "disputes"
+COL_REVIEWS = "reviews"
+COL_WAITLIST = "waitlist"
 
 FIREBASE_PROJECT_ID = os.getenv("FIREBASE_PROJECT_ID", "")
 _default_creds = os.path.join(_BACKEND_ROOT, "firebase-credentials.json")
@@ -49,6 +58,15 @@ FIREBASE_CREDENTIALS_PATH = (
     else os.path.normpath(os.path.join(_BACKEND_ROOT, _cred_env.lstrip("./")))
 )
 MOCK_MODE = not FIREBASE_PROJECT_ID or FIREBASE_PROJECT_ID == "your_firebase_project_id"
+
+
+def is_mock_mode() -> bool:
+    """True when Firestore uses in-memory mock, not real credentials."""
+    svc = _default_service
+    if svc is not None:
+        return svc.is_mock
+    return MOCK_MODE
+
 
 COLLECTIONS = tuple(sorted(ACTIVE_COLLECTIONS))
 
@@ -1002,6 +1020,7 @@ async def list_booking_entries() -> List[tuple]:
         return list(_mock_bucket("bookings").items())
     db = _get_db()
     if db is None:
+    if is_mock_mode():
         return list(_mock_bucket("bookings").items())
     return [
         (snap.id, snap.to_dict() or {})
@@ -1207,6 +1226,7 @@ async def list_user_entries() -> List[tuple]:
         return list(_mock_bucket("users").items())
     db = _get_db()
     if db is None:
+    if is_mock_mode():
         return list(_mock_bucket("users").items())
     return [
         (snap.id, snap.to_dict() or {})
@@ -1244,6 +1264,7 @@ async def sync_user_profile(user_id: str, data: dict) -> str:
     else:
         merged.setdefault("created_at", now)
         merged.setdefault("booking_history", [])
+        merged.setdefault("dispute_history", [])
         await create_user(user_id, merged)
     return user_id
 
@@ -1277,6 +1298,7 @@ async def list_provider_entries() -> List[tuple]:
         return list(_mock_bucket("providers").items())
     db = _get_db()
     if db is None:
+    if is_mock_mode():
         return list(_mock_bucket("providers").items())
     return [
         (snap.id, snap.to_dict() or {})
@@ -1377,7 +1399,7 @@ async def verify_providers_integrity() -> Dict[str, Any]:
             json_count = len(json.load(f))
 
     return {
-        "mock_mode": MOCK_MODE,
+        "mock_mode": is_mock_mode(),
         "seed_json_count": json_count,
         "firestore_count": len(entries),
         **audit,
@@ -1445,7 +1467,7 @@ async def verify_users_integrity() -> Dict[str, Any]:
     audit = audit_users_collection(entries)
 
     extra_worker_collection = []
-    if not MOCK_MODE:
+    if not is_mock_mode():
         try:
             for coll_ref in _get_db().collections():
                 if coll_ref.id in ("workers", "worker", "worker_profiles"):
@@ -1454,7 +1476,7 @@ async def verify_users_integrity() -> Dict[str, Any]:
             extra_worker_collection.append(f"(list failed: {exc})")
 
     return {
-        "mock_mode": MOCK_MODE,
+        "mock_mode": is_mock_mode(),
         **audit,
         "forbidden_user_ids_blocked": list(FORBIDDEN_USER_IDS - {""}),
         "extra_worker_collections": extra_worker_collection,
@@ -1484,6 +1506,21 @@ async def append_user_booking(user_id: str, booking_id: str) -> None:
     await update_user(uid, {"booking_history": history})
 
 
+async def append_user_dispute(user_id: str, dispute_id: str) -> None:
+    """Append ``dispute_id`` to users/{uid}.dispute_history (repeat filings allowed)."""
+    uid = require_firebase_uid(user_id)
+    did = (dispute_id or "").strip()
+    if not did:
+        return
+    user = await get_user(uid)
+    if not user:
+        return
+    history = list(user.get("dispute_history") or [])
+    if did not in history:
+        history.append(did)
+    await update_user(uid, {"dispute_history": history})
+
+
 async def repair_all_booking_history() -> Dict[str, Any]:
     """Rebuild users/{uid}.booking_history from bookings collection."""
     from services.users_integrity import is_plausible_firebase_uid
@@ -1505,6 +1542,62 @@ async def repair_all_booking_history() -> Dict[str, Any]:
         updated.append(uid)
 
     return {"users_updated": len(updated), "user_ids": updated}
+
+
+async def repair_dispute_user_ids() -> Dict[str, Any]:
+    """Backfill disputes/{id}.user_id from the linked booking owner."""
+    from services.users_integrity import is_plausible_firebase_uid
+
+    bookings_by_id = {doc_id: data for doc_id, data in await list_booking_entries()}
+    patched: List[str] = []
+    for doc_id, data in await list_dispute_entries():
+        data = data or {}
+        if (data.get("user_id") or "").strip():
+            continue
+        bid = (data.get("booking_id") or "").strip()
+        booking = bookings_by_id.get(bid) or {}
+        uid = (booking.get("user_id") or "").strip()
+        if uid and is_plausible_firebase_uid(uid):
+            _doc_update("disputes", doc_id, {"user_id": uid, "updated_at": _now_iso()})
+            patched.append(doc_id)
+    return {"disputes_user_id_patched": len(patched), "dispute_ids": patched}
+
+
+async def repair_all_dispute_history() -> Dict[str, Any]:
+    """Rebuild users/{uid}.dispute_history from disputes collection."""
+    from services.users_integrity import is_plausible_firebase_uid
+
+    user_id_result = await repair_dispute_user_ids()
+    bookings_by_id = {doc_id: data for doc_id, data in await list_booking_entries()}
+    by_user: Dict[str, List[str]] = {}
+    for doc_id, data in await list_dispute_entries():
+        data = data or {}
+        uid = (data.get("user_id") or "").strip()
+        if not uid:
+            bid = (data.get("booking_id") or "").strip()
+            booking = bookings_by_id.get(bid) or {}
+            uid = (booking.get("user_id") or "").strip()
+        if not uid or not is_plausible_firebase_uid(uid):
+            continue
+        by_user.setdefault(uid, []).append(doc_id)
+
+    updated: List[str] = []
+    for uid, dispute_ids in by_user.items():
+        user = await get_user(uid)
+        if not user:
+            continue
+        merged = list(user.get("dispute_history") or [])
+        for did in dispute_ids:
+            if did not in merged:
+                merged.append(did)
+        await update_user(uid, {"dispute_history": merged})
+        updated.append(uid)
+
+    return {
+        **user_id_result,
+        "users_updated": len(updated),
+        "user_ids": updated,
+    }
 
 
 async def cleanup_bookings_with_invalid_user_id() -> Dict[str, Any]:
@@ -1530,7 +1623,7 @@ async def verify_bookings_integrity() -> Dict[str, Any]:
     audit = audit_bookings_collection(booking_entries, user_entries)
 
     return {
-        "mock_mode": MOCK_MODE,
+        "mock_mode": is_mock_mode(),
         "allowed_statuses": list(BOOKING_STATUSES),
         "status_aliases": {"enroute": "on_the_way", "en_route": "on_the_way"},
         **audit,
@@ -1550,6 +1643,7 @@ async def list_dispute_entries() -> List[tuple]:
         return list(_mock_bucket("disputes").items())
     db = _get_db()
     if db is None:
+    if is_mock_mode():
         return list(_mock_bucket("disputes").items())
     return [
         (snap.id, snap.to_dict() or {})
@@ -1563,6 +1657,15 @@ async def create_dispute(data: dict) -> str:
         {**data, "created_at": data.get("created_at", _now_iso())},
         dispute_id=dispute_id,
     )
+    if not (payload.get("user_id") or "").strip():
+        bid = (payload.get("booking_id") or (data.get("booking_id") or "")).strip()
+        if bid:
+            booking = await get_booking(bid)
+            booking_uid = ((booking or {}).get("user_id") or "").strip()
+            if booking_uid:
+                payload["user_id"] = require_firebase_uid(booking_uid)
+    if not (payload.get("user_id") or "").strip():
+        raise ValueError("Cannot create dispute without user_id (Firebase Auth UID)")
     _doc_set("disputes", dispute_id, payload)
     return dispute_id
 
@@ -1607,8 +1710,15 @@ async def list_disputes_for_user(user_id: str) -> List[dict]:
 
 
 async def update_dispute(dispute_id: str, data: dict) -> bool:
-    patch = normalize_dispute({**data}, dispute_id=dispute_id)
-    return _doc_update("disputes", dispute_id, {**patch, "updated_at": _now_iso()})
+    """Merge *data* into an existing dispute without clearing omitted fields."""
+    clean = {k: v for k, v in (data or {}).items() if v is not None and v != ""}
+    if not clean:
+        return False
+    existing = await get_dispute(dispute_id) or {}
+    merged = normalize_dispute({**existing, **clean}, dispute_id=dispute_id)
+    patch = {k: v for k, v in merged.items() if v != "" or k in clean}
+    patch["updated_at"] = _now_iso()
+    return _doc_update("disputes", dispute_id, patch)
 
 
 async def delete_dispute(dispute_id: str) -> bool:
@@ -1626,7 +1736,7 @@ async def verify_disputes_integrity() -> Dict[str, Any]:
     audit = audit_disputes_collection(dispute_entries, booking_ids, bookings_by_id)
 
     return {
-        "mock_mode": MOCK_MODE,
+        "mock_mode": is_mock_mode(),
         **audit,
     }
 
@@ -1640,6 +1750,7 @@ async def list_agent_log_entries() -> List[tuple]:
         return list(_mock_bucket("agent_logs").items())
     db = _get_db()
     if db is None:
+    if is_mock_mode():
         return list(_mock_bucket("agent_logs").items())
     return [
         (snap.id, snap.to_dict() or {})
@@ -1711,7 +1822,7 @@ async def verify_agent_logs_integrity() -> Dict[str, Any]:
     entries = await list_agent_log_entries()
     audit = audit_agent_logs_collection(entries)
     return {
-        "mock_mode": MOCK_MODE,
+        "mock_mode": is_mock_mode(),
         **audit,
     }
 
@@ -1760,6 +1871,7 @@ async def list_notification_entries() -> List[tuple]:
         return list(_mock_bucket("notifications").items())
     db = _get_db()
     if db is None:
+    if is_mock_mode():
         return list(_mock_bucket("notifications").items())
     return [
         (snap.id, snap.to_dict() or {})
@@ -1812,7 +1924,7 @@ async def verify_notifications_integrity() -> Dict[str, Any]:
         if (doc.get("push_token") or "").strip():
             users_with_token += 1
     return {
-        "mock_mode": MOCK_MODE,
+        "mock_mode": is_mock_mode(),
         "users_with_push_token": users_with_token,
         **audit,
     }
@@ -1885,7 +1997,7 @@ async def migrate_reviews_to_bookings() -> Dict[str, Any]:
     skipped = 0
     errors: List[str] = []
 
-    if MOCK_MODE:
+    if is_mock_mode():
         legacy = _mock_db.pop("reviews", {})
         for _rid, rev in legacy.items():
             bid = rev.get("booking_id")
@@ -1936,7 +2048,7 @@ async def verify_firestore_structure() -> Dict[str, Any]:
     extra_root: List[str] = []
     store: Dict[str, Dict[str, Dict[str, Any]]] = {c: {} for c in COLLECTIONS}
 
-    if MOCK_MODE:
+    if is_mock_mode():
         for name, bucket in _mock_db.items():
             if name in ACTIVE_COLLECTIONS:
                 store[name] = dict(bucket)
@@ -1955,7 +2067,7 @@ async def verify_firestore_structure() -> Dict[str, Any]:
 
     audit = audit_store(store)
     return {
-        "mock_mode": MOCK_MODE,
+        "mock_mode": is_mock_mode(),
         "project_id": FIREBASE_PROJECT_ID or None,
         "active_collections": list(COLLECTIONS),
         **audit,

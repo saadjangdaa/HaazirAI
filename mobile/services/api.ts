@@ -25,8 +25,10 @@ if (__DEV__) {
 client.interceptors.response.use(
   (res) => res,
   async (err: AxiosError) => {
-    const config = err.config as typeof err.config & { _retryCount?: number };
-    if (!config || (config._retryCount ?? 0) >= 2) return Promise.reject(err);
+    const config = err.config as typeof err.config & { _retryCount?: number; _noRetry?: boolean };
+    // Don't retry if explicitly disabled (e.g. bootstrap short-timeout requests)
+    // or if we've already retried twice.
+    if (!config || config._noRetry || (config._retryCount ?? 0) >= 2) return Promise.reject(err);
     const retryable =
       err.code === 'ECONNABORTED' ||
       err.code === 'ERR_NETWORK' ||
@@ -77,8 +79,10 @@ export function formatApiError(err: unknown): string {
 
 export async function pingApi(): Promise<{ ok: boolean; url: string }> {
   const url = getApiBaseUrl();
+  // Render free tier can take 30+ seconds on cold start — use a generous timeout
+  const PING_TIMEOUT = 35000;
   try {
-    const { data } = await client.get('/health', { timeout: 8000 });
+    const { data } = await client.get('/health', { timeout: PING_TIMEOUT, _noRetry: true } as Record<string, unknown>);
     const ok = data?.status === 'ok';
     if (__DEV__ && ok) console.log('[Haazir API] Backend reachable at', url);
     return { ok, url };
@@ -252,16 +256,34 @@ export interface DisputeResolution {
   provider_penalty: string;
   case_summary: string;
   escalated_to_human: boolean;
+  worker_id?: string;
+  worker_response_pending?: boolean;
+  message?: string;
+  instant_resolve?: boolean;
+  hifazat_summary?: {
+    complaint_verdict?: string;
+    recommended_action?: string;
+    trust_score?: number;
+  };
+  already_finalized?: boolean;
+}
+
+export interface DisputeWorkerResponse {
+  message: string;
+  timestamp: string;
 }
 
 export interface DisputeRecord {
   dispute_id: string;
   booking_id: string;
   user_id?: string;
+  worker_id?: string;
   type: string;
   status: string;
   resolution?: string;
   description?: string;
+  customer_message?: string;
+  worker_response?: DisputeWorkerResponse | null;
   refund_amount?: number;
   provider_penalty?: string;
   escalated_to_human?: boolean;
@@ -294,8 +316,10 @@ export interface UserProfile {
   email?: string;
   username?: string;
   name?: string;
+  display_name?: string;
   phone?: string;
   cnic?: string;
+  city?: string;
   role?: 'customer' | 'worker';
   profile_complete?: boolean;
   push_token?: string;
@@ -375,10 +399,14 @@ export async function submitDispute(params: {
   description: string;
   evidenceUrl?: string;
 }): Promise<DisputeResolution> {
+  const userId = (params.userId || '').trim();
+  if (!userId) {
+    throw new Error('Login zaroori hai — Firebase account se sign in karein');
+  }
   try {
     const { data } = await client.post('/api/dispute', {
       booking_id: params.bookingId,
-      user_id: params.userId,
+      user_id: userId,
       dispute_type: params.disputeType,
       description: params.description,
       evidence_url: params.evidenceUrl,
@@ -400,13 +428,85 @@ export async function getUserDisputes(userId: string): Promise<DisputeRecord[]> 
   return data.disputes || [];
 }
 
+export async function getDisputeDetail(disputeId: string): Promise<DisputeRecord> {
+  const { data } = await client.get(`/api/dispute/${disputeId}`);
+  return data;
+}
+
+export async function finalizeDispute(params: {
+  disputeId: string;
+  userId: string;
+}): Promise<DisputeResolution> {
+  const { data } = await client.post(`/api/dispute/${params.disputeId}/finalize`, {
+    user_id: params.userId,
+  });
+  return data;
+}
+
 export async function getBookingDisputes(bookingId: string): Promise<DisputeRecord[]> {
   const { data } = await client.get(`/api/disputes/booking/${bookingId}`);
   return data.disputes || [];
 }
 
+export interface WorkerDisputesResponse {
+  user_id: string;
+  provider_id: string | null;
+  disputes: DisputeRecord[];
+  count: number;
+}
+
+export async function getWorkerDisputes(
+  userId: string,
+  status?: string
+): Promise<WorkerDisputesResponse> {
+  const params: Record<string, string> = {};
+  if (status) params.status = status;
+  const { data } = await client.get(`/api/disputes/worker/${userId}`, { params });
+  return data;
+}
+
+export async function respondToDispute(params: {
+  disputeId: string;
+  userId: string;
+  message: string;
+}): Promise<{
+  dispute_id: string;
+  dispute_status: string;
+  booking_id: string;
+  worker_response: DisputeWorkerResponse;
+  message: string;
+  dispute?: DisputeRecord;
+  hifazat_summary?: {
+    recommended_action?: string;
+    complaint_verdict?: string;
+    trust_score?: number;
+  };
+  worker_warning?: string | null;
+}> {
+  const { data } = await client.post(`/api/dispute/${params.disputeId}/respond`, {
+    user_id: params.userId,
+    message: params.message,
+  });
+  return data;
+}
+
 export async function getBookingStatus(id: string): Promise<BookingStatus> {
   const { data } = await client.get(`/api/booking/${id}`);
+  return data;
+}
+
+export interface DisputeEligibilityResponse {
+  booking_id: string;
+  eligible: boolean;
+  reason: string;
+  message: string;
+  booking_status: string;
+  would_auto_cancel: boolean;
+  no_show_grace_hours: number;
+}
+
+export async function getDisputeEligibility(bookingId: string): Promise<DisputeEligibilityResponse> {
+  const { data } = await client.get(`/api/booking/${bookingId}/dispute-eligibility`);
   return data;
 }
 
@@ -500,9 +600,16 @@ export async function syncUserProfile(body: {
   throw lastErr;
 }
 
-export async function getUserProfile(userId: string): Promise<UserProfile | null> {
+export async function getUserProfile(
+  userId: string,
+  timeoutMs = 45000
+): Promise<UserProfile | null> {
   try {
-    const { data } = await client.get(`/api/users/${userId}`);
+    const { data } = await client.get(`/api/users/${userId}`, {
+      timeout: timeoutMs,
+      // If caller passed a short timeout (bootstrap path), skip retries.
+      ...(timeoutMs < 45000 ? { _noRetry: true } as Record<string, unknown> : {}),
+    });
     return data;
   } catch {
     return null;

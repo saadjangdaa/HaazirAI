@@ -182,7 +182,7 @@ async def notify_dispute_filed(
         event_type=f"dispute_created_{event_suffix}",
         booking_id=booking_id,
         role="customer",
-        data={"status": "disputed", "dispute_id": dispute_id},
+        data={"status": "open", "dispute_id": dispute_id},
     )
     provider_id = booking.get("provider_id")
     if provider_id:
@@ -191,12 +191,99 @@ async def notify_dispute_filed(
                 continue
             await deliver_notification(
                 wid,
-                title="Dispute opened",
-                message=f"A dispute was opened on booking {booking_id}",
-                event_type=f"dispute_opened_{event_suffix}",
+                title="Customer complaint",
+                message=(
+                    f"Booking {booking_id}: customer filed a dispute. "
+                    "Please open the app and submit your response."
+                ),
+                event_type=f"dispute_response_required_{event_suffix}",
                 booking_id=booking_id,
                 role="worker",
-                data={"status": "disputed", "provider_id": provider_id, "dispute_id": dispute_id},
+                data={
+                    "status": "open",
+                    "provider_id": provider_id,
+                    "dispute_id": dispute_id,
+                    "action": "respond",
+                },
+            )
+
+
+async def notify_worker_trust_warning(
+    provider_id: str,
+    message: str,
+    *,
+    dispute_id: str = "",
+) -> None:
+    """Non-blocking trust warning for workers (no internal scores)."""
+    suffix = (dispute_id or "warn").strip()[:12]
+    for wid in await list_users_by_provider(provider_id):
+        await deliver_notification(
+            wid,
+            title="Profile warning",
+            message=message,
+            event_type=f"trust_warning_{suffix}",
+            role="worker",
+            data={"dispute_id": dispute_id, "action": "trust_warning"},
+        )
+
+
+async def notify_dispute_worker_replied(
+    booking: dict,
+    customer_id: str,
+    dispute_id: str = "",
+) -> None:
+    """Customer notified when worker submits a dispute response."""
+    if not booking or not customer_id:
+        return
+    booking_id = booking.get("booking_id", "")
+    event_suffix = (dispute_id or "reply").strip()[:12]
+    await deliver_notification(
+        customer_id,
+        title="Worker replied to your complaint",
+        message=f"The worker responded on booking {booking_id}. Your case is under review.",
+        event_type=f"dispute_worker_replied_{event_suffix}",
+        booking_id=booking_id,
+        role="customer",
+        data={"status": "under_review", "dispute_id": dispute_id},
+    )
+
+
+async def notify_dispute_resolved(
+    booking: dict,
+    customer_id: str,
+    *,
+    dispute_id: str = "",
+    dispute_status: str = "resolved",
+    refund_amount: int = 0,
+) -> None:
+    """Customer + workers notified when JHAGRA finalizes a dispute."""
+    if not booking:
+        return
+    booking_id = booking.get("booking_id", "")
+    suffix = (dispute_id or "done").strip()[:12]
+    refund_note = f" Refund: Rs {refund_amount}" if refund_amount else ""
+    await deliver_notification(
+        customer_id,
+        title="Dispute resolved",
+        message=f"Your dispute on {booking_id} is {dispute_status}.{refund_note}",
+        event_type=f"dispute_resolved_{suffix}",
+        booking_id=booking_id,
+        role="customer",
+        data={"status": dispute_status, "dispute_id": dispute_id, "refund_amount": refund_amount},
+    )
+    provider_id = booking.get("provider_id")
+    if provider_id:
+        for wid in await list_users_by_provider(provider_id):
+            if wid == customer_id:
+                continue
+            await deliver_notification(
+                wid,
+                title="Dispute closed",
+                message=f"Dispute on booking {booking_id} is {dispute_status}.",
+                event_type=f"dispute_closed_{suffix}",
+                booking_id=booking_id,
+                role="worker",
+                data={"status": dispute_status, "dispute_id": dispute_id},
             )
 
 

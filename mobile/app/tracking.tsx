@@ -1,15 +1,25 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, ActivityIndicator,
+  View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, ActivityIndicator, StatusBar,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Colors, Spacing, Radius, FontSize, Shadow } from '../constants/theme';
+import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '../constants/theme';
 import {
-  getBookingStatus, updateBookingStatus, formatApiError, BookingStatus,
+  getBookingStatus, getDisputeEligibility, updateBookingStatus, formatApiError, BookingStatus,
 } from '../services/api';
+import { isDisputeEligibleStatus } from '../utils/disputeEligibility';
 
 const DEMO_ADVANCE = ['confirmed', 'on_the_way', 'arrived', 'in_progress', 'completed'];
+
+const STATUS_ICONS: Record<string, string> = {
+  confirmed: 'checkmark-circle',
+  on_the_way: 'navigate',
+  arrived: 'location',
+  in_progress: 'construct',
+  completed: 'trophy',
+};
 
 export default function TrackingScreen() {
   const router = useRouter();
@@ -18,6 +28,7 @@ export default function TrackingScreen() {
   const [status, setStatus] = useState<BookingStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [advancing, setAdvancing] = useState(false);
+  const [canFileDispute, setCanFileDispute] = useState(false);
 
   const load = useCallback(async () => {
     if (!bookingId) return;
@@ -32,19 +43,32 @@ export default function TrackingScreen() {
     }
   }, [bookingId]);
 
+  useEffect(() => { load(); }, [load]);
+
   useEffect(() => {
-    load();
-  }, [load]);
+    if (!bookingId || !status?.status) {
+      setCanFileDispute(false);
+      return;
+    }
+    const s = status.status.toLowerCase();
+    if (isDisputeEligibleStatus(s)) {
+      setCanFileDispute(true);
+      return;
+    }
+    if (s === 'confirmed') {
+      getDisputeEligibility(bookingId)
+        .then((r) => setCanFileDispute(r.eligible))
+        .catch(() => setCanFileDispute(false));
+      return;
+    }
+    setCanFileDispute(false);
+  }, [bookingId, status?.status]);
 
   const handleAdvance = async () => {
     if (!bookingId || !status) return;
     const current = status.status?.toLowerCase() || 'assigned';
     const idx = DEMO_ADVANCE.indexOf(current);
-    const next = idx >= 0 && idx < DEMO_ADVANCE.length - 1
-      ? DEMO_ADVANCE[idx + 1]
-      : current === 'assigned'
-        ? 'confirmed'
-        : 'completed';
+    const next = idx >= 0 && idx < DEMO_ADVANCE.length - 1 ? DEMO_ADVANCE[idx + 1] : current === 'assigned' ? 'confirmed' : 'completed';
     if (next === current) return;
     setAdvancing(true);
     try {
@@ -61,100 +85,207 @@ export default function TrackingScreen() {
     return (
       <View style={styles.center}>
         <ActivityIndicator color={Colors.primary} size="large" />
+        <Text style={styles.loadingText}>Tracking info load ho rahi hai...</Text>
       </View>
     );
   }
 
   const steps = status?.tracking_steps || [];
   const completed = status?.status === 'completed';
+  const currentStatus = status?.status?.toLowerCase() || '';
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
-      <Text style={styles.bookingId}>Ref: {bookingId}</Text>
-      <Text style={styles.statusLine}>Status: {status?.status?.replace(/_/g, ' ') || '—'}</Text>
+    <View style={styles.root}>
+      <StatusBar barStyle="light-content" backgroundColor={Colors.primary} />
 
-      <View style={styles.timeline}>
-        {steps.map((step, i) => (
-          <View key={`${step.key || step.step}-${i}`} style={styles.timelineRow}>
-            <View style={styles.timelineLeft}>
-              <View style={[styles.dot, step.done && styles.dotDone]}>
-                <Text style={styles.dotIcon}>{step.done ? '✓' : '○'}</Text>
-              </View>
-              {i < steps.length - 1 && (
-                <View style={[styles.line, step.done && styles.lineDone]} />
-              )}
-            </View>
-            <Text style={[styles.stepLabel, step.done && styles.stepLabelDone]}>{step.step}</Text>
-          </View>
-        ))}
-      </View>
-
-      {status?.provider_name && (
-        <View style={styles.providerCard}>
-          <Text style={styles.providerTitle}>Provider</Text>
-          <Text style={styles.providerInfo}>{status.provider_name}</Text>
-          <Text style={styles.providerInfo}>{status.service}</Text>
+      {/* Header */}
+      <View style={[styles.header, { paddingTop: insets.top + Spacing.sm }]}>
+        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+          <Ionicons name="arrow-back" size={22} color={Colors.textInverse} />
+        </TouchableOpacity>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.headerTitle}>Live Tracking</Text>
+          <Text style={styles.headerSub}>Ref: {bookingId}</Text>
         </View>
-      )}
-
-      {!completed && (
-        <TouchableOpacity
-          style={styles.simulateBtn}
-          onPress={handleAdvance}
-          disabled={advancing}
-        >
-          <Text style={styles.simulateBtnText}>
-            {advancing ? 'Updating...' : '▶ Advance status (demo)'}
+        <View style={[styles.statusPill, completed && styles.statusPillDone]}>
+          <Text style={[styles.statusPillText, completed && styles.statusPillTextDone]}>
+            {status?.status?.replace(/_/g, ' ') || '—'}
           </Text>
-        </TouchableOpacity>
-      )}
-
-      {completed && (
-        <TouchableOpacity
-          style={[styles.feedbackBtn, Shadow.primary]}
-          onPress={() => router.push({ pathname: '/feedback', params: { bookingId } })}
-        >
-          <Text style={styles.feedbackBtnText}>Feedback dein</Text>
-        </TouchableOpacity>
-      )}
-
-      <View style={styles.actionRow}>
-        <TouchableOpacity
-          style={[styles.actionBtn, styles.disputeBtn]}
-          onPress={() => router.push({ pathname: '/dispute', params: { bookingId } })}
-        >
-          <Text style={[styles.actionBtnText, { color: Colors.danger }]}>Complaint</Text>
-        </TouchableOpacity>
+        </View>
       </View>
-    </ScrollView>
+
+      <ScrollView
+        style={styles.body}
+        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
+        showsVerticalScrollIndicator={false}
+      >
+
+        {/* Provider info */}
+        {status?.provider_name && (
+          <View style={[styles.providerCard, Shadow.sm]}>
+            <View style={styles.providerAvatar}>
+              <Ionicons name="person" size={26} color={Colors.primary} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.providerName}>{status.provider_name}</Text>
+              <Text style={styles.providerService}>{status.service}</Text>
+            </View>
+            <View style={styles.providerActions}>
+              <TouchableOpacity style={styles.actionCircle}>
+                <Ionicons name="call-outline" size={18} color={Colors.primary} />
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.actionCircle}>
+                <Ionicons name="chatbubble-outline" size={18} color={Colors.primary} />
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+
+        {/* Timeline */}
+        <View style={[styles.timelineCard, Shadow.sm]}>
+          <Text style={styles.timelineTitle}>Service Status</Text>
+          {steps.map((step, i) => {
+            const iconName = (STATUS_ICONS[step.key || ''] || 'ellipse-outline') as any;
+            return (
+              <View key={`${step.key || step.step}-${i}`} style={styles.timelineRow}>
+                <View style={styles.timelineLeft}>
+                  <View style={[styles.dot, step.done && styles.dotDone]}>
+                    {step.done
+                      ? <Ionicons name="checkmark" size={14} color={Colors.textInverse} />
+                      : <View style={styles.dotInner} />
+                    }
+                  </View>
+                  {i < steps.length - 1 && <View style={[styles.line, step.done && styles.lineDone]} />}
+                </View>
+                <View style={styles.stepContent}>
+                  <Text style={[styles.stepLabel, step.done && styles.stepLabelDone]}>{step.step}</Text>
+                  {step.done && <Text style={styles.stepTime}>Completed</Text>}
+                </View>
+              </View>
+            );
+          })}
+        </View>
+
+        {/* Demo advance button */}
+        {!completed && (
+          <TouchableOpacity style={[styles.simulateBtn, Shadow.sm]} onPress={handleAdvance} disabled={advancing} activeOpacity={0.8}>
+            {advancing
+              ? <ActivityIndicator color={Colors.primary} size="small" />
+              : <Ionicons name="play-circle-outline" size={18} color={Colors.primary} />
+            }
+            <Text style={styles.simulateBtnText}>{advancing ? 'Updating...' : 'Advance Status (Demo)'}</Text>
+          </TouchableOpacity>
+        )}
+
+        {/* Feedback */}
+        {completed && (
+          <TouchableOpacity
+            style={[styles.feedbackBtn, Shadow.primary]}
+            onPress={() => router.push({ pathname: '/feedback', params: { bookingId } })}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="star-outline" size={18} color={Colors.textInverse} />
+            <Text style={styles.feedbackBtnText}>Rating aur Feedback Dein</Text>
+          </TouchableOpacity>
+        )}
+
+        {canFileDispute && (
+          <View style={styles.actionRow}>
+            <TouchableOpacity
+              style={styles.disputeBtn}
+              onPress={() => router.push({ pathname: '/dispute', params: { bookingId } })}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="alert-circle-outline" size={16} color={Colors.danger} />
+              <Text style={styles.disputeBtnText}>Complaint</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+      </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: Colors.background },
-  content: { padding: Spacing.md, paddingBottom: 48 },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  bookingId: { color: Colors.textMuted, fontSize: FontSize.xs, textAlign: 'center', marginBottom: 4 },
-  statusLine: { color: Colors.primary, fontSize: FontSize.sm, fontWeight: '700', textAlign: 'center', marginBottom: Spacing.lg },
-  timeline: { marginBottom: Spacing.lg },
-  timelineRow: { flexDirection: 'row', minHeight: 48 },
-  timelineLeft: { alignItems: 'center', width: 40 },
-  dot: { width: 32, height: 32, borderRadius: 16, backgroundColor: Colors.surfaceElevated, borderWidth: 2, borderColor: Colors.border, justifyContent: 'center', alignItems: 'center' },
-  dotDone: { backgroundColor: Colors.primaryDim, borderColor: Colors.primary },
-  dotIcon: { fontSize: 12, color: Colors.textPrimary },
+  root: { flex: 1, backgroundColor: Colors.background },
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: Spacing.md, backgroundColor: Colors.background },
+  loadingText: { color: Colors.textMuted, fontSize: FontSize.sm },
+
+  header: {
+    backgroundColor: Colors.primary,
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    paddingHorizontal: Spacing.md, paddingBottom: Spacing.md,
+  },
+  backBtn: { width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(255,255,255,0.18)', justifyContent: 'center', alignItems: 'center' },
+  headerTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: Colors.textInverse },
+  headerSub: { fontSize: FontSize.xs, color: 'rgba(255,255,255,0.7)' },
+  statusPill: {
+    backgroundColor: 'rgba(255,255,255,0.20)',
+    borderRadius: Radius.full, paddingHorizontal: 10, paddingVertical: 4,
+  },
+  statusPillDone: { backgroundColor: Colors.success },
+  statusPillText: { fontSize: FontSize.xs, color: Colors.textInverse, fontWeight: FontWeight.bold, textTransform: 'capitalize' },
+  statusPillTextDone: { color: Colors.textInverse },
+
+  body: { flex: 1 },
+  content: { padding: Spacing.md },
+
+  // Provider card
+  providerCard: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.md,
+    backgroundColor: Colors.surface, borderRadius: Radius.xl,
+    padding: Spacing.md, marginBottom: Spacing.md,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  providerAvatar: { width: 52, height: 52, borderRadius: 26, backgroundColor: Colors.primaryLight, justifyContent: 'center', alignItems: 'center' },
+  providerName: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: Colors.textPrimary, marginBottom: 2 },
+  providerService: { fontSize: FontSize.xs, color: Colors.textMuted },
+  providerActions: { flexDirection: 'row', gap: Spacing.sm },
+  actionCircle: { width: 38, height: 38, borderRadius: 19, backgroundColor: Colors.primaryLight, justifyContent: 'center', alignItems: 'center' },
+
+  // Timeline
+  timelineCard: {
+    backgroundColor: Colors.surface, borderRadius: Radius.xl,
+    padding: Spacing.md, marginBottom: Spacing.md,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  timelineTitle: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: Colors.textMuted, textTransform: 'uppercase', letterSpacing: 1, marginBottom: Spacing.md },
+  timelineRow: { flexDirection: 'row', minHeight: 52 },
+  timelineLeft: { alignItems: 'center', width: 36 },
+  dot: {
+    width: 28, height: 28, borderRadius: 14,
+    backgroundColor: Colors.border,
+    justifyContent: 'center', alignItems: 'center',
+  },
+  dotDone: { backgroundColor: Colors.primary },
+  dotInner: { width: 10, height: 10, borderRadius: 5, backgroundColor: Colors.borderStrong },
   line: { width: 2, flex: 1, backgroundColor: Colors.border, marginTop: 2 },
   lineDone: { backgroundColor: Colors.primary },
-  stepLabel: { flex: 1, color: Colors.textMuted, fontSize: FontSize.sm, paddingLeft: Spacing.md, paddingTop: 6 },
-  stepLabelDone: { color: Colors.primary, fontWeight: '600' },
-  providerCard: { backgroundColor: Colors.cardBg, borderRadius: Radius.lg, padding: Spacing.md, marginBottom: Spacing.md, borderWidth: 1, borderColor: Colors.border },
-  providerTitle: { color: Colors.textSecondary, fontSize: FontSize.sm, fontWeight: '600', marginBottom: Spacing.sm },
-  providerInfo: { color: Colors.textPrimary, fontSize: FontSize.md },
-  simulateBtn: { backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md, padding: Spacing.md, alignItems: 'center', marginBottom: Spacing.md, borderWidth: 1, borderColor: Colors.primary },
-  simulateBtnText: { color: Colors.primary, fontSize: FontSize.sm, fontWeight: '700' },
-  feedbackBtn: { backgroundColor: Colors.primary, borderRadius: Radius.lg, padding: Spacing.md, alignItems: 'center', marginBottom: Spacing.md },
-  feedbackBtnText: { color: Colors.background, fontSize: FontSize.lg, fontWeight: '800' },
-  actionRow: { flexDirection: 'row', gap: Spacing.sm },
-  actionBtn: { flex: 1, backgroundColor: Colors.cardBg, borderRadius: Radius.md, padding: Spacing.md, alignItems: 'center', borderWidth: 1, borderColor: Colors.border },
-  disputeBtn: { borderColor: Colors.danger, backgroundColor: Colors.dangerDim },
-  actionBtnText: { color: Colors.textPrimary, fontSize: FontSize.sm, fontWeight: '600' },
+  stepContent: { flex: 1, paddingLeft: Spacing.sm, paddingTop: 4 },
+  stepLabel: { fontSize: FontSize.sm, color: Colors.textMuted, fontWeight: FontWeight.medium },
+  stepLabelDone: { color: Colors.textPrimary, fontWeight: FontWeight.bold },
+  stepTime: { fontSize: FontSize.xs, color: Colors.primary, marginTop: 2 },
+
+  simulateBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: Colors.surface, borderRadius: Radius.xl,
+    padding: Spacing.md, marginBottom: Spacing.md,
+    borderWidth: 1.5, borderColor: Colors.primaryDim,
+  },
+  simulateBtnText: { color: Colors.primary, fontSize: FontSize.sm, fontWeight: FontWeight.bold },
+
+  feedbackBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: Colors.primary, borderRadius: Radius.xl,
+    height: 56, marginBottom: Spacing.md,
+  },
+  feedbackBtnText: { color: Colors.textInverse, fontSize: FontSize.lg, fontWeight: FontWeight.bold },
+
+  actionRow: { flexDirection: 'row' },
+  disputeBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: Colors.dangerDim, borderRadius: Radius.lg,
+    padding: Spacing.md, borderWidth: 1, borderColor: Colors.danger,
+  },
+  disputeBtnText: { color: Colors.danger, fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
 });

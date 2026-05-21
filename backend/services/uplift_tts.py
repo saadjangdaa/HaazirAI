@@ -9,10 +9,21 @@ UPLIFT_API_KEY = os.getenv("UPLIFT_AI_API_KEY", "")
 UPLIFT_BASE_URL = "https://api.upliftai.org/v1"
 MOCK_MODE = not UPLIFT_API_KEY
 
-# Voice IDs from Uplift AI docs
-VOICE_URDU_FEMALE = "v_meklc281"   # Proper Urdu female voice
-VOICE_PROFESSIONAL = "v_8eelc901"  # Info/Edu female
-VOICE_CLEAR = "v_kwmp7zxt"         # Gen Z clear
+# Voice IDs from Uplift AI — used per language
+VOICE_URDU_FEMALE = "v_meklc281"    # Default: Urdu female (roman_urdu, urdu, pashto)
+VOICE_SINDHI = "v_sd0kl3m9"         # Sindhi female
+VOICE_BALOCHI = "v_bl1de2f7"        # Balochi female
+VOICE_PROFESSIONAL = "v_8eelc901"   # Info/Edu female (fallback)
+VOICE_CLEAR = "v_kwmp7zxt"          # Gen Z clear (fallback)
+
+# Map language codes → voice IDs (mirrors mobile VOICE_IDS)
+LANGUAGE_VOICE_MAP: dict[str, str] = {
+    "roman_urdu": VOICE_URDU_FEMALE,
+    "urdu":       VOICE_URDU_FEMALE,
+    "pashto":     VOICE_URDU_FEMALE,
+    "sindhi":     VOICE_SINDHI,
+    "balochi":    VOICE_BALOCHI,
+}
 
 
 async def _translate_to_urdu(text: str) -> str:
@@ -41,6 +52,9 @@ async def text_to_speech(text: str, voice_id: str = VOICE_URDU_FEMALE, translate
 
     try:
         urdu_text = await _translate_to_urdu(text) if translate else text
+        # Guard: if Gemini mock/failure returned JSON instead of Urdu script, use original text
+        if not urdu_text or urdu_text.strip().startswith('{'):
+            urdu_text = text
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(

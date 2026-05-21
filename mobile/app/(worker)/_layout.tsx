@@ -1,45 +1,23 @@
 import { Tabs } from 'expo-router';
-import { Colors, FontSize } from '../../constants/theme';
-import { Text } from 'react-native';
-
-function Icon({ label }: { label: string }) {
-  return <Text style={{ fontSize: 20 }}>{label}</Text>;
-}
+import { Colors, FontSize, FontWeight } from '../../constants/theme';
+import WorkerTabBar from '../../components/WorkerTabBar';
 
 export default function WorkerLayout() {
   return (
     <Tabs
+      tabBar={() => <WorkerTabBar />}
       screenOptions={{
-        tabBarActiveTintColor: Colors.warning,
-        tabBarInactiveTintColor: Colors.textMuted,
-        tabBarStyle: {
-          backgroundColor: Colors.surface,
-          borderTopColor: Colors.border,
-          borderTopWidth: 1,
-        },
-        tabBarLabelStyle: { fontSize: FontSize.xs, fontWeight: '700' },
-        headerStyle: { backgroundColor: Colors.background },
-        headerTintColor: Colors.warning,
-        headerTitleStyle: { color: Colors.textPrimary, fontWeight: '700' },
+        headerStyle: { backgroundColor: Colors.primary, shadowColor: 'transparent', elevation: 0 },
+        headerTintColor: Colors.textInverse,
+        headerTitleStyle: { color: Colors.textInverse, fontWeight: FontWeight.bold, fontSize: FontSize.lg },
         contentStyle: { backgroundColor: Colors.background },
       }}
     >
-      <Tabs.Screen
-        name="jobs"
-        options={{ title: 'Jobs', tabBarIcon: () => <Icon label="💼" /> }}
-      />
-      <Tabs.Screen
-        name="earnings"
-        options={{ title: 'Kamai', tabBarIcon: () => <Icon label="💰" /> }}
-      />
-      <Tabs.Screen
-        name="route"
-        options={{ title: 'Route', tabBarIcon: () => <Icon label="🗺️" /> }}
-      />
-      <Tabs.Screen
-        name="profile"
-        options={{ title: 'Profile', tabBarIcon: () => <Icon label="👷" /> }}
-      />
+      <Tabs.Screen name="jobs"     options={{ title: 'Jobs',     headerShown: false }} />
+      <Tabs.Screen name="earnings" options={{ title: 'Earnings', headerShown: false }} />
+      <Tabs.Screen name="route"    options={{ title: 'Route',    headerShown: false }} />
+      <Tabs.Screen name="profile"  options={{ title: 'Profile',  headerShown: false }} />
+      <Tabs.Screen name="disputes" options={{ title: 'Disputes', headerShown: false }} />
     </Tabs>
   );
 }
