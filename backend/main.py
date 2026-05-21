@@ -109,6 +109,10 @@ from services.push_notify import (
     notify_feedback_received,
     process_pending_notifications,
 )
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+
 app = FastAPI(
     title="Haazir Dost API",
     description="Pakistan's agentic home-services orchestrator",
