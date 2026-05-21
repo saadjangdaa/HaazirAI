@@ -43,10 +43,8 @@ export async function stopAndTranscribe(): Promise<{ text: string; language: str
 
   try {
     const data = await transcribeVoiceAudio(base64, 'audio/m4a');
-    if (!data.text?.trim()) {
-      throw new Error('Empty transcription');
-    }
-    return { text: data.text, language: data.detected_language };
+    // Return empty text so caller can show a gentle retry hint instead of crashing
+    return { text: (data.text || '').trim(), language: data.detected_language || 'roman_urdu' };
   } catch (err) {
     throw new Error(formatApiError(err));
   }
