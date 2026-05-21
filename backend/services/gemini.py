@@ -182,21 +182,21 @@ def _mock_gemini_response(prompt: str, system_prompt: str = "") -> str:
             lang = "roman_urdu"
 
         _GREETINGS = {
-            "roman_urdu": "Assalam-o-Alaikum! Main Fatima hun, Haazir AI ki assistant. Batayiye, aaj kya chahiye — AC, plumber, ya koi aur service?",
+            "roman_urdu": "Assalam-o-Alaikum! Main Fatima hun, Haazir AI ki assistant. Batayiye, aaj kya chahiye — AC, plumber, ya koi aur service?\nURDU_TTS: السلام علیکم! میں فاطمہ ہوں، حاضر AI کی اسسٹنٹ۔ بتائیے، آج کیا چاہیے — AC، پلمبر، یا کوئی اور سروس؟",
             "urdu":       "السلام علیکم! میں فاطمہ ہوں — حاضر AI کی اسسٹنٹ۔ بتایئے، آج کیا سروس چاہیے؟",
             "sindhi":     "السلام عليکم! مان فاطمه آهيان — حاضر AI جي مددگار. ٻڌايو، اڄ ڪهڙي خدمت گهرجي؟",
             "pashto":     "السلام علیکم! زه فاطمه یم — د حاضر AI مرستیاله. ووایاست، نن ورځ کومه خدمت پکار ده؟",
             "balochi":    "السلام علیکم! من فاطمه ئن — حاضر AI ءِ مددگار۔ امروز کئی خدمت لازم ءُ؟",
         }
         _ASK_LOCATION = {
-            "roman_urdu": "Achha! Kahan chahiye — area batao (jaise G-13, DHA)?",
+            "roman_urdu": "Achha! Kahan chahiye — area batao (jaise G-13, DHA)?\nURDU_TTS: اچھا! کہاں چاہیے — علاقہ بتائیں (جیسے G-13، DHA)؟",
             "urdu":       "اچھا! کہاں چاہیے — علاقہ بتائیں (جیسے G-13، DHA)؟",
             "sindhi":     "ٺيڪ آهي! ڪٿي گهرجي — علائقو ٻڌايو (جهڙوڪ DHA، Clifton)؟",
             "pashto":     "ښه! چیرته پکار ده — سیمه ووایاست (لکه DHA، F-7)؟",
             "balochi":    "خیر! کجا لازم ءُ — ناحیه بگوش (مثال DHA، Clifton)؟",
         }
         _SEARCH_CONFIRM = {
-            "roman_urdu": "Theek hai, main abhi providers dhundh rahi hun!",
+            "roman_urdu": "Theek hai, main abhi providers dhundh rahi hun!\nURDU_TTS: ٹھیک ہے، میں ابھی پروائیڈرز ڈھونڈ رہی ہوں!",
             "urdu":       "ٹھیک ہے، میں ابھی پرووائیڈرز ڈھونڈ رہی ہوں!",
             "sindhi":     "ٺيڪ آهي، مان هاڻي مددگار ڳولي رهي آهيان!",
             "pashto":     "ښه، زه اوس چمتو کوونکي لټوم!",
@@ -218,7 +218,7 @@ def _mock_gemini_response(prompt: str, system_prompt: str = "") -> str:
         user_text = user_lines[-1].split(":", 1)[-1].lower() if user_lines else p_lower
 
         _ASK_URGENCY = {
-            "roman_urdu": "Theek hai! Yeh kaam urgent hai (aaj chahiye) ya baad mein schedule karein?",
+            "roman_urdu": "Theek hai! Yeh kaam urgent hai (aaj chahiye) ya baad mein schedule karein?\nURDU_TTS: ٹھیک ہے! یہ کام فوری چاہیے (آج) یا بعد میں شیڈول کریں؟",
             "urdu":       "ٹھیک ہے! یہ کام فوری چاہیے (آج) یا بعد میں شیڈول کریں؟",
             "sindhi":     "ٺيڪ آهي! هي ڪم فوري گهرجي (اڄ) يا پوءِ شيڊول ڪريو؟",
             "pashto":     "ښه! دا کار ژر پکار دی (نن) که وروسته شیډول کړو؟",
@@ -259,7 +259,7 @@ def _mock_gemini_response(prompt: str, system_prompt: str = "") -> str:
             return _ASK_LOCATION[lang]
         if "[results:" in p_lower:
             _results_resp = {
-                "roman_urdu": "Yeh do options hain. Kise bulwana chahungi aapke liye?",
+                "roman_urdu": "Yeh do options hain. Kise bulwana chahungi aapke liye?\nURDU_TTS: یہ دو آپشن ہیں۔ کسے بلوانا چاہیں گے آپ؟",
                 "urdu":       "یہ دو آپشن ہیں۔ کسے بلوانا چاہیں گے آپ؟",
                 "sindhi":     "هي ٻه آپشن آهن. ڪنهن کي سڏرائڻ چاهيو ٿا؟",
                 "pashto":     "دا دوه انتخابونه دي. چا ته وغواړئ چې راشي؟",
@@ -267,9 +267,9 @@ def _mock_gemini_response(prompt: str, system_prompt: str = "") -> str:
             }
             return _results_resp[lang]
         if any(kw in p_lower for kw in ["pehle", "first", "han", "haan", "yes", "ok", "پهريون", "ها"]):
-            return "[BOOK: provider_id=prov_001]\nBilkul, booking confirm kar rahi hun!"
+            return "[BOOK: provider_id=prov_001]\nBilkul, booking confirm kar rahi hun!\nURDU_TTS: بالکل، بکنگ کنفرم کر رہی ہوں!"
         _ask_more = {
-            "roman_urdu": "Zaroor! Thoda aur batao — kya masla hai exactly?",
+            "roman_urdu": "Zaroor! Thoda aur batao — kya masla hai exactly?\nURDU_TTS: ضرور! تھوڑا اور بتائیں — مسئلہ کیا ہے بالکل؟",
             "urdu":       "ضرور! تھوڑا اور بتائیں — مسئلہ کیا ہے بالکل؟",
             "sindhi":     "ضرور! ٿورو وڌيڪ ٻڌايو — مسئلو ڇا آهي بلڪل؟",
             "pashto":     "حتماً! یو څه نور ووایاست — مسئله سم ولمانئ؟",

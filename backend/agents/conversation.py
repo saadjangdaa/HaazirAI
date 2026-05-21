@@ -30,7 +30,11 @@ SYSTEM_PROMPTS: dict = {
     'roman_urdu': (
         "Tum Fatima ho — Haazir AI ki friendly female voice assistant. Pakistan mein ghar ki services ke liye.\n"
         "ZAROORI HUKUM: Sirf Roman Urdu likhna (English/Latin letters mein) — kabhi Urdu/Arabic/Hindi script mat likhna.\n"
-        + _BASE_LOGIC
+        + _BASE_LOGIC +
+        "\n\nIMPORTANT TTS RULE: After your Roman Urdu response, add ONE final line starting with exactly 'URDU_TTS: ' "
+        "followed by your COMPLETE response translated into pure Urdu script (Nastaliq). "
+        "This line is for the voice engine only — never shown to the user. "
+        "Example:\nAchha! Kahan chahiye — area batao?\nURDU_TTS: اچھا! کہاں چاہیے — علاقہ بتائیں؟"
     ),
     'urdu': (
         "آپ فاطمہ ہیں — حاضر AI کی دوستانہ خاتون وائس اسسٹنٹ۔ پاکستان میں گھریلو خدمات کے لیے۔\n"
@@ -187,13 +191,26 @@ async def run_conversation(
         book_trigger = params
         session["phase"] = "booking"
 
-    # Strip [...] tags for TTS
+    # Extract URDU_TTS: line (Urdu script for voice, roman_urdu mode only)
+    tts_text = None
+    tts_match = re.search(r'URDU_TTS:\s*(.+)', response_text)
+    if tts_match:
+        tts_text = tts_match.group(1).strip()
+        # Remove the URDU_TTS line from the display text
+        response_text = re.sub(r'\nURDU_TTS:.*', '', response_text).strip()
+
+    # Strip [...] tags for display
     clean_text = re.sub(r'\[[^\]]+\]', '', response_text).strip()
     clean_text = re.sub(r'  +', ' ', clean_text)
+
+    # Strip [...] tags from tts_text too if present
+    if tts_text:
+        tts_text = re.sub(r'\[[^\]]+\]', '', tts_text).strip()
 
     return {
         "session_id": session_id,
         "response_text": clean_text,
+        "tts_text": tts_text,
         "phase": session["phase"],
         "search_trigger": search_trigger,
         "book_trigger": book_trigger,
