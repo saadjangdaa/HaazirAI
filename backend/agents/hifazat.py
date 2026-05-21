@@ -64,6 +64,97 @@ def _customer_action_from_risk(score: float) -> str:
     return "BLOCK_CUSTOMER"
 
 
+def _dispute_action_from_risk(risk: float, *, serious_count: int) -> str:
+    if serious_count >= 3:
+        return "block_recommendation"
+    if risk >= 0.75:
+        return "escalate_admin"
+    if risk >= 0.55:
+        return "reduce_visibility"
+    if risk >= 0.30:
+        return "warn_worker"
+    return "no_action"
+
+
+_ABUSE_PHRASES = (
+    "scam",
+    "fraud",
+    "chor",
+    "fake",
+    "idiot",
+    "bewaqoof",
+    "haram",
+    "kill",
+    "maro",
+    "sue",
+)
+_EXAGGERATION_PHRASES = (
+    "worst ever",
+    "never again",
+    "kabhi mat",
+    "100% fraud",
+    "pure fraud",
+)
+
+
+def analyze_complaint(text: str) -> dict[str, Any]:
+    """
+    Phase D — non-blocking complaint validity (rule-based).
+    Returns complaint_verdict: valid | warning | abuse_risk
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return {
+            "complaint_verdict": "warning",
+            "reason": "empty_complaint",
+            "confidence": 0.5,
+        }
+
+    lower = raw.lower()
+    if any(p in lower for p in _ABUSE_PHRASES):
+        return {
+            "complaint_verdict": "abuse_risk",
+            "reason": "abusive_language",
+            "confidence": 0.85,
+        }
+
+    if any(p in lower for p in _EXAGGERATION_PHRASES) and len(raw) < 40:
+        return {
+            "complaint_verdict": "warning",
+            "reason": "possible_exaggeration",
+            "confidence": 0.7,
+        }
+
+    if len(raw) < 12:
+        return {
+            "complaint_verdict": "warning",
+            "reason": "too_vague",
+            "confidence": 0.6,
+        }
+
+    return {
+        "complaint_verdict": "valid",
+        "reason": "legitimate_service_issue",
+        "confidence": 0.8,
+    }
+
+
+# Trust delta on 0–1 scale (persisted to providers.trust_score).
+_DISPUTE_TRUST_DELTA = {
+    "rude_behavior": -0.03,
+    "no_show": -0.10,
+    "quality_complaint": -0.05,
+    "price_disagreement": -0.06,
+    "overrun": -0.04,
+    "cancellation": -0.04,
+    "refund_request": -0.05,
+}
+
+_SERIOUS_DISPUTE_TYPES = frozenset(
+    {"no_show", "quality_complaint", "price_disagreement", "refund_request"}
+)
+
+
 class HifazatAgent:
     """Trust scoring + fraud detection for pre-booking and post-job feedback."""
 
@@ -591,6 +682,138 @@ class HifazatAgent:
             ),
         }
 
+    async def evaluate_dispute(
+        self,
+        *,
+        booking: dict,
+        dispute: dict,
+        provider: dict,
+        customer: dict,
+        provider_serious_dispute_count: int = 0,
+        customer_dispute_count: int = 0,
+    ) -> dict[str, Any]:
+        """
+        Phase D — trust/risk after both sides submitted (worker_response expected).
+        Does not decide refunds (JHAGRA / Phase E).
+        """
+        start = _now()
+        dtype = str(dispute.get("type") or dispute.get("dispute_type") or "").strip()
+        customer_msg = (
+            dispute.get("customer_message") or dispute.get("description") or ""
+        )
+        worker_msg = ""
+        wr = dispute.get("worker_response")
+        if isinstance(wr, dict):
+            worker_msg = str(wr.get("message") or "")
+
+        complaint = analyze_complaint(str(customer_msg))
+        verdict = complaint["complaint_verdict"]
+
+        risk = 0.0
+        flags: list[str] = []
+
+        base_delta = _DISPUTE_TRUST_DELTA.get(dtype, -0.04)
+        provider_delta = base_delta
+        customer_delta = 0.0
+
+        if dtype == "rude_behavior":
+            provider_delta = -0.03
+            if "RUDE_BEHAVIOR_REPORT" not in flags:
+                flags.append("RUDE_BEHAVIOR_REPORT")
+        elif dtype == "no_show":
+            provider_delta = -0.10
+            if "NO_SHOW_REPORT" not in flags:
+                flags.append("NO_SHOW_REPORT")
+        elif dtype in _SERIOUS_DISPUTE_TYPES:
+            if "SERIOUS_SERVICE_ISSUE" not in flags:
+                flags.append("SERIOUS_SERVICE_ISSUE")
+
+        if provider_serious_dispute_count >= 3:
+            risk += 0.35
+            provider_delta -= 0.05
+            if "REPEATED_SERIOUS_COMPLAINTS" not in flags:
+                flags.append("REPEATED_SERIOUS_COMPLAINTS")
+
+        if provider_serious_dispute_count >= 2:
+            risk += 0.15
+
+        try:
+            cancellation_rate = float(provider.get("cancellation_rate", 0.0))
+        except (ValueError, TypeError):
+            cancellation_rate = 0.0
+        if cancellation_rate > 0.15:
+            risk += 0.15
+            if "HIGH_CANCELLATION_RATE" not in flags:
+                flags.append("HIGH_CANCELLATION_RATE")
+
+        if verdict == "abuse_risk":
+            risk += 0.25
+            customer_delta = -0.05
+            provider_delta = round(provider_delta * 0.5, 4)
+            if "CUSTOMER_ABUSE_LANGUAGE" not in flags:
+                flags.append("CUSTOMER_ABUSE_LANGUAGE")
+        elif verdict == "warning":
+            risk += 0.10
+            if "COMPLAINT_NEEDS_REVIEW" not in flags:
+                flags.append("COMPLAINT_NEEDS_REVIEW")
+
+        if customer_dispute_count > 4:
+            risk += 0.20
+            customer_delta -= 0.04
+            if "CUSTOMER_DISPUTE_PATTERN" not in flags:
+                flags.append("CUSTOMER_DISPUTE_PATTERN")
+
+        if not worker_msg.strip():
+            risk += 0.05
+            if "NO_WORKER_RESPONSE" not in flags:
+                flags.append("NO_WORKER_RESPONSE")
+
+        risk = round(min(risk, 1.0), 4)
+        recommended_action = _dispute_action_from_risk(
+            risk, serious_count=provider_serious_dispute_count
+        )
+
+        try:
+            current_trust = float(provider.get("trust_score", 0.8))
+        except (ValueError, TypeError):
+            current_trust = 0.8
+        new_trust = round(max(0.0, min(1.0, current_trust + provider_delta)), 4)
+
+        provider_id = str(
+            provider.get("id") or provider.get("provider_id") or dispute.get("worker_id") or ""
+        )
+        customer_id = str(customer.get("id") or customer.get("user_id") or dispute.get("user_id") or "")
+
+        return {
+            "trust_score": new_trust,
+            "previous_trust_score": round(current_trust, 4),
+            "provider_trust_delta": round(provider_delta, 4),
+            "customer_trust_delta": round(customer_delta, 4),
+            "risk_flags": flags,
+            "risk_score": risk,
+            "recommended_action": recommended_action,
+            "complaint_verdict": verdict,
+            "complaint_analysis": complaint,
+            "non_blocking": dtype == "rude_behavior",
+            "refund_recommended": False if dtype == "rude_behavior" else None,
+            "provider_id": provider_id,
+            "customer_id": customer_id,
+            "dispute_type": dtype,
+            "_log": _make_log(
+                start=start,
+                input_summary=(
+                    f"Dispute evaluate booking={booking.get('booking_id')} "
+                    f"type={dtype} verdict={verdict}"
+                ),
+                output_summary=(
+                    f"risk={risk} action={recommended_action} "
+                    f"trust={new_trust} delta={provider_delta}"
+                ),
+                decision_made=recommended_action,
+                confidence=complaint.get("confidence", 0.75),
+            ),
+        }
+
     async def run(self, mode: str, payload: dict) -> dict[str, Any]:
         start = _now()
 
@@ -634,5 +857,17 @@ class HifazatAgent:
 
         if mode == "post_feedback":
             return await self.process_feedback(payload["feedback"])
+
+        if mode == "evaluate_dispute":
+            return await self.evaluate_dispute(
+                booking=payload["booking"],
+                dispute=payload["dispute"],
+                provider=payload["provider"],
+                customer=payload["customer"],
+                provider_serious_dispute_count=int(
+                    payload.get("provider_serious_dispute_count", 0)
+                ),
+                customer_dispute_count=int(payload.get("customer_dispute_count", 0)),
+            )
 
         raise ValueError(f"Unknown HIFAZAT mode: {mode!r}")

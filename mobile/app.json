@@ -13,18 +13,35 @@
         "backgroundColor": "#0A0A0A"
       },
       "package": "com.haazir.ai",
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyDOLSRc5zgnQhS6bSc4zBO0K0edQSkdIqM"
+        }
+      },
       "permissions": [
         "android.permission.RECORD_AUDIO",
         "android.permission.MODIFY_AUDIO_SETTINGS",
         "android.permission.FOREGROUND_SERVICE",
-        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+        "android.permission.CAMERA",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION"
       ]
     },
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.haazir.ai",
+      "config": {
+        "googleMapsApiKey": "AIzaSyDOLSRc5zgnQhS6bSc4zBO0K0edQSkdIqM"
+      },
       "infoPlist": {
-        "NSMicrophoneUsageDescription": "Haazir AI ko awaz sun'ne ke liye microphone chahiye"
+        "NSMicrophoneUsageDescription": "Haazir AI ko awaz sun'ne ke liye microphone chahiye",
+        "NSCameraUsageDescription": "CNIC verification ke liye camera chahiye",
+        "NSPhotoLibraryUsageDescription": "CNIC ki photo upload karne ke liye gallery chahiye",
+        "NSLocationWhenInUseUsageDescription": "Haazir AI aapke qareeb service providers dhundne ke liye location use karta hai",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Haazir AI aapke qareeb service providers dhundne ke liye location use karta hai"
       }
     },
     "web": {
@@ -32,6 +49,25 @@
     },
     "plugins": [
       "expo-router",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Haazir AI aapke qareeb service providers dhundne ke liye location use karta hai"
+        }
+      ],
+      [
+        "react-native-maps",
+        {
+          "googleMapsApiKey": "AIzaSyDOLSRc5zgnQhS6bSc4zBO0K0edQSkdIqM"
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "CNIC verification ke liye gallery access chahiye",
+          "cameraPermission": "CNIC ki photo lene ke liye camera chahiye"
+        }
+      ],
       [
         "expo-build-properties",
         {
@@ -52,8 +88,9 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "0e8fd289-493e-4172-b9b2-cafbda8e43e7"
+        "projectId": "5248e7f0-9a27-45bd-9fe3-c3dafde66eab"
       }
-    }
+    },
+    "owner": "saadabdus"
   }
 }

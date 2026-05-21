@@ -1,29 +1,47 @@
 export const Colors = {
-  background: '#F0FDF9',      // very light mint-white
+  // Core surfaces — InDrive light style
+  background: '#F6F7FB',
   surface: '#FFFFFF',
-  surfaceElevated: '#E6FAF5',
-  primary: '#00A37A',         // Pakistani green (darker for light bg)
-  primaryDim: '#00A37A18',
-  secondary: '#E6FAF5',
-  textPrimary: '#0F2027',     // deep dark for readability
-  textSecondary: '#3D5A52',
-  textMuted: '#7A9E94',
-  danger: '#DC2626',
-  dangerDim: '#DC262618',
-  warning: '#D97706',
-  warningDim: '#D9770618',
-  success: '#00A37A',
-  successDim: '#00A37A18',
-  border: '#C9EBE2',
-  borderLight: '#DDFAF3',
+  surfaceElevated: '#FFFFFF',
+
+  // Haazir blue accent — Vibrant Blue #1A6FFF
+  primary: '#1A6FFF',
+  primaryDark: '#0047CC',
+  primaryLight: '#EEF4FF',
+  primaryDim: 'rgba(26,111,255,0.12)',
+
+  // Text hierarchy
+  textPrimary: '#111111',
+  textSecondary: '#444444',
+  textMuted: '#999999',
+  textInverse: '#FFFFFF',
+
+  // Status
+  danger: '#FF3B30',
+  dangerDim: 'rgba(255,59,48,0.10)',
+  warning: '#FF9500',
+  warningDim: 'rgba(255,149,0,0.10)',
+  success: '#34C759',
+  successDim: 'rgba(52,199,89,0.12)',
+
+  // Borders & dividers
+  border: '#EBEBEB',
+  borderStrong: '#CCCCCC',
+
+  // Cards & inputs
   cardBg: '#FFFFFF',
-  inputBg: '#F0FDF9',
-  overlay: 'rgba(0,0,0,0.45)',
+  inputBg: '#F6F7FB',
+  overlay: 'rgba(0,0,0,0.50)',
+
+  // Worker accent — amber
+  workerAccent: '#FF9500',
+  workerAccentDim: 'rgba(255,149,0,0.12)',
+
   urgencyColors: {
-    low: '#00A37A',
-    medium: '#D97706',
-    high: '#EA580C',
-    critical: '#DC2626',
+    low: '#34C759',
+    medium: '#FF9500',
+    high: '#FF6B35',
+    critical: '#FF3B30',
   },
 } as const;
 
@@ -38,9 +56,10 @@ export const Spacing = {
 
 export const Radius = {
   sm: 8,
-  md: 12,
-  lg: 16,
-  xl: 24,
+  md: 14,
+  lg: 20,
+  xl: 28,
+  xxl: 36,
   full: 9999,
 } as const;
 
@@ -50,23 +69,46 @@ export const FontSize = {
   md: 15,
   lg: 17,
   xl: 20,
-  xxl: 24,
-  xxxl: 32,
+  xxl: 26,
+  xxxl: 34,
 } as const;
 
+export const FontWeight = {
+  regular: '400' as const,
+  medium: '500' as const,
+  semibold: '600' as const,
+  bold: '700' as const,
+  extrabold: '800' as const,
+  black: '900' as const,
+};
+
 export const Shadow = {
+  sm: {
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
+    elevation: 2,
+  },
   card: {
-    shadowColor: '#00A37A',
+    shadowColor: '#000000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.10,
-    shadowRadius: 8,
-    elevation: 3,
+    shadowOpacity: 0.08,
+    shadowRadius: 10,
+    elevation: 4,
   },
   primary: {
-    shadowColor: '#00A37A',
+    shadowColor: '#1A6FFF',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.25,
-    shadowRadius: 12,
-    elevation: 6,
+    shadowOpacity: 0.30,
+    shadowRadius: 14,
+    elevation: 8,
+  },
+  modal: {
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 20,
+    elevation: 16,
   },
 } as const;
