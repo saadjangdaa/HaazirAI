@@ -80,7 +80,6 @@ class HisaabAgent:
                 "time_seconds": elapsed,
             },
         }
-
     def _get_surge_factor(self, service_type: str, city: str, urgency: str) -> float:
         if urgency == "critical":
             return 1.4
@@ -88,3 +87,4 @@ class HisaabAgent:
         if "AC" in service_type and city in ac_cities_surge:
             return 1.2
         return 1.0
+
