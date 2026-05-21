@@ -331,3 +331,204 @@ class PakkaAgent:
                 "emergency_override_used": emergency_override_used if is_emergency else None,
             },
         }
+
+    async def handle_cancellation(
+        self,
+        booking_id: str,
+        provider_id: str,
+        cancelled_by: str,
+        reason: str,
+        original_booking: dict,
+        alternative_providers: list[dict],
+        intent: dict,
+        pricing: dict,
+        user_id: str = "user_001",
+    ) -> dict:
+        start = datetime.now()
+        replacement_booking = None
+
+        if cancelled_by == "provider":
+            cancellation_penalty = True
+            penalty_points = 10
+            cancel_reason_category = "provider_cancelled"
+            customer_message = (
+                "Aap ke provider ne booking cancel kar di. "
+                "Hum aap ke liye doosra provider dhundh rahe hain..."
+            )
+        else:
+            cancellation_penalty = False
+            penalty_points = 0
+            cancel_reason_category = "customer_cancelled"
+            customer_message = (
+                "Aap ki booking cancel ho gayi. "
+                "Agar zaroorat ho to dobara book karein."
+            )
+
+        cancelled_booking_data = {
+            **original_booking,
+            "status": "cancelled",
+            "cancelled_by": cancelled_by,
+            "cancellation_reason": reason,
+            "cancelled_at": datetime.now().isoformat(),
+            "penalty_applied": cancellation_penalty,
+            "penalty_points": penalty_points,
+        }
+        await save_booking(cancelled_booking_data)
+
+        if cancelled_by == "provider":
+            replacement_booking = await self._find_replacement(
+                alternative_providers, intent, pricing, user_id
+            )
+            if replacement_booking:
+                replacement_status = "replacement_found"
+                provider_name = replacement_booking.get("receipt", {}).get(
+                    "provider_name", "Provider"
+                )
+                replacement_message = (
+                    f"✅ Nayi booking confirm! {provider_name} "
+                    f"{replacement_booking['scheduled_time']} pe aayenge. "
+                    f"Naya reference: {replacement_booking['booking_id']}"
+                )
+            else:
+                replacement_status = "no_replacement_found"
+                replacement_message = (
+                    "Abhi koi provider available nahi. "
+                    "Aap waitlist mein hain — jaisay hi koi available ho ga hum notify karein ge."
+                )
+        else:
+            replacement_booking = None
+            replacement_status = "customer_cancelled_no_replacement"
+            replacement_message = customer_message
+
+        end = datetime.now()
+        elapsed = round((end - start).total_seconds(), 3)
+
+        return {
+            "cancellation_id": (
+                f"CAN-{datetime.now().strftime('%Y%m%d')}-"
+                f"{str(uuid.uuid4())[:6].upper()}"
+            ),
+            "original_booking_id": booking_id,
+            "cancelled_by": cancelled_by,
+            "cancellation_reason": reason,
+            "cancel_reason_category": cancel_reason_category,
+            "penalty_applied": cancellation_penalty,
+            "penalty_points": penalty_points,
+            "customer_message": customer_message,
+            "replacement_status": replacement_status,
+            "replacement_message": replacement_message,
+            "replacement_booking": replacement_booking,
+            "notification": {
+                "type": "urgent",
+                "channels": ["whatsapp", "sms"],
+                "provider_notify": True,
+                "user_notify": True,
+                "message_preview": customer_message[:100],
+                "send_at": "immediate",
+            },
+            "_log": {
+                "agent_name": "PAKKA",
+                "agent_name_urdu": "پکّا",
+                "start_time": start.isoformat(),
+                "end_time": end.isoformat(),
+                "input_summary": f"Cancellation: booking={booking_id} by={cancelled_by}",
+                "output_summary": f"replacement_status={replacement_status}",
+                "decision_made": replacement_status,
+                "confidence": 0.95,
+                "fallback_used": False,
+                "time_seconds": elapsed,
+            },
+        }
+
+    async def _find_replacement(
+        self,
+        alternative_providers: list[dict],
+        intent: dict,
+        pricing: dict,
+        user_id: str,
+    ) -> dict | None:
+        for provider in alternative_providers:
+            if provider.get("id") is None:
+                continue
+            result = await self.create_booking(intent, provider, pricing, user_id)
+            if result["status"] == "confirmed":
+                return result
+            if result["status"] == "waitlisted":
+                continue
+        return None
+
+    async def handle_no_show(
+        self,
+        booking_id: str,
+        provider_id: str,
+        original_booking: dict,
+        alternative_providers: list[dict],
+        intent: dict,
+        pricing: dict,
+        user_id: str = "user_001",
+    ) -> dict:
+        start = datetime.now()
+
+        no_show_data = {
+            **original_booking,
+            "status": "no_show",
+            "no_show_detected_at": datetime.now().isoformat(),
+            "penalty_applied": True,
+            "penalty_points": 20,
+        }
+        await save_booking(no_show_data)
+
+        replacement = await self._find_replacement(
+            alternative_providers, intent, pricing, user_id
+        )
+
+        if replacement:
+            customer_message = (
+                "Aap ka provider nahi aaya. Hum ne aap ke liye "
+                "doosra provider dhundha hai."
+            )
+            replacement_status = "replacement_found"
+        else:
+            customer_message = (
+                "Aap ka provider nahi aaya. Abhi koi alternative "
+                "available nahi — aap waitlist mein hain."
+            )
+            replacement_status = "no_replacement_found"
+
+        end = datetime.now()
+        elapsed = round((end - start).total_seconds(), 3)
+
+        return {
+            "no_show_id": (
+                f"NS-{datetime.now().strftime('%Y%m%d')}-"
+                f"{str(uuid.uuid4())[:6].upper()}"
+            ),
+            "original_booking_id": booking_id,
+            "provider_id": provider_id,
+            "penalty_points": 20,
+            "customer_message": customer_message,
+            "replacement_status": replacement_status,
+            "replacement_booking": replacement,
+            "notification": {
+                "type": "urgent",
+                "channels": ["whatsapp", "sms"],
+                "provider_notify": True,
+                "user_notify": True,
+                "message_preview": "Aap ka provider nahi aaya..."[:100],
+                "send_at": "immediate",
+            },
+            "_log": {
+                "agent_name": "PAKKA",
+                "agent_name_urdu": "پکّا",
+                "start_time": start.isoformat(),
+                "end_time": end.isoformat(),
+                "input_summary": f"No-show: booking={booking_id} provider={provider_id}",
+                "output_summary": (
+                    f"penalty=20pts replacement={'found' if replacement else 'not found'}"
+                ),
+                "decision_made": "NO_SHOW_HANDLED",
+                "confidence": 0.95,
+                "fallback_used": False,
+                "time_seconds": elapsed,
+            },
+        }

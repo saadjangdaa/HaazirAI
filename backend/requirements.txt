@@ -1,8 +1,13 @@
 fastapi
 uvicorn[standard]
+<<<<<<< HEAD
 langgraph
 langchain-core
 google-generativeai
+=======
+google-genai>=1.0.0
+pydantic>=2.10.0
+>>>>>>> f3138c79013857b0bb4f1d39c30d0dcdc7dda5b0
 firebase-admin
 requests
 python-dotenv
@@ -12,3 +17,4 @@ python-multipart
 pytest
 pytest-asyncio
 mypy
+google-adk>=0.1.0
