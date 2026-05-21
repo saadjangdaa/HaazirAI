@@ -22,6 +22,8 @@ Your job — in this order:
    Then confirm booking. All in ONE response.
 
 CRITICAL: The [SEARCH: ...] and [BOOK: ...] tags MUST always be written in plain English/ASCII characters exactly as shown above — NEVER translate or replace these tags, even if your response language is Urdu/Sindhi/Pashto/Balochi.
+CRITICAL BOOKING RULE: NEVER write [BOOK: ...] in the same response as [SEARCH: ...]. The [BOOK: ...] tag can ONLY appear AFTER [RESULTS: ...] has been shown AND the user has explicitly named a provider AND given a payment method — these are separate conversation turns.
+CRITICAL BOOKING RULE: Do NOT assume payment method or provider choice. Always wait for the user to explicitly state both before generating [BOOK: ...].
 Keep responses SHORT — max 2 sentences. You are speaking, not typing.
 NEVER ask for the user's name — they are already logged in."""
 
@@ -133,9 +135,9 @@ async def run_conversation(
     # Build prompt — use English instructions so they don't override the language system prompt
     if user_message == "__init__":
         if first_name:
-            prompt = f"(Greet the user by name '{first_name}', then ask what service they need. Respond in the language specified by your system instructions.)\nFatima:"
+            prompt = f"User: Hi\n[Context: user's name is {first_name}]\nFatima:"
         else:
-            prompt = "(Greet the user warmly, then ask what service they need. Respond in the language specified by your system instructions.)\nFatima:"
+            prompt = "User: Hi\nFatima:"
     elif history_text:
         prompt = f"{history_text}{results_injection}\nFatima:"
     else:
