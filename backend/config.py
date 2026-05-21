@@ -62,28 +62,28 @@ class Config:
         ok = True
 
         if not cls.FIREBASE_PROJECT_ID:
-            print("❌ FIREBASE_PROJECT_ID is empty")
+            print("[X] FIREBASE_PROJECT_ID is empty")
             ok = False
 
         if not cred.is_file():
             msg = f"Firebase credentials not found: {cred} — Firestore will use in-memory mock"
             if strict:
-                print(f"❌ {msg}")
+                print(f"[X] {msg}")
                 ok = False
             else:
-                print(f"⚠️ {msg}")
+                print(f"[!] {msg}")
 
         gk = cls.GEMINI_API_KEY
         if not gk or gk == "your_gemini_api_key":
             msg = "Gemini API key not set — Samajh uses mock LLM responses"
             if strict:
-                print(f"❌ {msg}")
+                print(f"[X] {msg}")
                 ok = False
             else:
-                print(f"⚠️ {msg}")
+                print(f"[!] {msg}")
 
         if ok:
-            print("✅ Configuration validated (see warnings above if any)")
+            print("[OK] Configuration validated (see warnings above if any)")
         return ok
 
 

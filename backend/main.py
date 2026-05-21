@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -18,6 +19,7 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 from typing import Optional
 
+from fastapi import FastAPI
 _BACKEND_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _BACKEND_DIR.parent
 
@@ -26,12 +28,16 @@ for _path in (_REPO_ROOT, _BACKEND_DIR):
         sys.path.insert(0, str(_path))
 
 from fastapi import HTTPException
+from fastapi.responses import JSONResponse
 
 from backend.app import APP_INSTANCE_ID, app
 from config import config
 from logging_config import logger
 
 from graph import new_request_id, run_samajh_workflow
+from orchestration.reporter import ReportGenerator, zip_bytes_to_api_payload
+from orchestration.storage import TraceStorage
+from services.adk_runner import adk_runner
 from models.request import (
     ServiceRequest,
     BidRequest,
@@ -48,6 +54,7 @@ from models.request import (
     UserSyncRequest,
     BookingStatusUpdate,
 )
+from agents.orchestrator import run_full_orchestration
 from agents.hisaab import HisaabAgent
 from agents.moltol import MoltolAgent
 from agents.orchestrator import run_bidding, run_provider_report
@@ -101,6 +108,12 @@ from services.push_notify import (
     notify_booking_created,
     notify_feedback_received,
     process_pending_notifications,
+)
+app = FastAPI(
+    title="Haazir Dost API",
+    description="Pakistan's agentic home-services orchestrator",
+    version="1.0.0",
+    lifespan=lifespan,
 )
 from services.user_validation import (
     is_profile_complete,
@@ -287,6 +300,8 @@ async def health():
             "fcm_pipeline": True,
             "notification_dedupe_seconds": 90,
         },
+        "firebase": mode,
+        "environment": config.ENVIRONMENT,
     }
 
 
@@ -307,17 +322,76 @@ async def test_firebase():
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
+_AGENT_URDU = {
+    "Samajh": "سمجھ",
+    "Dhundho": "ڈھونڈو",
+    "Chunno": "چُنّو",
+    "Hifazat": "حفاظت",
+    "Hisaab": "حساب",
+    "Moltol": "مول تول",
+    "Pakka": "پکا",
+}
+
+
+def _judge_logs_to_mobile_agent_logs(logs: list) -> list:
+    """Map judge-facing reasoning entries to the legacy shape used by the Expo AgentLogViewer."""
+    out = []
+    for entry in logs:
+        ts = entry.get("timestamp", "")
+        agent = entry.get("agent", "Samajh")
+        out.append(
+            {
+                "agent_name": agent.upper(),
+                "agent_name_urdu": _AGENT_URDU.get(agent, agent),
+                "start_time": ts,
+                "end_time": ts,
+                "input_summary": entry.get("reasoning", ""),
+                "output_summary": entry.get("decision", ""),
+                "decision_made": entry.get("decision", ""),
+                "confidence": float(entry.get("confidence", 0.0)),
+                "fallback_used": entry.get("status") == "failure",
+                "time_seconds": 0.0,
+            }
+        )
+    return out
+
+
 @app.post("/api/request")
 async def handle_service_request(body: ServiceRequest):
     """Samajh → Dhundho → Chunno via LangGraph."""
     uid = _require_firebase_uid(body.user_id)
     await _require_complete_profile(uid)
+    result = await run_full_orchestration(
+        user_input=body.user_input,
+        user_location=body.user_location,
+        user_id=uid,
+    )
+    if result.get("trace"):
+        await TraceStorage.save_trace(
+            request_id=result.get("request_id", ""),
+            user_input=body.user_input,
+            trace_dict=result["trace"],
+            user_id=uid,
+        )
+    request_id = (result.get("request_id") or "").strip()
+    if not request_id:
+        raise HTTPException(status_code=500, detail="Orchestration did not return request_id")
+    logs = result.get("agent_logs") or []
 
+    await save_agent_logs(request_id, body.user_input, logs, user_id=uid)
+    """
+    Full LangGraph pipeline through Pakka (price + negotiate + book).
+
+    ``providers_ranked`` is Chunno-ranked then Hifazat-filtered (BLOCK removed).
+    Send ``user_location`` from mobile.
+    """
     request_id = new_request_id()
     final_state = await run_samajh_workflow(
         user_input=body.user_input.strip(),
         source="text",
         user_location=(body.user_location or "").strip(),
+        user_id=body.user_id,
+        request_id=request_id,
     )
 
     intent = final_state.get("intent") or {}
@@ -326,6 +400,14 @@ async def handle_service_request(body: ServiceRequest):
     providers_discovered = list(final_state.get("providers") or [])
     dh_meta = final_state.get("dhundho_meta") or {}
     chunno_warnings = final_state.get("chunno_warnings") or []
+    trust_scores = final_state.get("trust_scores") or []
+    hifazat_meta = final_state.get("hifazat_meta") or {}
+    price_breakdown = final_state.get("price_breakdown") or {}
+    moltol_result = final_state.get("moltol_result") or {}
+    booking = final_state.get("booking") or {}
+    best_provider = final_state.get("best_provider") or (
+        providers_ranked[0] if providers_ranked else None
+    )
 
     if not providers_ranked:
         providers_ranked = _fallback_ranked_providers(intent, limit=8)
@@ -340,6 +422,9 @@ async def handle_service_request(body: ServiceRequest):
         "intent": intent,
         "user_id": uid,
         "providers": providers_ranked,
+        "price_breakdown": price_breakdown,
+        "moltol_result": moltol_result,
+        "booking": booking,
     }
 
     agent_logs = _judge_logs_to_mobile_agent_logs(logs)
@@ -359,20 +444,39 @@ async def handle_service_request(body: ServiceRequest):
         "fallback": dh_meta.get("fallback_message"),
         "dhundho_meta": dh_meta,
         "chunno_meta": final_state.get("chunno_meta") or {},
+        "trust_scores": trust_scores,
+        "hifazat_meta": hifazat_meta,
+        "price_breakdown": price_breakdown,
+        "hisaab_meta": final_state.get("hisaab_meta") or {},
+        "moltol_result": moltol_result,
+        "moltol_meta": final_state.get("moltol_meta") or {},
+        "booking": booking,
+        "pakka_meta": final_state.get("pakka_meta") or {},
         "providers_discovered_count": len(providers_discovered),
     }
 
 
 @app.post("/api/bid")
 async def trigger_bidding(body: BidRequest):
-    """Trigger MOLTOL negotiation agent for a prior request."""
+    """Trigger MOLTOL negotiation for a prior request (returns cached graph result when present)."""
     cached = _request_store.get(body.request_id)
+    if cached and cached.get("moltol_result"):
+        out = dict(cached["moltol_result"])
+        out["request_id"] = body.request_id
+        out["from_cache"] = True
+        return out
+
     if not cached:
         providers = _load_providers()[:5]
         intent = {"service_type": "service", "job_complexity": "intermediate", "urgency": "medium"}
+        pricing = {"total": 2000, "estimated_base": 2000}
     else:
         providers = cached["providers"]
         intent = cached["intent"]
+        pricing = cached.get("price_breakdown") or {"total": 2000, "estimated_base": 2000}
+
+    result = await run_bidding(body.request_id, providers, intent, pricing)
+    return result
     return await run_bidding(body.request_id, providers, intent)
 
 
@@ -529,15 +633,30 @@ async def list_provider_bookings(provider_id: str, status: str = None):
 @app.get("/api/bookings/worker/{user_id}")
 async def list_worker_bookings(user_id: str, status: str = None):
     uid = _require_firebase_uid(user_id)
-    return await get_worker_bookings(uid, status=status)
+    try:
+        return await get_worker_bookings(uid, status=status)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[Worker jobs] error for uid={uid}: {e}")
+        return {"user_id": uid, "provider_id": None, "bookings": [], "count": 0,
+                "message": f"Jobs load karne mein masla hua — {type(e).__name__}"}
 
 
 @app.get("/api/workers/{user_id}/earnings")
 async def worker_earnings(user_id: str):
     uid = _require_firebase_uid(user_id)
-    data = await get_worker_bookings(uid)
-    summary = summarize_worker_earnings(data.get("bookings") or [])
-    return {**summary, "provider_id": data.get("provider_id"), "user_id": uid}
+    try:
+        data = await get_worker_bookings(uid)
+        summary = summarize_worker_earnings(data.get("bookings") or [])
+        return {**summary, "provider_id": data.get("provider_id"), "user_id": uid}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[Worker earnings] error for uid={uid}: {e}")
+        return {"today_total": 0, "today_jobs": 0, "week_total": 0, "week_jobs": 0,
+                "week_by_day": [0]*7, "completed_count": 0, "recent_payments": [],
+                "provider_id": None, "user_id": uid}
 
 
 @app.patch("/api/booking/{booking_id}/status")
@@ -655,6 +774,20 @@ async def get_agent_logs(request_id: str):
         "log_count": 0,
         "message": "Logs not found — run /api/request first",
     }
+
+
+@app.get("/api/report/{request_id}/zip")
+async def download_trace_report(request_id: str):
+    """Download orchestration trace package (json + markdown + per-agent logs)."""
+    rid = (request_id or "").strip()
+    if not rid:
+        raise HTTPException(status_code=400, detail="request_id is required")
+    trace = await TraceStorage.get_trace(rid)
+    if not trace:
+        raise HTTPException(status_code=404, detail="Trace not found for request_id")
+    zip_data = ReportGenerator.generate_zip_report(rid, trace)
+    payload = zip_bytes_to_api_payload(zip_data)
+    return JSONResponse(content={"request_id": rid, **payload})
 
 
 @app.get("/api/provider/report/{provider_id}")
@@ -1197,6 +1330,35 @@ def _assert_routes_registered() -> None:
 
 
 _assert_routes_registered()
+
+@app.post("/api/adk/request")
+async def adk_request(request: ServiceRequest):
+    """
+    ADK Pipeline Endpoint - Google ADK orchestration for HaazirAI
+    Same as /api/request but uses Google ADK as orchestrator
+    """
+    
+    # Auth checks (same as /api/request)
+    user_id = _require_firebase_uid(request.user_id)
+    await _require_complete_profile(user_id)
+    
+    try:
+        # Run ADK pipeline
+        result = await adk_runner.run_adk_pipeline(
+            user_input=request.user_input,
+            user_location=request.user_location,
+            user_id=user_id,
+            auto_book=True
+        )
+        
+        return result
+    
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "orchestrator": "google-adk"
+        }
 
 if __name__ == "__main__":
     print(

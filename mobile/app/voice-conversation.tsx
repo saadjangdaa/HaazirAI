@@ -155,7 +155,11 @@ export default function VoiceConversationScreen() {
       stopPulse();
       try {
         const { text } = await stopAndTranscribe();
-        if (!text) { setUiState('idle'); return; }
+        if (!text) {
+          setUiState('idle');
+          setChat((prev) => [...prev, mk({ kind: 'text', role: 'agent', text: 'Awaaz sunai nahi di — thodi der ruk ke dobara bolein 🎙' })]);
+          return;
+        }
         setChat((prev) => [...prev, mk({ kind: 'text', role: 'user', text })]);
         setHistory((prev) => [...prev, { role: 'user', content: text }]);
         setUiState('searching');

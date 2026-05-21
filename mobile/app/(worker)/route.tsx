@@ -1,6 +1,6 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import {
-  View, Text, ScrollView, StyleSheet, ActivityIndicator, RefreshControl,
+  View, Text, ScrollView, StyleSheet, ActivityIndicator, RefreshControl, StatusBar,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from 'expo-router';
@@ -71,14 +71,19 @@ export default function WorkerRouteScreen() {
   }
 
   return (
+    <View style={styles.root}>
+    <StatusBar barStyle="dark-content" backgroundColor={Colors.background} />
+    <View style={[styles.screenHeader, { paddingTop: insets.top + 8 }]}>
+      <Text style={styles.screenHeaderTitle}>Aaj ka Route</Text>
+    </View>
     <ScrollView
-      style={styles.root}
+      style={{ flex: 1 }}
       contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
       refreshControl={
         <RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} />
       }
     >
-      <Text style={styles.title}>Aaj ka Route 🗺️</Text>
+      <Text style={styles.title}>Aaj ka Route</Text>
       <Text style={styles.sub}>
         {stops.length > 0
           ? `${stops.length} active stop(s) — schedule ke mutabiq`
@@ -147,11 +152,18 @@ export default function WorkerRouteScreen() {
         </View>
       </View>
     </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: Colors.background },
+  screenHeader: {
+    paddingHorizontal: 20, paddingBottom: 8,
+    backgroundColor: Colors.background,
+    borderBottomWidth: 1, borderBottomColor: Colors.border,
+  },
+  screenHeaderTitle: { fontSize: 18, fontWeight: '800', color: Colors.textPrimary },
   content: { padding: Spacing.md, paddingBottom: 48 },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: Colors.background },
   title: { fontSize: FontSize.xxl, fontWeight: '800', color: Colors.textPrimary, marginBottom: 4 },
