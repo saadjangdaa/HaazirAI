@@ -27,24 +27,48 @@ function getDb() {
 
 export const db = getDb();
 
-// Firebase 12 removed getReactNativePersistence — implement AsyncStorage persistence directly
-const asyncStoragePersistence = {
-  type: 'LOCAL' as const,
-  async _isAvailable() { return true; },
-  async _set(key: string, value: string) { await AsyncStorage.setItem(key, value); },
-  async _get(key: string) { return AsyncStorage.getItem(key); },
-  async _remove(key: string) { await AsyncStorage.removeItem(key); },
-  _addListener(_key: string, _listener: unknown) {},
-  _removeListener(_key: string, _listener: unknown) {},
-};
+// Firebase 12 requires a CLASS (not plain object) for persistence so that
+// _getInstance() passes `cls instanceof Function`. We define it here in our
+// Babel-transpiled code so Hermes always sees it as a proper constructor.
+class AsyncStoragePersistence {
+  static type = 'LOCAL' as const;
+  readonly type = 'LOCAL' as const;
+
+  async _isAvailable(): Promise<boolean> {
+    try {
+      await AsyncStorage.setItem('__firebase_avail__', '1');
+      await AsyncStorage.removeItem('__firebase_avail__');
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  _set(key: string, value: unknown): Promise<void> {
+    return AsyncStorage.setItem(key, JSON.stringify(value));
+  }
+
+  async _get(key: string): Promise<unknown> {
+    const json = await AsyncStorage.getItem(key);
+    if (json === null) return null;
+    try { return JSON.parse(json); } catch { return json; }
+  }
+
+  _remove(key: string): Promise<void> {
+    return AsyncStorage.removeItem(key);
+  }
+
+  _addListener(_key: string, _listener: unknown): void { /* not needed for RN */ }
+  _removeListener(_key: string, _listener: unknown): void { /* not needed for RN */ }
+}
 
 function initAuth() {
   try {
     return initializeAuth(app, {
-      persistence: asyncStoragePersistence as any,
+      persistence: AsyncStoragePersistence as any,
     });
   } catch {
-    // Already initialized on re-render / hot reload
+    // Already initialized (hot reload / fast refresh)
     return getAuth(app);
   }
 }
