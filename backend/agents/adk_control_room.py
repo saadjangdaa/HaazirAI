@@ -146,7 +146,7 @@ class HaazirControlRoom(BaseAgent):
                 
                 # Run HISAAB agent
                 hisaab = HisaabAgent()
-                price_result = await hisaab.calculate_price(best_provider, intent)
+                price_result = await hisaab.calculate_price(intent, best_provider)
                 
                 ctx.session.state["price"] = price_result
                 ctx.session.state["total_price"] = price_result.get("total")

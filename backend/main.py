@@ -286,34 +286,6 @@ async def handle_service_request(body: ServiceRequest):
     logs = result.get("agent_logs") or []
 
     await save_agent_logs(request_id, body.user_input, logs, user_id=uid)
-    """
-    Full LangGraph pipeline through Pakka (price + negotiate + book).
-
-    ``providers_ranked`` is Chunno-ranked then Hifazat-filtered (BLOCK removed).
-    Send ``user_location`` from mobile.
-    """
-    request_id = new_request_id()
-    final_state = await run_samajh_workflow(
-        user_input=body.user_input.strip(),
-        source="text",
-        user_location=(body.user_location or "").strip(),
-        user_id=body.user_id,
-        request_id=request_id,
-    )
-    intent = final_state.get("intent") or {}
-    logs = final_state.get("logs") or []
-    providers_ranked = final_state.get("providers_ranked") or []
-    providers_discovered = final_state.get("providers") or []
-    dh_meta = final_state.get("dhundho_meta") or {}
-    chunno_warnings = final_state.get("chunno_warnings") or []
-    trust_scores = final_state.get("trust_scores") or []
-    hifazat_meta = final_state.get("hifazat_meta") or {}
-    price_breakdown = final_state.get("price_breakdown") or {}
-    moltol_result = final_state.get("moltol_result") or {}
-    booking = final_state.get("booking") or {}
-    best_provider = final_state.get("best_provider") or (
-        providers_ranked[0] if providers_ranked else None
-    )
 
     _request_store[request_id] = {
         "providers": result.get("providers_ranked", []),
@@ -321,12 +293,8 @@ async def handle_service_request(body: ServiceRequest):
         "user_id": uid,
         "user_input": body.user_input,
         "logs": logs,
-        "intent": intent,
-        "user_id": body.user_id,
-        "providers": providers_ranked,
-        "price_breakdown": price_breakdown,
-        "moltol_result": moltol_result,
-        "booking": booking,
+        "price_breakdown": result.get("price_breakdown"),
+        "booking": result.get("booking"),
     }
 
     booking = result.get("booking") or {}
@@ -346,32 +314,6 @@ async def handle_service_request(body: ServiceRequest):
             await notify_booking_created(stored)
 
     return result
-    agent_logs = _judge_logs_to_mobile_agent_logs(logs)
-
-    return {
-        "request_id": request_id,
-        "extracted_intent": intent,
-        "logs": logs,
-        "agent_logs": agent_logs,
-        "clarification_needed": bool(intent.get("clarification_needed")),
-        "clarification_question": intent.get("clarification_question"),
-        "emergency": bool(intent.get("emergency")),
-        "providers_ranked": providers_ranked,
-        "best_provider": best_provider,
-        "chunno_warnings": chunno_warnings,
-        "fallback": dh_meta.get("fallback_message"),
-        "dhundho_meta": dh_meta,
-        "chunno_meta": final_state.get("chunno_meta") or {},
-        "trust_scores": trust_scores,
-        "hifazat_meta": hifazat_meta,
-        "price_breakdown": price_breakdown,
-        "hisaab_meta": final_state.get("hisaab_meta") or {},
-        "moltol_result": moltol_result,
-        "moltol_meta": final_state.get("moltol_meta") or {},
-        "booking": booking,
-        "pakka_meta": final_state.get("pakka_meta") or {},
-        "providers_discovered_count": len(providers_discovered),
-    }
 
 
 @app.post("/api/bid")

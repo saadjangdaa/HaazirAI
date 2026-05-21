@@ -548,17 +548,7 @@ async def _hisaab_node(state: HaazirState) -> HaazirState:
 
     best = dict(ranked[0])
 
-    result = await _hisaab_agent.calculate_price(
-
-        intent,
-
-        best,
-
-        providers_list=ranked,
-
-        user_id=user_id,
-
-    )
+    result = await _hisaab_agent.calculate_price(intent, best)
 
     legacy_log = result.pop("_log", None)
 
