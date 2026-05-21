@@ -758,9 +758,22 @@ async def conversation(body: ConversationRequest):
             history=None,  # session already exists at this point
         )
         result["response_text"] = follow_up["response_text"]
-        result["phase"] = follow_up["phase"]
         result["providers"] = providers
         result["request_id"] = new_request_id()
+
+        # If follow_up AI prematurely generated [BOOK:] (before user picked provider),
+        # ignore it and keep phase at "confirming" so user sees the provider list.
+        if follow_up.get("book_trigger"):
+            logger.warning("[conversation] follow_up book_trigger ignored — search results just arrived, user hasn't picked a provider yet")
+            result["phase"] = "confirming"
+        else:
+            result["phase"] = follow_up["phase"]
+
+    # Safety: if both search and book triggered in the same response, ignore book.
+    # [BOOK: ...] can only fire AFTER [RESULTS: ...] shown in a separate turn.
+    if result.get("search_trigger") and result.get("book_trigger"):
+        logger.warning("[conversation] book_trigger ignored — appeared with search_trigger in same turn (premature booking prevented)")
+        result["book_trigger"] = None
 
     if result.get("book_trigger"):
         trigger = result["book_trigger"]

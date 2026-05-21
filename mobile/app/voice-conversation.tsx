@@ -377,7 +377,8 @@ export default function VoiceConversationScreen() {
         );
 
       case 'actions':
-        if (isLoading || uiState === 'done') return null;
+        // Only hide when actually booking confirmed (bookingResult set), not just phase label
+        if (isLoading || (uiState === 'done' && bookingResult !== null)) return null;
         return (
           <View key={item.id} style={styles.actionBar}>
             <Text style={styles.actionLabel}>Kya karna chahte hain?</Text>
@@ -399,7 +400,7 @@ export default function VoiceConversationScreen() {
         );
 
       case 'bidding':
-        if (uiState === 'done') return null;
+        if (uiState === 'done' && bookingResult !== null) return null;
         return (
           <View key={item.id} style={styles.biddingWrapper}>
             <BiddingPanel loading={false} result={item.result} onSelectBid={handleSelectBid} />
@@ -407,7 +408,7 @@ export default function VoiceConversationScreen() {
         );
 
       case 'livebidding': {
-        if (uiState === 'done') return null;
+        if (uiState === 'done' && bookingResult !== null) return null;
         return (
           <View key={item.id} style={styles.liveBidContainer}>
             {/* Header */}
@@ -481,7 +482,7 @@ export default function VoiceConversationScreen() {
       }
 
       case 'negotiated':
-        if (isLoading || uiState === 'done') return null;
+        if (isLoading || (uiState === 'done' && bookingResult !== null)) return null;
         return (
           <View key={item.id} style={styles.negotiatedCard}>
             <Text style={styles.negotiatedTitle}>🎉 Moltol Ho Gaya!</Text>

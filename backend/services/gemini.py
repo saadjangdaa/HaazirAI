@@ -96,11 +96,49 @@ async def generate_with_parts(parts: list) -> str:
 async def generate(prompt: str, system_prompt: str = "") -> str:
     if MOCK_MODE:
         return _mock_gemini_response(prompt, system_prompt)
-    full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
-    result = await _try_generate(full_prompt)
+    result = await _try_generate_with_system(prompt, system_prompt)
     if result is None:
         return _mock_gemini_response(prompt, system_prompt)
     return result
+
+
+async def _try_generate_with_system(prompt: str, system_prompt: str = "") -> str:
+    """Generate with proper system_instruction separation — prevents Gemini from echoing instructions."""
+    global _current_key_idx, MOCK_MODE
+
+    tried = 0
+    while tried < len(_ALL_KEYS):
+        try:
+            loop = asyncio.get_event_loop()
+            if system_prompt:
+                # Use system_instruction so Gemini treats it as config, not content to echo
+                model_instance = genai.GenerativeModel(
+                    _MODEL_NAME,
+                    system_instruction=system_prompt,
+                )
+            else:
+                model_instance = _model
+
+            response = await loop.run_in_executor(
+                None, lambda m=model_instance: m.generate_content(prompt)
+            )
+            return response.text
+        except Exception as e:
+            if _is_rate_limit(e):
+                next_idx = _current_key_idx + 1
+                if next_idx < len(_ALL_KEYS):
+                    print(f"[gemini] key #{_current_key_idx + 1} rate-limited → switching to key #{next_idx + 1}")
+                    _init_model(next_idx)
+                    tried += 1
+                else:
+                    print("[gemini] all keys rate-limited — falling back to mock")
+                    return None
+            else:
+                print(f"[gemini] API error: {e} — falling back to mock")
+                return None
+        tried += 1
+
+    return None
 
 
 # ── Mock responses (fallback when all keys exhausted) ─────────────────────────
