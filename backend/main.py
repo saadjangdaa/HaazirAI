@@ -484,6 +484,23 @@ async def trigger_bidding(body: BidRequest):
     return await run_bidding(body.request_id, providers, intent)
 
 
+async def _confirm_booking_after_pakka(
+    booking_id: str,
+    user_id: str,
+    pakka_result: dict,
+) -> dict:
+    """Schedule reminders + confirmed status (push). Same follow-up as POST /api/book."""
+    reminder_times = pakka_result.get("reminder_times") or []
+    if reminder_times:
+        await schedule_booking_reminders(
+            booking_id,
+            user_id,
+            reminder_times,
+            "Haazir AI reminder: booking {booking_id} is coming up soon.",
+        )
+    return await set_booking_status(booking_id, "confirmed")
+
+
 @app.post("/api/book")
 async def confirm_booking(body: BookingRequest):
     """PAKKA agent confirms a specific booking."""
@@ -514,12 +531,7 @@ async def confirm_booking(body: BookingRequest):
     booking_id = result["booking_id"]
 
     await append_user_booking(uid, booking_id)
-    if result.get("reminder_times"):
-        await schedule_booking_reminders(
-            booking_id, uid, result["reminder_times"],
-            "Haazir AI reminder: booking {booking_id} is coming up soon.",
-        )
-    updated = await set_booking_status(booking_id, "confirmed")
+    updated = await _confirm_booking_after_pakka(booking_id, uid, result)
     return {
         "booking_id": booking_id,
         "receipt": result["receipt"],
@@ -971,6 +983,7 @@ async def conversation(body: ConversationRequest):
                 booking_res.pop("_log", None)
                 booking_id = booking_res["booking_id"]
                 await append_user_booking(uid, booking_id)
+                await _confirm_booking_after_pakka(booking_id, uid, booking_res)
 
                 # WhatsApp notification
                 user_doc = await get_user(uid)
@@ -1108,6 +1121,7 @@ async def conversation_direct_book(body: ConvDirectBookRequest):
     booking_id = booking_res["booking_id"]
 
     await append_user_booking(uid, booking_id)
+    updated = await _confirm_booking_after_pakka(booking_id, uid, booking_res)
 
     # WhatsApp notification
     user_doc = await get_user(uid)
@@ -1130,6 +1144,7 @@ async def conversation_direct_book(body: ConvDirectBookRequest):
         "reminders": booking_res.get("reminder_times", []),
         "payment_method": body.payment_method,
         "whatsapp_sent": whatsapp_sent,
+        "status": updated.get("status"),
     }
 
 
