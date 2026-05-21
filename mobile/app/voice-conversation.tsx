@@ -165,7 +165,8 @@ export default function VoiceConversationScreen() {
         const { text } = await stopAndTranscribe();
         if (!text) {
           setUiState('idle');
-          setChat((prev) => [...prev, mk({ kind: 'text', role: 'agent', text: 'Awaaz sunai nahi di — thodi der ruk ke dobara bolein 🎙' })]);
+          // Don't add a chat bubble for short/empty recordings — just reset silently
+          // so the user can try again without cluttering the chat
           return;
         }
         setChat((prev) => [...prev, mk({ kind: 'text', role: 'user', text })]);

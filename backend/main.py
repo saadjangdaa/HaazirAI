@@ -4,6 +4,7 @@ Haazir AI — route registration entry for uvicorn.
 Run from repo root ONLY:
   python -m uvicorn backend.main:app --host 0.0.0.0 --port 8080
 """
+import asyncio
 import json
 import os
 import sys
@@ -835,167 +836,98 @@ async def conversation(body: ConversationRequest):
     from services.uplift_tts import text_to_speech
     from services.whatsapp import send_booking_whatsapp
 
-    result = await run_conversation(
-        session_id=body.session_id,
-        user_message=body.user_text,
-        providers=body.providers,
-        user_name=body.user_name,
-        history=body.history,
-        language=body.language or 'roman_urdu',
-    )
+    try:
+        result = await run_conversation(
+            session_id=body.session_id,
+            user_message=body.user_text,
+            providers=body.providers,
+            user_name=body.user_name,
+            history=body.history,
+            language=body.language or 'roman_urdu',
+        )
 
-    if result.get("search_trigger"):
-        trigger = result["search_trigger"]
-        service = _normalize_service(trigger.get("service", "service"))
-        location = trigger.get("location", "Islamabad")
-        urgency = trigger.get("urgency", "medium")
+        if result.get("search_trigger"):
+            trigger = result["search_trigger"]
+            service = _normalize_service(trigger.get("service", "service"))
+            location = trigger.get("location", "Islamabad")
+            urgency = trigger.get("urgency", "medium")
 
-        orch: dict = {}
-        try:
-            orch = await run_samajh_workflow(
-                user_input=f"Mujhe {service} chahiye, location: {location}, urgency: {urgency}",
-                source="text",
-                user_location=location,
-            )
-        except Exception as _se:
-            logger.warning("[conversation] run_samajh_workflow failed: %s", _se)
+            orch: dict = {}
+            try:
+                orch = await asyncio.wait_for(
+                    run_samajh_workflow(
+                        user_input=f"Mujhe {service} chahiye, location: {location}, urgency: {urgency}",
+                        source="text",
+                        user_location=location,
+                    ),
+                    timeout=15.0,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("[conversation] run_samajh_workflow timed out — using fallback providers")
+            except Exception as _se:
+                logger.warning("[conversation] run_samajh_workflow failed: %s", _se)
 
-        providers = list((orch.get("providers_ranked") or []))[:3]
-        if not providers:
-            # Use service-filtered fallback — never inject unrelated categories
-            fallback_intent = orch.get("intent") or {
-                "service_type": service,
-                "city": location,
-            }
-            providers = _fallback_ranked_providers(fallback_intent, limit=3)
+            providers = list((orch.get("providers_ranked") or []))[:3]
+            if not providers:
+                fallback_intent = orch.get("intent") or {"service_type": service, "city": location}
+                providers = _fallback_ranked_providers(fallback_intent, limit=3)
 
-        # Safeguard: strip any cross-category providers before sending to frontend
-        search_intent = orch.get("intent") or {"service_type": service, "city": location}
-        providers = _filter_providers_by_service(providers, search_intent)
+            search_intent = orch.get("intent") or {"service_type": service, "city": location}
+            providers = _filter_providers_by_service(providers, search_intent)
 
-        # Cache for book_trigger + negotiate endpoint
-        _session_search_cache[body.session_id] = {
-            "service": service,
-            "location": location,
-            "urgency": urgency,
-            "providers": providers,
-            "intent": orch.get("intent") or {
-                "service_type": service,
+            _session_search_cache[body.session_id] = {
+                "service": service,
                 "location": location,
                 "urgency": urgency,
-                "job_complexity": "intermediate",
-            },
-        }
-
-        follow_up = await run_conversation(
-            session_id=body.session_id,
-            user_message="[system: search complete]",
-            providers=providers,
-            user_name=body.user_name,
-            history=None,  # session already exists at this point
-        )
-        result["response_text"] = follow_up["response_text"]
-        result["providers"] = providers
-        result["request_id"] = new_request_id()
-
-        # If follow_up AI prematurely generated [BOOK:] (before user picked provider),
-        # ignore it and keep phase at "confirming" so user sees the provider list.
-        if follow_up.get("book_trigger"):
-            logger.warning("[conversation] follow_up book_trigger ignored — search results just arrived, user hasn't picked a provider yet")
-            result["phase"] = "confirming"
-        else:
-            result["phase"] = follow_up["phase"]
-
-    # Safety: if both search and book triggered in the same response, ignore book.
-    # [BOOK: ...] can only fire AFTER [RESULTS: ...] shown in a separate turn.
-    if result.get("search_trigger") and result.get("book_trigger"):
-        logger.warning("[conversation] book_trigger ignored — appeared with search_trigger in same turn (premature booking prevented)")
-        result["book_trigger"] = None
-
-    if result.get("book_trigger"):
-        trigger = result["book_trigger"]
-        provider_id = trigger.get("provider_id", "")
-        payment_method = trigger.get("payment", "cash")
-        uid = body.user_id or "anonymous"
-
-        # Resolve provider — session cache first, then Firestore, then JSON fallback
-        cached = _session_search_cache.get(body.session_id, {})
-        cached_providers = cached.get("providers") or []
-        provider = next((p for p in cached_providers if str(p.get("id")) == str(provider_id)), None)
-        if not provider:
-            provider = await get_provider(provider_id)
-        if not provider:
-            all_json = _load_providers()
-            provider = next((p for p in all_json if p.get("id") == provider_id), None)
-        if not provider:
-            provider = (cached_providers or _load_providers())[0]
-
-        if is_mock_mode():
-            # Mock booking — Firebase not connected
-            booking_id = f"HAZ-{uuid.uuid4().hex[:8].upper()}"
-            result["booking_result"] = {
-                "booking_id": booking_id,
-                "provider": provider,
-                "receipt": {
-                    "service": provider.get("service", "Service"),
-                    "location": f"{provider.get('area', '')}, {provider.get('city', 'Islamabad')}",
-                    "scheduled_time": "Tomorrow 10:00 AM",
-                    "estimated_price": f"Rs. {provider.get('price_per_hour', provider.get('base_rate', 2500)):,}",
-                    "payment_methods": [payment_method.title()],
-                    "status": "confirmed",
+                "providers": providers,
+                "intent": orch.get("intent") or {
+                    "service_type": service,
+                    "location": location,
+                    "urgency": urgency,
+                    "job_complexity": "intermediate",
                 },
-                "confirmation_message": (
-                    f"✅ {provider.get('name')} kal 10:00 AM pe aayenge. "
-                    f"Rs. {provider.get('price_per_hour', provider.get('base_rate', 2500)):,}. Ref: {booking_id}"
-                ),
-                "reminders": [],
-                "payment_method": payment_method,
-                "whatsapp_sent": False,
             }
-        else:
-            # Real booking via Hisaab + Pakka + Firebase
-            intent = cached.get("intent") or {
-                "service_type": cached.get("service", provider.get("service", "service")),
-                "time_preference": "flexible",
-                "urgency": cached.get("urgency", "medium"),
-                "job_complexity": "intermediate",
-                "emergency": False,
-                "location": cached.get("location", ""),
-                "city": provider.get("city", "Islamabad"),
-            }
-            intent.setdefault("city", provider.get("city", "Islamabad"))
-            intent.setdefault("time_preference", "flexible")
-            try:
-                pricing = await hisaab_agent.calculate_price(intent, provider)
-                booking_res = await pakka_agent.create_booking(intent, provider, pricing, uid)
-                booking_res.pop("_log", None)
-                booking_id = booking_res["booking_id"]
-                await append_user_booking(uid, booking_id)
 
-                # WhatsApp notification
-                user_doc = await get_user(uid)
-                user_phone = (user_doc or {}).get("phone", "")
-                whatsapp_sent = False
-                if user_phone:
-                    whatsapp_sent = await send_booking_whatsapp(
-                        user_phone, booking_id,
-                        provider.get("name", "Provider"),
-                        intent.get("service_type", "service"),
-                        pricing["total"],
-                        booking_res.get("scheduled_time", ""),
-                    )
+            follow_up = await run_conversation(
+                session_id=body.session_id,
+                user_message="[system: search complete]",
+                providers=providers,
+                user_name=body.user_name,
+                history=None,
+            )
+            result["response_text"] = follow_up["response_text"]
+            result["providers"] = providers
+            result["request_id"] = new_request_id()
 
-                result["booking_result"] = {
-                    "booking_id": booking_id,
-                    "provider": provider,
-                    "receipt": booking_res["receipt"],
-                    "confirmation_message": booking_res["confirmation_message"],
-                    "reminders": booking_res.get("reminder_times", []),
-                    "payment_method": payment_method,
-                    "whatsapp_sent": whatsapp_sent,
-                }
-            except Exception as _be:
-                logger.error("[conversation] book_trigger real booking failed: %s", _be)
+            if follow_up.get("book_trigger"):
+                logger.warning("[conversation] follow_up book_trigger ignored — search results just arrived, user hasn't picked a provider yet")
+                result["phase"] = "confirming"
+            else:
+                result["phase"] = follow_up["phase"]
+
+        # Safety: if both search and book triggered in the same response, ignore book.
+        if result.get("search_trigger") and result.get("book_trigger"):
+            logger.warning("[conversation] book_trigger ignored — appeared with search_trigger in same turn")
+            result["book_trigger"] = None
+
+        if result.get("book_trigger"):
+            trigger = result["book_trigger"]
+            provider_id = trigger.get("provider_id", "")
+            payment_method = trigger.get("payment", "cash")
+            uid = body.user_id or "anonymous"
+
+            cached = _session_search_cache.get(body.session_id, {})
+            cached_providers = cached.get("providers") or []
+            provider = next((p for p in cached_providers if str(p.get("id")) == str(provider_id)), None)
+            if not provider:
+                provider = await get_provider(provider_id)
+            if not provider:
+                all_json = _load_providers()
+                provider = next((p for p in all_json if p.get("id") == provider_id), None)
+            if not provider:
+                provider = (cached_providers or _load_providers())[0]
+
+            if is_mock_mode():
                 booking_id = f"HAZ-{uuid.uuid4().hex[:8].upper()}"
                 result["booking_result"] = {
                     "booking_id": booking_id,
@@ -1016,26 +948,94 @@ async def conversation(body: ConversationRequest):
                     "payment_method": payment_method,
                     "whatsapp_sent": False,
                 }
-        result["phase"] = "done"
+            else:
+                intent = cached.get("intent") or {
+                    "service_type": cached.get("service", provider.get("service", "service")),
+                    "time_preference": "flexible",
+                    "urgency": cached.get("urgency", "medium"),
+                    "job_complexity": "intermediate",
+                    "emergency": False,
+                    "location": cached.get("location", ""),
+                    "city": provider.get("city", "Islamabad"),
+                }
+                intent.setdefault("city", provider.get("city", "Islamabad"))
+                intent.setdefault("time_preference", "flexible")
+                try:
+                    pricing = await hisaab_agent.calculate_price(intent, provider)
+                    booking_res = await pakka_agent.create_booking(intent, provider, pricing, uid)
+                    booking_res.pop("_log", None)
+                    booking_id = booking_res["booking_id"]
+                    await append_user_booking(uid, booking_id)
 
-    audio_base64 = None
-    if result.get("response_text"):
-        try:
-            from services.uplift_tts import LANGUAGE_VOICE_MAP
-            lang = body.language or 'roman_urdu'
-            # Frontend sends voice_id; fall back to language map so server always uses correct voice
-            tts_voice_id = body.voice_id or LANGUAGE_VOICE_MAP.get(lang, LANGUAGE_VOICE_MAP["roman_urdu"])
-            # roman_urdu needs translation (Roman → Urdu script); all others are already in their script
-            tts_translate = (lang == 'roman_urdu')
-            tts_kwargs: dict = {"translate": tts_translate, "voice_id": tts_voice_id}
-            tts = await text_to_speech(result["response_text"], **tts_kwargs)
-            if tts.get("success"):
-                audio_base64 = tts.get("audio_base64")
-        except Exception as e:
-            logger.warning("[conversation] TTS error: %s", e)
+                    user_doc = await get_user(uid)
+                    user_phone = (user_doc or {}).get("phone", "")
+                    whatsapp_sent = False
+                    if user_phone:
+                        whatsapp_sent = await send_booking_whatsapp(
+                            user_phone, booking_id,
+                            provider.get("name", "Provider"),
+                            intent.get("service_type", "service"),
+                            pricing["total"],
+                            booking_res.get("scheduled_time", ""),
+                        )
 
-    result["audio_base64"] = audio_base64
-    return result
+                    result["booking_result"] = {
+                        "booking_id": booking_id,
+                        "provider": provider,
+                        "receipt": booking_res["receipt"],
+                        "confirmation_message": booking_res["confirmation_message"],
+                        "reminders": booking_res.get("reminder_times", []),
+                        "payment_method": payment_method,
+                        "whatsapp_sent": whatsapp_sent,
+                    }
+                except Exception as _be:
+                    logger.error("[conversation] booking failed: %s", _be)
+                    booking_id = f"HAZ-{uuid.uuid4().hex[:8].upper()}"
+                    result["booking_result"] = {
+                        "booking_id": booking_id,
+                        "provider": provider,
+                        "receipt": {
+                            "service": provider.get("service", "Service"),
+                            "location": f"{provider.get('area', '')}, {provider.get('city', 'Islamabad')}",
+                            "scheduled_time": "Tomorrow 10:00 AM",
+                            "estimated_price": f"Rs. {provider.get('price_per_hour', provider.get('base_rate', 2500)):,}",
+                            "payment_methods": [payment_method.title()],
+                            "status": "confirmed",
+                        },
+                        "confirmation_message": (
+                            f"✅ {provider.get('name')} kal 10:00 AM pe aayenge. "
+                            f"Rs. {provider.get('price_per_hour', provider.get('base_rate', 2500)):,}. Ref: {booking_id}"
+                        ),
+                        "reminders": [],
+                        "payment_method": payment_method,
+                        "whatsapp_sent": False,
+                    }
+            result["phase"] = "done"
+
+        audio_base64 = None
+        if result.get("response_text"):
+            try:
+                from services.uplift_tts import LANGUAGE_VOICE_MAP
+                lang = body.language or 'roman_urdu'
+                tts_voice_id = body.voice_id or LANGUAGE_VOICE_MAP.get(lang, LANGUAGE_VOICE_MAP["roman_urdu"])
+                tts_translate = (lang == 'roman_urdu')
+                tts = await text_to_speech(result["response_text"], translate=tts_translate, voice_id=tts_voice_id)
+                if tts.get("success"):
+                    audio_base64 = tts.get("audio_base64")
+            except Exception as e:
+                logger.warning("[conversation] TTS error: %s", e)
+
+        result["audio_base64"] = audio_base64
+        return result
+
+    except Exception as _conv_err:
+        logger.error("[conversation] unhandled error: %s", _conv_err, exc_info=True)
+        return {
+            "session_id": body.session_id,
+            "response_text": "Thoda masla hua — dobara bolein.",
+            "phase": "intake",
+            "audio_base64": None,
+        }
 
 
 @app.post("/api/conversation/negotiate")
