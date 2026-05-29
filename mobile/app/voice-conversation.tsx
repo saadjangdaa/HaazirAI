@@ -161,25 +161,42 @@ export default function VoiceConversationScreen() {
     if (uiState === 'recording') {
       setUiState('processing');
       stopPulse();
+
+      // Show placeholder immediately so user sees their action was registered
+      const placeholderId = `ph-${Date.now()}`;
+      setChat((prev) => [...prev, { id: placeholderId, kind: 'text' as const, role: 'user' as const, text: '🎙 ...' }]);
+
       try {
         const { text } = await stopAndTranscribe();
+
         if (!text) {
+          // Replace placeholder with retry hint
+          setChat((prev) => prev.map((item) =>
+            item.id === placeholderId
+              ? mk({ kind: 'text', role: 'agent', text: '🎙 Awaaz clear nahi aayi — dobara bolein ya neeche type karein' })
+              : item
+          ));
           setUiState('idle');
-          // Don't add a chat bubble for short/empty recordings — just reset silently
-          // so the user can try again without cluttering the chat
           return;
         }
-        setChat((prev) => [...prev, mk({ kind: 'text', role: 'user', text })]);
+
+        // Replace placeholder with actual transcribed text
+        setChat((prev) => prev.map((item) =>
+          item.id === placeholderId ? { ...item, text } : item
+        ));
         setHistory((prev) => [...prev, { role: 'user', content: text }]);
         setUiState('searching');
-        // Send history BEFORE current message — backend appends it itself (avoid duplication on session restore)
         const turn = await sendMessage(sessionId.current, text, user?.id || 'anonymous', userName, history, voiceId, language);
         playAgentTurn(turn);
       } catch (e: any) {
         const msg = e?.code === 'ECONNABORTED' || e?.message?.includes('timeout')
           ? 'Server slow hai — thodi der baad dobara try karein'
-          : e?.message || 'Masla hua — dobara try karein';
-        setChat((prev) => [...prev, mk({ kind: 'text', role: 'agent', text: `⚠️ ${msg}` })]);
+          : 'Masla hua — type karke bhi bhej sakte hain';
+        setChat((prev) => prev.map((item) =>
+          item.id === placeholderId
+            ? mk({ kind: 'text', role: 'agent', text: `⚠️ ${msg}` })
+            : item
+        ));
         setUiState('idle');
       }
     } else if (uiState === 'idle') {
