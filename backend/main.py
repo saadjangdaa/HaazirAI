@@ -28,7 +28,7 @@ for _path in (_REPO_ROOT, _BACKEND_DIR):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from fastapi import HTTPException
+from fastapi import Depends, HTTPException
 from fastapi.responses import JSONResponse
 
 from backend.app import APP_INSTANCE_ID, app
@@ -110,9 +110,34 @@ from services.push_notify import (
     notify_feedback_received,
     process_pending_notifications,
 )
+from services.notification_cron import (
+    cron_secret_configured,
+    internal_cron_enabled,
+    notification_cron_loop,
+    require_cron_secret,
+    run_notification_cron,
+)
+
+_cron_stop: Optional[asyncio.Event] = None
+_cron_task: Optional[asyncio.Task] = None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _cron_stop, _cron_task
+    if internal_cron_enabled():
+        _cron_stop = asyncio.Event()
+        _cron_task = asyncio.create_task(notification_cron_loop(_cron_stop))
     yield
+    if _cron_stop is not None:
+        _cron_stop.set()
+    if _cron_task is not None:
+        try:
+            await _cron_task
+        except asyncio.CancelledError:
+            pass
+        _cron_task = None
+        _cron_stop = None
 
 app = FastAPI(
     title="Haazir Dost API",
@@ -304,6 +329,8 @@ async def health():
             "agent_logs_on_request": True,
             "fcm_pipeline": True,
             "notification_dedupe_seconds": 90,
+            "notification_reminder_cron": cron_secret_configured(),
+            "notification_cron_internal_loop": internal_cron_enabled(),
         },
         "firebase": mode,
         "environment": config.ENVIRONMENT,
@@ -485,6 +512,32 @@ async def trigger_bidding(body: BidRequest):
     return await run_bidding(body.request_id, providers, intent)
 
 
+async def _after_pakka_booking(
+    booking_id: str,
+    user_id: str,
+    pakka_result: dict,
+) -> dict:
+    """
+    EVENT 1: notify customer + worker at creation (assigned).
+    Schedule reminders, then confirm (EVENT 2 confirmed push).
+    """
+    reminder_times = pakka_result.get("reminder_times") or []
+    if reminder_times:
+        await schedule_booking_reminders(
+            booking_id,
+            user_id,
+            reminder_times,
+            "Haazir AI reminder: booking {booking_id} is coming up soon.",
+        )
+    booking = await get_booking(booking_id)
+    if booking:
+        try:
+            await notify_booking_created(booking)
+        except Exception as e:
+            logger.warning("[Push] notify_booking_created failed: %s", e)
+    return await set_booking_status(booking_id, "confirmed")
+
+
 @app.post("/api/book")
 async def confirm_booking(body: BookingRequest):
     """PAKKA agent confirms a specific booking."""
@@ -515,12 +568,7 @@ async def confirm_booking(body: BookingRequest):
     booking_id = result["booking_id"]
 
     await append_user_booking(uid, booking_id)
-    if result.get("reminder_times"):
-        await schedule_booking_reminders(
-            booking_id, uid, result["reminder_times"],
-            "Haazir AI reminder: booking {booking_id} is coming up soon.",
-        )
-    updated = await set_booking_status(booking_id, "confirmed")
+    updated = await _after_pakka_booking(booking_id, uid, result)
     return {
         "booking_id": booking_id,
         "receipt": result["receipt"],
@@ -966,6 +1014,7 @@ async def conversation(body: ConversationRequest):
                     booking_res.pop("_log", None)
                     booking_id = booking_res["booking_id"]
                     await append_user_booking(uid, booking_id)
+                    await _after_pakka_booking(booking_id, uid, booking_res)
 
                     user_doc = await get_user(uid)
                     user_phone = (user_doc or {}).get("phone", "")
@@ -1108,6 +1157,7 @@ async def conversation_direct_book(body: ConvDirectBookRequest):
     booking_id = booking_res["booking_id"]
 
     await append_user_booking(uid, booking_id)
+    updated = await _after_pakka_booking(booking_id, uid, booking_res)
 
     # WhatsApp notification
     user_doc = await get_user(uid)
@@ -1130,6 +1180,7 @@ async def conversation_direct_book(body: ConvDirectBookRequest):
         "reminders": booking_res.get("reminder_times", []),
         "payment_method": body.payment_method,
         "whatsapp_sent": whatsapp_sent,
+        "status": updated.get("status"),
     }
 
 
@@ -1224,6 +1275,19 @@ async def process_notifications():
     if os.getenv("ENVIRONMENT", "development") != "development":
         raise HTTPException(status_code=403, detail="Process only allowed in development")
     return await process_pending_notifications()
+
+
+@app.post(
+    "/api/cron/process-notifications",
+    dependencies=[Depends(require_cron_secret)],
+)
+@app.get(
+    "/api/cron/process-notifications",
+    dependencies=[Depends(require_cron_secret)],
+)
+async def cron_process_notifications():
+    """Production: call every 5–15 min from Render Cron / external scheduler."""
+    return await run_notification_cron()
 
 
 @app.post("/api/admin/cleanup-invalid-bookings")

@@ -1,6 +1,8 @@
 import Constants from 'expo-constants';
 import * as Device from 'expo-device';
 import { Platform } from 'react-native';
+import type { UserRole } from '../context/AuthContext';
+import { resolveNotificationRoute, NotificationPayload } from './pushNavigation';
 
 /**
  * Remote push is NOT available in Expo Go (SDK 53+).
@@ -78,4 +80,27 @@ export async function registerForPushNotifications(): Promise<string | null> {
     console.warn('[Push] Token error:', e);
     return null;
   }
+}
+
+/** Tap handler — navigate from notification data payload (backend event_type → data.type). */
+export async function subscribeNotificationResponses(
+  userRole: UserRole,
+  onNavigate: (target: { pathname: string; params?: Record<string, string> }) => void
+): Promise<(() => void) | null> {
+  if (!isPushAvailable()) return null;
+  const Notifications = await loadNotifications();
+  if (!Notifications) return null;
+
+  const sub = Notifications.addNotificationResponseReceivedListener((response) => {
+    const raw = response.notification.request.content.data as Record<string, unknown>;
+    const payload: NotificationPayload = {
+      type: raw.type != null ? String(raw.type) : undefined,
+      booking_id: raw.booking_id != null ? String(raw.booking_id) : undefined,
+      dispute_id: raw.dispute_id != null ? String(raw.dispute_id) : undefined,
+    };
+    const target = resolveNotificationRoute(payload, userRole);
+    if (target) onNavigate(target);
+  });
+
+  return () => sub.remove();
 }

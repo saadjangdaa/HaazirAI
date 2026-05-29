@@ -42,6 +42,10 @@ build/Release
 node_modules/
 jspm_packages/
 
+# Python virtual environments
+.venv/
+**/.venv/
+
 # Snowpack dependency directory (https://snowpack.dev/)
 web_modules/
 
@@ -71,9 +75,13 @@ web_modules/
 .env.*
 !.env.example
 
-# Firebase Admin SDK (never commit)
+# Firebase Admin SDK service account keys (never commit)
 firebase-credentials.json
 **/firebase-credentials.json
+firebase-key.json
+**/firebase-key.json
+**/firebase-key*.json
+!firebase-key.example.json
 
 # parcel-bundler cache (https://parceljs.org/)
 .cache
@@ -123,9 +131,6 @@ dist
 
 # Firebase cache directory
 .firebase/
-
-# Firebase Admin service account keys
-firebase-credentials.json
 
 # TernJS port file
 .tern-port
