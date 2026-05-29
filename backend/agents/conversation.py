@@ -123,18 +123,32 @@ async def run_conversation(
 
     system_prompt = SYSTEM_PROMPTS.get(language, SYSTEM_PROMPTS['roman_urdu'])
 
+    # Language-aware init hints — tells model the user's name and what to do,
+    # written in the target language so the greeting matches from the first token.
+    _INIT_WITH_NAME = {
+        'roman_urdu': lambda n: f"(User ka naam: {n}. Naam le kar warmly greet karo, phir poocho kya service chahiye.)",
+        'urdu':       lambda n: f"(صارف کا نام: {n}۔ نام لے کر گرمجوشی سے ملیں، پھر پوچھیں کیا سروس چاہیے۔)",
+        'sindhi':     lambda n: f"(يوزر جو نالو: {n}. نالي سان گرمجوشيءَ سان ملو، پوءِ پڇو ڪهڙي خدمت گهرجي.)",
+        'pashto':     lambda n: f"(د کارن نوم: {n}. د نوم سره ګرمه هرکلې وکړئ، بیا پوښتنه وکړئ کومه خدمت پکار ده.)",
+        'balochi':    lambda n: f"(یوزر ءِ نام: {n}۔ نام گپتاں گرمیءَ سرا سلام کنیں، پشت کمی خدمت لازم ءُ۔)",
+    }
+    _INIT_NO_NAME = {
+        'roman_urdu': "(Warmly greet karo, phir seedha poocho kya service chahiye — naam mat poocho.)",
+        'urdu':       "(گرمجوشی سے سلام کریں، پھر پوچھیں کیا سروس چاہیے — نام مت پوچھیں۔)",
+        'sindhi':     "(گرمجوشيءَ سان سلام ڪريو، پوءِ سڌو پڇو ڪهڙي خدمت گهرجي — نالو نه پڇجو.)",
+        'pashto':     "(ګرمه هرکلې وکړئ، بیا مستقیم وپوښتئ کومه خدمت پکار ده — نوم مه پوښتئ.)",
+        'balochi':    "(گرمیءَ سرا سلام کنیں، پشت سدا پرسیں کمی خدمت لازم ءُ — نام مه پرسیں۔)",
+    }
+
     # Build text-completion prompt ending with "Fatima:" — forces model to complete
     # Fatima's next line rather than echoing the user. Proven reliable on all Gemini models.
     if user_message == "__init__":
+        hint_fn = _INIT_WITH_NAME.get(language, _INIT_WITH_NAME['roman_urdu'])
+        hint_no = _INIT_NO_NAME.get(language, _INIT_NO_NAME['roman_urdu'])
         if first_name:
-            prompt = (
-                f"(User ka naam: {first_name}. Naam le kar warmly greet karo, "
-                f"phir poocho kya service chahiye.)\nFatima:"
-            )
+            prompt = f"{hint_fn(first_name)}\nFatima:"
         else:
-            prompt = (
-                "(Warmly greet karo, phir seedha poocho kya service chahiye — naam mat poocho.)\nFatima:"
-            )
+            prompt = f"{hint_no}\nFatima:"
     else:
         history_lines = []
         for m in session["history"][-12:]:  # last 12 turns keeps context tight
