@@ -51,15 +51,19 @@ export async function sendMessage(
   voice_id?: string,
   language?: string,
 ): Promise<ConversationTurn> {
-  const { data } = await axios.post(`${BASE_URL}/api/conversation`, {
-    session_id,
-    user_text,
-    user_id,
-    user_name,
-    history: history || [],
-    ...(voice_id ? { voice_id } : {}),
-    ...(language ? { language } : {}),
-  });
+  const { data } = await axios.post(
+    `${BASE_URL}/api/conversation`,
+    {
+      session_id,
+      user_text,
+      user_id,
+      user_name,
+      history: history || [],
+      ...(voice_id ? { voice_id } : {}),
+      ...(language ? { language } : {}),
+    },
+    { timeout: 35000 },
+  );
   return data;
 }
 
