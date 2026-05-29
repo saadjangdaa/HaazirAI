@@ -7,7 +7,9 @@ not duplicate ``load_dotenv()`` (except optional fallbacks when ``config`` is un
 
 from __future__ import annotations
 
+import json
 import os
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -16,6 +18,51 @@ from dotenv import load_dotenv
 BACKEND_DIR = Path(__file__).resolve().parent
 
 load_dotenv(BACKEND_DIR / ".env")
+
+
+def _setup_google_credentials_from_env() -> None:
+    """
+    On cloud deployments (Render, Railway, etc.) there's no credentials file on disk.
+    If GOOGLE_APPLICATION_CREDENTIALS_JSON is set, write it to a temp file and point
+    GOOGLE_APPLICATION_CREDENTIALS at it.
+
+    The private_key field in service account JSON contains literal \\n sequences.
+    Render/shell env vars may double-escape them — this function normalises them.
+    """
+    json_str = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON", "").strip()
+    if not json_str:
+        return
+
+    # Already pointing to a real file — nothing to do.
+    existing = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+    if existing and os.path.isfile(existing):
+        return
+
+    try:
+        creds = json.loads(json_str)
+    except json.JSONDecodeError:
+        print("[!] GOOGLE_APPLICATION_CREDENTIALS_JSON is not valid JSON — skipping")
+        return
+
+    # Fix common copy-paste issue: \\n instead of \n inside private_key
+    if "private_key" in creds:
+        key = creds["private_key"]
+        # Replace literal four-char sequences \\n with a real newline
+        if "\\n" in key and "\n" not in key:
+            key = key.replace("\\n", "\n")
+        creds["private_key"] = key
+
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", delete=False, encoding="utf-8"
+    )
+    json.dump(creds, tmp)
+    tmp.close()
+
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = tmp.name
+    print(f"[OK] GOOGLE_APPLICATION_CREDENTIALS set to temp file: {tmp.name}")
+
+
+_setup_google_credentials_from_env()
 
 
 class Config:
