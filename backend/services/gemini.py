@@ -21,7 +21,7 @@ for _suffix in ["", "2", "3", "4", "5"]:
         _ALL_KEYS.append(_k)
 
 MOCK_MODE = len(_ALL_KEYS) == 0
-_MODEL_NAME = "gemini-3.1-flash-lite"
+_MODEL_NAME = "gemini-3.5-flash"
 
 _current_key_idx = 0
 _model: genai.GenerativeModel | None = None
@@ -78,7 +78,7 @@ async def _try_generate(content) -> str:
             response = await loop.run_in_executor(
                 None, lambda: _model.generate_content(content)
             )
-            return response.text
+            return _extract_response_text(response)
         except Exception as e:
             if _is_rate_limit(e):
                 next_idx = _current_key_idx + 1
