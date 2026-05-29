@@ -176,7 +176,10 @@ export default function VoiceConversationScreen() {
         const turn = await sendMessage(sessionId.current, text, user?.id || 'anonymous', userName, history, voiceId, language);
         playAgentTurn(turn);
       } catch (e: any) {
-        Alert.alert('Error', e?.message || 'Masla hua — dobara try karein');
+        const msg = e?.code === 'ECONNABORTED' || e?.message?.includes('timeout')
+          ? 'Server slow hai — thodi der baad dobara try karein'
+          : e?.message || 'Masla hua — dobara try karein';
+        setChat((prev) => [...prev, mk({ kind: 'text', role: 'agent', text: `⚠️ ${msg}` })]);
         setUiState('idle');
       }
     } else if (uiState === 'idle') {
@@ -564,7 +567,7 @@ export default function VoiceConversationScreen() {
         {uiState === 'processing' && (
           <View style={styles.searchingCard}>
             <ActivityIndicator color={Colors.primary} size="small" />
-            <Text style={styles.searchingText}>Samajh raha hun...</Text>
+            <Text style={styles.searchingText}>Samajh rahi hun...</Text>
           </View>
         )}
       </ScrollView>
