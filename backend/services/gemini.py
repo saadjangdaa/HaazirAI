@@ -21,7 +21,7 @@ for _suffix in ["", "2", "3", "4", "5"]:
         _ALL_KEYS.append(_k)
 
 MOCK_MODE = len(_ALL_KEYS) == 0
-_MODEL_NAME = "gemini-3.1-flash-lite"
+_MODEL_NAME = "gemini-2.5-flash"
 
 _current_key_idx = 0
 _model: genai.GenerativeModel | None = None
