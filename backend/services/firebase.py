@@ -1968,7 +1968,10 @@ async def schedule_booking_reminders(
                 "booking_id": booking_id,
                 "user_id": user_id,
                 "send_at": send_at,
+                "title": "Booking reminder",
                 "message": message_template.format(booking_id=booking_id),
+                "event_type": "reminder",
+                "role": "customer",
                 "sent": False,
             }
         )
