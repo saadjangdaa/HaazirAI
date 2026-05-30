@@ -8,7 +8,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '../../constants/theme';
-import { pingApi, requireUserId, getUserBookings } from '../../services/api';
+import { pingApi, requireUserId, getUserBookings, createJobRequest } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import { useLang } from '../../context/LanguageContext';
 import { useMockData } from '../../context/MockDataContext';
@@ -275,13 +275,49 @@ const CustomerHomeScreen = () => {
     }
   };
 
+  const handleRealJobRequest = async (service: string, loc: string, urgency = 'medium') => {
+    if (!user?.id) { router.push('/voice-conversation'); return; }
+    try {
+      const uid = requireUserId(user);
+      const city = user.city || 'Islamabad';
+      const job = await createJobRequest({
+        user_id: uid,
+        service,
+        location: loc || city,
+        city,
+        urgency,
+      });
+      // Navigate to results with jobRequestId so it polls real bids
+      router.push({
+        pathname: '/results',
+        params: {
+          data: JSON.stringify({
+            request_id: job.job_request_id,
+            extracted_intent: { service_type: service, location: loc, city, urgency },
+            providers_ranked: [],
+            agent_logs: [],
+          }),
+          jobRequestId: job.job_request_id,
+        },
+      });
+    } catch {
+      // Fallback to voice conversation if API fails
+      router.push('/voice-conversation');
+    }
+  };
+
   const handleQuickService = (label: string, danger?: boolean) => {
     const area = location.trim() || user?.city || 'G-13, Islamabad';
     if (danger) {
       setInput('EMERGENCY! Gas leak ho rahi hai, foran koi bhejein');
-    } else {
-      setInput(`Mujhe ${label} chahiye — ${area}`);
+      router.push('/voice-conversation');
+      return;
     }
+    if (!isMockMode) {
+      handleRealJobRequest(label, area);
+      return;
+    }
+    setInput(`Mujhe ${label} chahiye — ${area}`);
     if (!location.trim()) setLocation(area);
     router.push('/voice-conversation');
   };
@@ -414,9 +450,13 @@ const CustomerHomeScreen = () => {
               <TouchableOpacity
                 style={[styles.bookBtn, !selectedProvider.available && styles.bookBtnDisabled]}
                 onPress={() => {
-                  setInput(`Mujhe ${selectedProvider!.service} chahiye — ${selectedProvider!.area}`);
-                  setLocation(selectedProvider!.area);
-                  router.push('/voice-conversation');
+                  if (!isMockMode) {
+                    handleRealJobRequest(selectedProvider!.service, selectedProvider!.area);
+                  } else {
+                    setInput(`Mujhe ${selectedProvider!.service} chahiye — ${selectedProvider!.area}`);
+                    setLocation(selectedProvider!.area);
+                    router.push('/voice-conversation');
+                  }
                 }}
                 activeOpacity={0.85}
                 disabled={!selectedProvider.available}

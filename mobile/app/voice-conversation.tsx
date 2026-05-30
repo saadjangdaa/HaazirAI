@@ -227,7 +227,7 @@ export default function VoiceConversationScreen() {
     setUiState('searching');
     try {
       // Send history BEFORE current message — backend appends it itself (avoid duplication on session restore)
-      const turn = await sendMessage(sessionId.current, text, user?.id || 'anonymous', userName, history);
+      const turn = await sendMessage(sessionId.current, text, user?.id || 'anonymous', userName, history, voiceId, language);
       playAgentTurn(turn);
     } catch (e: any) {
       Alert.alert('Error', e?.message || 'Masla hua — dobara try karein');

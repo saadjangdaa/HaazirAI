@@ -115,9 +115,8 @@ export async function negotiateProviders(
     });
     return data;
   } catch (e: any) {
-    // Fallback: if endpoint not yet deployed (404) or network issue, negotiate locally
-    const status = e?.response?.status;
-    if ((status === 404 || status === 422 || !e?.response) && providers?.length) {
+    // Fallback: negotiate locally on any server/network error
+    if (providers?.length) {
       return _localNegotiate(providers);
     }
     throw e;
