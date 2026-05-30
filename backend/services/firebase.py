@@ -208,6 +208,8 @@ class FirebaseService:
             COL_DISPUTES: {},
             COL_REVIEWS: {},
             COL_WAITLIST: {},
+            "job_requests": {},
+            "bids": {},
         }
         # Slot locks for claim_slot_atomic in mock mode: "provider_id/slug" -> booking_id
         self._mock_slot_claims: Dict[str, str] = {}
@@ -867,6 +869,8 @@ class FirebaseService:
 _mock_db: Dict[str, Dict[str, Any]] = {name: {} for name in ACTIVE_COLLECTIONS}
 _mock_db["reviews"] = {}
 _mock_db["waitlist"] = {}
+_mock_db.setdefault("job_requests", {})
+_mock_db.setdefault("bids", {})
 
 
 def _now_iso() -> str:
@@ -1177,13 +1181,36 @@ async def list_bookings(
     status: Optional[str] = None,
 ) -> List[dict]:
     svc = get_firebase_service()
+
     if provider_id:
         rows = await asyncio.to_thread(svc.get_provider_bookings, provider_id)
+        if user_id:
+            rows = [b for b in rows if b.get("user_id") == user_id]
+    elif user_id:
+        # Query all bookings and filter by user_id (no provider filter)
+        def _query_user_bookings():
+            if svc.is_mock or MOCK_MODE:
+                return [
+                    b for b in _mock_bucket("bookings").values()
+                    if b.get("user_id") == user_id
+                ]
+            db = svc.db
+            if db is None:
+                return [
+                    b for b in _mock_bucket("bookings").values()
+                    if b.get("user_id") == user_id
+                ]
+            return [
+                {**(snap.to_dict() or {}), "booking_id": snap.id, "id": snap.id}
+                for snap in db.collection("bookings")
+                .where("user_id", "==", user_id)
+                .limit(50)
+                .stream()
+            ]
+        rows = await asyncio.to_thread(_query_user_bookings)
     else:
         rows = []
 
-    if user_id:
-        rows = [b for b in rows if b.get("user_id") == user_id]
     if status:
         want = normalize_booking_status(status)
         rows = [b for b in rows if normalize_booking_status(b.get("status")) == want]
@@ -2071,3 +2098,119 @@ async def verify_firestore_structure() -> Dict[str, Any]:
         "extra_root_collections": extra_root,
         "ok": audit["issue_count"] == 0 and not extra_root,
     }
+
+
+# ── Job Requests ──────────────────────────────────────────────────────────────
+
+async def save_job_request(request_id: str, data: dict) -> bool:
+    from services.firestore_schema import normalize_job_request
+    doc = normalize_job_request(data, request_id)
+    await asyncio.to_thread(_doc_set, "job_requests", request_id, doc)
+    return True
+
+
+async def get_job_request(request_id: str) -> Optional[dict]:
+    return await asyncio.to_thread(_doc_get, "job_requests", request_id)
+
+
+async def update_job_request(request_id: str, data: dict) -> bool:
+    return await asyncio.to_thread(_doc_update, "job_requests", request_id, data)
+
+
+async def list_open_job_requests(service: str = "", city: str = "") -> List[dict]:
+    """Return open job_requests optionally filtered by service/city."""
+    svc = get_firebase_service()
+    results: List[dict] = []
+
+    def _query():
+        if svc.is_mock or MOCK_MODE:
+            bucket = _mock_bucket("job_requests")
+            docs = list(bucket.values())
+        else:
+            db = svc.db
+            if db is None:
+                bucket = _mock_bucket("job_requests")
+                docs = list(bucket.values())
+            else:
+                q = db.collection("job_requests").where("status", "==", "open")
+                if city:
+                    q = q.where("city", "==", city)
+                docs = [dict(s.to_dict() or {}) | {"request_id": s.id} for s in q.stream()]
+        out = []
+        for d in docs:
+            if d.get("status") not in ("open", "bidding"):
+                continue
+            if city and (d.get("city") or "").lower() != city.lower():
+                continue
+            if service and service.lower() not in (d.get("service") or "").lower():
+                continue
+            out.append(d)
+        out.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        return out
+
+    return await asyncio.to_thread(_query)
+
+
+# ── Bids ──────────────────────────────────────────────────────────────────────
+
+async def save_bid(bid_id: str, data: dict) -> bool:
+    from services.firestore_schema import normalize_bid
+    doc = normalize_bid(data, bid_id)
+    await asyncio.to_thread(_doc_set, "bids", bid_id, doc)
+    return True
+
+
+async def get_bid(bid_id: str) -> Optional[dict]:
+    return await asyncio.to_thread(_doc_get, "bids", bid_id)
+
+
+async def update_bid(bid_id: str, data: dict) -> bool:
+    return await asyncio.to_thread(_doc_update, "bids", bid_id, data)
+
+
+async def list_bids_for_job(job_request_id: str) -> List[dict]:
+    """All bids for a given job_request_id, sorted newest first."""
+    svc = get_firebase_service()
+
+    def _query():
+        if svc.is_mock or MOCK_MODE:
+            bucket = _mock_bucket("bids")
+            docs = [v for v in bucket.values()
+                    if v.get("job_request_id") == job_request_id]
+        else:
+            db = svc.db
+            if db is None:
+                bucket = _mock_bucket("bids")
+                docs = [v for v in bucket.values()
+                        if v.get("job_request_id") == job_request_id]
+            else:
+                docs = [
+                    dict(s.to_dict() or {}) | {"bid_id": s.id}
+                    for s in db.collection("bids")
+                    .where("job_request_id", "==", job_request_id)
+                    .stream()
+                ]
+        docs.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        return docs
+
+    return await asyncio.to_thread(_query)
+
+
+async def list_bids_by_worker(worker_id: str) -> List[dict]:
+    """All bids submitted by a worker."""
+    svc = get_firebase_service()
+
+    def _query():
+        if svc.is_mock or MOCK_MODE:
+            bucket = _mock_bucket("bids")
+            return [v for v in bucket.values() if v.get("worker_id") == worker_id]
+        db = svc.db
+        if db is None:
+            bucket = _mock_bucket("bids")
+            return [v for v in bucket.values() if v.get("worker_id") == worker_id]
+        return [
+            dict(s.to_dict() or {}) | {"bid_id": s.id}
+            for s in db.collection("bids").where("worker_id", "==", worker_id).stream()
+        ]
+
+    return await asyncio.to_thread(_query)

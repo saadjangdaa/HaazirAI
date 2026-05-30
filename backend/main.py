@@ -54,6 +54,9 @@ from models.request import (
     ConvDirectBookRequest,
     UserSyncRequest,
     BookingStatusUpdate,
+    JobRequestCreate,
+    WorkerBidCreate,
+    AcceptBidRequest,
 )
 from agents.orchestrator import run_full_orchestration
 from agents.hisaab import HisaabAgent
@@ -93,6 +96,7 @@ from services.firebase import (
     cleanup_bookings_with_invalid_user_id,
     verify_providers_integrity,
     get_provider,
+    get_job_request,
 )
 from services.users_integrity import normalize_role
 from services.worker_service import get_worker_bookings, resolve_worker_provider_id, summarize_worker_earnings
@@ -1426,6 +1430,221 @@ async def adk_request(request: ServiceRequest):
             "error": str(e),
             "orchestrator": "google-adk"
         }
+
+# ── Real Marketplace Flow — Job Requests + Worker Bids ────────────────────────
+
+@app.post("/api/job-requests")
+async def create_job_request_endpoint(body: JobRequestCreate):
+    """
+    Real flow Step 1: Customer posts a job.
+    - Saves job_request to Firestore
+    - Runs SAMAJH + DHUNDHO to find matching providers
+    - Sends push notifications to each matching worker
+    Returns job_request_id + list of notified providers.
+    """
+    from services.job_request_service import create_job_request, notify_matching_workers
+
+    uid = _require_firebase_uid(body.user_id)
+    await _require_complete_profile(uid)
+
+    user = await get_user(uid)
+    customer_name = (user or {}).get("display_name") or (user or {}).get("username") or "Customer"
+
+    # Use SAMAJH+DHUNDHO if no providers passed from frontend
+    providers = body.providers or []
+    estimated_price = body.estimated_price
+
+    if not providers:
+        try:
+            orch = await run_samajh_workflow(
+                user_input=f"{body.service} chahiye, {body.location}, {body.city}",
+                source="text",
+                user_location=body.location,
+            )
+            providers = list((orch.get("providers_ranked") or []))[:10]
+            price_breakdown = orch.get("price_breakdown") or {}
+            if not estimated_price and price_breakdown.get("total"):
+                estimated_price = int(price_breakdown["total"])
+        except Exception as _e:
+            logger.warning("[job-request] orchestration failed: %s", _e)
+            providers = _fallback_ranked_providers(
+                {"service_type": body.service, "city": body.city}, limit=10
+            )
+
+    # Filter to matching service only
+    providers = _filter_providers_by_service(
+        providers, {"service_type": body.service}
+    )
+
+    job = await create_job_request(
+        customer_id=uid,
+        customer_name=customer_name,
+        service=body.service,
+        location=body.location,
+        city=body.city,
+        urgency=body.urgency,
+        description=body.description,
+        estimated_price=estimated_price or body.estimated_price,
+    )
+
+    notified = await notify_matching_workers(job, providers)
+
+    return {
+        "job_request_id": job["request_id"],
+        "status": job["status"],
+        "service": job["service"],
+        "location": job["location"],
+        "city": job["city"],
+        "estimated_price": job["estimated_price"],
+        "expires_at": job["expires_at"],
+        "notified_count": len(notified),
+        "providers_found": len(providers),
+        "message": f"{len(notified)} workers ko notify kar diya gaya — bids aa rahi hain...",
+    }
+
+
+@app.get("/api/job-requests/{job_request_id}")
+async def get_job_request_endpoint(job_request_id: str):
+    """Get job request details + current bids."""
+    from services.firebase import get_job_request, list_bids_for_job
+    job = await get_job_request(job_request_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job request not found")
+    bids = await list_bids_for_job(job_request_id)
+    return {**job, "bids": bids, "bid_count": len(bids)}
+
+
+@app.get("/api/job-requests/{job_request_id}/bids")
+async def get_job_bids(job_request_id: str):
+    """Real-time bid list for customer polling (every 5 sec)."""
+    from services.firebase import list_bids_for_job
+    from agents.moltol import MoltolAgent as _Moltol
+    bids = await list_bids_for_job(job_request_id)
+    ranked = _Moltol().rank_real_bids(bids)
+    return {"job_request_id": job_request_id, "bids": ranked, "count": len(ranked)}
+
+
+@app.post("/api/job-requests/{job_request_id}/bid")
+async def submit_worker_bid(job_request_id: str, body: WorkerBidCreate):
+    """
+    Real flow Step 2: Worker submits a bid on an open job.
+    Worker must be linked to a provider_id in their user profile.
+    """
+    from services.job_request_service import submit_bid
+
+    uid = _require_firebase_uid(body.worker_id)
+
+    try:
+        bid = await submit_bid(
+            job_request_id=job_request_id,
+            worker_id=uid,
+            provider_id=body.provider_id,
+            provider_name=body.provider_name,
+            price=body.price,
+            eta_minutes=body.eta_minutes,
+            message=body.message,
+            rating=body.rating,
+        )
+        return {"success": True, "bid": bid, "message": "Aapki bid submit ho gayi!"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/job-requests/{job_request_id}/accept-bid/{bid_id}")
+async def accept_worker_bid(job_request_id: str, bid_id: str, body: AcceptBidRequest):
+    """
+    Real flow Step 3: Customer accepts a bid → HISAAB + PAKKA create booking.
+    """
+    from services.job_request_service import accept_bid
+    from services.whatsapp import send_booking_whatsapp
+
+    uid = _require_firebase_uid(body.customer_id)
+
+    try:
+        accepted = await accept_bid(
+            job_request_id=job_request_id,
+            bid_id=bid_id,
+            customer_id=uid,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Resolve provider for PAKKA
+    provider_id = accepted.get("provider_id", "")
+    provider = await get_provider(provider_id)
+    if not provider:
+        all_json = _load_providers()
+        provider = next((p for p in all_json if p.get("id") == provider_id), None)
+    if not provider:
+        provider = {"id": provider_id, "name": accepted.get("provider_name", "Provider"),
+                    "service": "service", "city": "Islamabad", "price_per_hour": accepted.get("price", 2000)}
+
+    job = await get_job_request(job_request_id) or {}
+    intent = {
+        "service_type": job.get("service", provider.get("service", "service")),
+        "time_preference": "flexible",
+        "urgency": job.get("urgency", "medium"),
+        "job_complexity": "intermediate",
+        "emergency": False,
+        "location": job.get("location", ""),
+        "city": job.get("city", provider.get("city", "Islamabad")),
+    }
+    pricing = {"total": accepted.get("price", 0)}
+
+    booking_res = await pakka_agent.create_booking(intent, provider, pricing, uid)
+    booking_res.pop("_log", None)
+    booking_id = booking_res["booking_id"]
+
+    await append_user_booking(uid, booking_id)
+
+    # WhatsApp
+    user_doc = await get_user(uid)
+    user_phone = (user_doc or {}).get("phone", "")
+    whatsapp_sent = False
+    if user_phone:
+        whatsapp_sent = await send_booking_whatsapp(
+            user_phone, booking_id,
+            accepted.get("provider_name", "Provider"),
+            intent["service_type"],
+            pricing["total"],
+            booking_res.get("scheduled_time", ""),
+        )
+
+    return {
+        "booking_id": booking_id,
+        "bid": accepted,
+        "provider": provider,
+        "receipt": booking_res["receipt"],
+        "confirmation_message": booking_res["confirmation_message"],
+        "payment_method": body.payment_method,
+        "whatsapp_sent": whatsapp_sent,
+    }
+
+
+@app.get("/api/job-requests/worker/{user_id}")
+async def get_worker_available_jobs(user_id: str, service: str = "", city: str = ""):
+    """
+    Worker sees open job requests matching their service/city where they haven't bid yet.
+    service and city query params are optional — if omitted, uses worker's profile.
+    """
+    from services.job_request_service import get_available_jobs_for_worker
+
+    uid = _require_firebase_uid(user_id)
+
+    # Auto-fill service/city from worker profile if not provided
+    if not service or not city:
+        user = await get_user(uid)
+        if user:
+            if not service:
+                skills = user.get("skills") or []
+                if skills:
+                    service = skills[0]
+            if not city:
+                city = user.get("city") or ""
+
+    jobs = await get_available_jobs_for_worker(uid, service=service, city=city)
+    return {"jobs": jobs, "count": len(jobs), "worker_id": uid}
+
 
 if __name__ == "__main__":
     print(

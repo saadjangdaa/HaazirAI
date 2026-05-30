@@ -1,13 +1,15 @@
 """
 Canonical Firestore schema for Haazir AI (Step 1 — single source of truth).
 
-Active collections (ONLY these six):
+Active collections:
   providers/{provider_id}
   bookings/{booking_id}
   users/{user_id}          — user_id MUST be Firebase Auth UID
   disputes/{dispute_id}
   agent_logs/{request_id}
   notifications/{notif_id}
+  job_requests/{request_id} — real job postings broadcast to workers
+  bids/{bid_id}             — worker bids on a job_request
 """
 from typing import Any, Dict, List, Optional
 
@@ -19,8 +21,16 @@ ACTIVE_COLLECTIONS = frozenset(
         "disputes",
         "agent_logs",
         "notifications",
+        "job_requests",
+        "bids",
     }
 )
+
+# job_request statuses
+JOB_REQUEST_STATUS = frozenset({"open", "bidding", "assigned", "expired", "cancelled"})
+
+# bid statuses
+BID_STATUS = frozenset({"pending", "accepted", "rejected"})
 
 FORBIDDEN_USER_IDS = frozenset({"user_001", "user_demo", "guest", ""})
 
@@ -301,6 +311,57 @@ def validate_document(collection: str, doc_id: str, data: Dict[str, Any]) -> Lis
         issues.extend(validate_notification_document(doc_id, data))
 
     return issues
+
+
+def normalize_job_request(data: Dict[str, Any], request_id: Optional[str] = None) -> Dict[str, Any]:
+    rid = (request_id or data.get("request_id") or "").strip()
+    status = (data.get("status") or "open").lower()
+    if status not in JOB_REQUEST_STATUS:
+        status = "open"
+    out: Dict[str, Any] = {
+        "request_id": rid,
+        "customer_id": (data.get("customer_id") or "").strip(),
+        "customer_name": (data.get("customer_name") or "").strip(),
+        "service": (data.get("service") or "").strip(),
+        "location": (data.get("location") or "").strip(),
+        "city": (data.get("city") or "").strip(),
+        "urgency": (data.get("urgency") or "medium").strip(),
+        "description": (data.get("description") or "").strip(),
+        "estimated_price": int(data.get("estimated_price") or 0),
+        "status": status,
+        "created_at": data.get("created_at", ""),
+        "expires_at": data.get("expires_at", ""),
+        "notified_provider_ids": list(data.get("notified_provider_ids") or []),
+        "bid_count": int(data.get("bid_count") or 0),
+    }
+    for key, value in data.items():
+        if key not in out and value is not None:
+            out[key] = value
+    return out
+
+
+def normalize_bid(data: Dict[str, Any], bid_id: Optional[str] = None) -> Dict[str, Any]:
+    bid_id = (bid_id or data.get("bid_id") or "").strip()
+    status = (data.get("status") or "pending").lower()
+    if status not in BID_STATUS:
+        status = "pending"
+    out: Dict[str, Any] = {
+        "bid_id": bid_id,
+        "job_request_id": (data.get("job_request_id") or "").strip(),
+        "worker_id": (data.get("worker_id") or "").strip(),
+        "provider_id": (data.get("provider_id") or "").strip(),
+        "provider_name": (data.get("provider_name") or "").strip(),
+        "price": int(data.get("price") or 0),
+        "eta_minutes": int(data.get("eta_minutes") or 30),
+        "message": (data.get("message") or "").strip(),
+        "rating": float(data.get("rating") or 0),
+        "status": status,
+        "created_at": data.get("created_at", ""),
+    }
+    for key, value in data.items():
+        if key not in out and value is not None:
+            out[key] = value
+    return out
 
 
 def audit_store(
