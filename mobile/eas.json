@@ -14,13 +14,15 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://haazirai-backend2.onrender.com"
+        "EXPO_PUBLIC_API_URL": "https://haazirai-backend2.onrender.com",
+        "GOOGLE_MAPS_API_KEY": "AIzaSyBrk1qwmRpVbhH_URNwS_d0P8iVuRCFzoM"
       }
     },
     "production": {
       "autoIncrement": true,
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://haazirai-backend2.onrender.com"
+        "EXPO_PUBLIC_API_URL": "https://haazirai-backend2.onrender.com",
+        "GOOGLE_MAPS_API_KEY": "AIzaSyBrk1qwmRpVbhH_URNwS_d0P8iVuRCFzoM"
       }
     }
   },

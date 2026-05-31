@@ -100,7 +100,7 @@ export function MapSection({ selectedProvider, onMarkerPress }: Props) {
 
       {/* Map watermark */}
       <View style={styles.watermark}>
-        <Text style={styles.watermarkText}>🗺 Karachi (Mock Map)</Text>
+        <Text style={styles.watermarkText}>🗺 Haazir AI Map</Text>
       </View>
     </View>
   );

@@ -7,7 +7,10 @@ import { speakText, stopSpeaking, getIsSpeaking } from '../services/voiceSpeech'
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '../constants/theme';
-import { FullOrchestrationResponse, Provider, triggerBidding, formatApiError, requireUserId } from '../services/api';
+import {
+  FullOrchestrationResponse, Provider, triggerBidding, formatApiError, requireUserId,
+  getJobBids, acceptBid, WorkerBid,
+} from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import ProviderCard from '../components/ProviderCard';
 import PriceBreakdown from '../components/PriceBreakdown';
@@ -23,7 +26,7 @@ const ResultsScreen = () => {
   const { user } = useAuth();
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { data } = useLocalSearchParams<{ data: string }>();
+  const { data, jobRequestId } = useLocalSearchParams<{ data: string; jobRequestId?: string }>();
   const [result, setResult] = useState<FullOrchestrationResponse | null>(null);
   const [showBidding, setShowBidding] = useState(false);
   const [biddingLoading, setBiddingLoading] = useState(false);
@@ -31,7 +34,27 @@ const ResultsScreen = () => {
   const [showLogs, setShowLogs] = useState(false);
   const [speaking, setSpeaking] = useState(false);
 
+  // Real marketplace bid polling
+  const [realBids, setRealBids] = useState<WorkerBid[]>([]);
+  const [acceptingBidId, setAcceptingBidId] = useState<string | null>(null);
+  const pollRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+
   useEffect(() => { if (data) setResult(JSON.parse(data)); }, [data]);
+
+  // Poll for real bids every 5s when jobRequestId is present
+  useEffect(() => {
+    if (!jobRequestId) return;
+    setShowBidding(true);
+    const poll = async () => {
+      try {
+        const res = await getJobBids(jobRequestId);
+        setRealBids(res.bids || []);
+      } catch {}
+    };
+    poll();
+    pollRef.current = setInterval(poll, 5000);
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, [jobRequestId]);
 
   if (!result) return (
     <View style={styles.center}>
@@ -69,6 +92,26 @@ const ResultsScreen = () => {
       Alert.alert('Error', formatApiError(e));
     }
     setBiddingLoading(false);
+  };
+
+  const handleAcceptRealBid = async (bid: WorkerBid) => {
+    if (!jobRequestId || !user?.id) return;
+    setAcceptingBidId(bid.bid_id);
+    try {
+      if (pollRef.current) clearInterval(pollRef.current);
+      const res = await acceptBid(jobRequestId, bid.bid_id, user.id, 'cash');
+      router.replace({
+        pathname: '/booking',
+        params: {
+          bookingId: res.booking_id,
+          providerData: JSON.stringify(bid),
+          confirmationMessage: res.confirmation_message,
+        },
+      });
+    } catch (e) {
+      Alert.alert('Error', formatApiError(e));
+      setAcceptingBidId(null);
+    }
   };
 
   const handleSelectProvider = (provider: Provider) => {
@@ -176,28 +219,86 @@ const ResultsScreen = () => {
 
         {result.price_breakdown && <PriceBreakdown pricing={result.price_breakdown} />}
 
-        {!showBidding && (
-          <TouchableOpacity style={[styles.negotiateBtn, Shadow.sm]} onPress={handleNegotiate} activeOpacity={0.85}>
-            <Ionicons name="swap-horizontal-outline" size={18} color={Colors.primary} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.negotiateBtnText}>MOLTOL: Negotiate Karo</Text>
-              <Text style={styles.negotiateBtnSub}>Providers se bids mangwao aur best deal pao</Text>
+        {/* Real marketplace bids (when jobRequestId present) */}
+        {jobRequestId ? (
+          <View style={styles.realBidsSection}>
+            <View style={styles.realBidsHeader}>
+              <Ionicons name="radio-outline" size={16} color={Colors.primary} />
+              <Text style={styles.realBidsTitle}>Workers ki Bids</Text>
+              {realBids.length === 0 && (
+                <ActivityIndicator size="small" color={Colors.primary} style={{ marginLeft: 8 }} />
+              )}
             </View>
-            <Ionicons name="chevron-forward" size={16} color={Colors.primary} />
-          </TouchableOpacity>
+            {realBids.length === 0 ? (
+              <Text style={styles.realBidsWaiting}>
+                Workers ko notify kar diya gaya — bids aa rahi hain...
+              </Text>
+            ) : (
+              realBids.map((bid) => (
+                <View key={bid.bid_id} style={[styles.realBidCard, bid.recommended && styles.realBidCardTop]}>
+                  {bid.recommended && (
+                    <View style={styles.recommendedBadge}>
+                      <Text style={styles.recommendedText}>⭐ Best Deal</Text>
+                    </View>
+                  )}
+                  <View style={styles.realBidRow}>
+                    <View>
+                      <Text style={styles.realBidName}>{bid.provider_name}</Text>
+                      {bid.rating > 0 && (
+                        <Text style={styles.realBidRating}>⭐ {bid.rating.toFixed(1)}</Text>
+                      )}
+                    </View>
+                    <View style={{ alignItems: 'flex-end' }}>
+                      <Text style={styles.realBidPrice}>Rs {bid.price.toLocaleString()}</Text>
+                      <Text style={styles.realBidEta}>{bid.eta_minutes} min</Text>
+                    </View>
+                  </View>
+                  {bid.message ? (
+                    <Text style={styles.realBidMsg} numberOfLines={2}>{bid.message}</Text>
+                  ) : null}
+                  <TouchableOpacity
+                    style={[styles.acceptBidBtn, acceptingBidId === bid.bid_id && { opacity: 0.6 }]}
+                    onPress={() => handleAcceptRealBid(bid)}
+                    disabled={!!acceptingBidId}
+                    activeOpacity={0.85}
+                  >
+                    {acceptingBidId === bid.bid_id
+                      ? <ActivityIndicator size="small" color="#fff" />
+                      : <Text style={styles.acceptBidBtnText}>✓ Is Ko Chunein</Text>
+                    }
+                  </TouchableOpacity>
+                </View>
+              ))
+            )}
+          </View>
+        ) : (
+          <>
+            {!showBidding && (
+              <TouchableOpacity style={[styles.negotiateBtn, Shadow.sm]} onPress={handleNegotiate} activeOpacity={0.85}>
+                <Ionicons name="swap-horizontal-outline" size={18} color={Colors.primary} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.negotiateBtnText}>MOLTOL: Negotiate Karo</Text>
+                  <Text style={styles.negotiateBtnSub}>Providers se bids mangwao aur best deal pao</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color={Colors.primary} />
+              </TouchableOpacity>
+            )}
+            {showBidding && (
+              <BiddingPanel
+                loading={biddingLoading}
+                result={biddingResult}
+                onSelectBid={(bid) => {
+                  const provider = result.providers_ranked?.find((p) => p.id === bid.provider_id);
+                  if (provider) handleSelectProvider(provider);
+                }}
+              />
+            )}
+          </>
         )}
 
-        {showBidding && (
-          <BiddingPanel
-            loading={biddingLoading}
-            result={biddingResult}
-            onSelectBid={(bid) => {
-              const provider = result.providers_ranked?.find((p) => p.id === bid.provider_id);
-              if (provider) handleSelectProvider(provider);
-            }}
-          />
-        )}
-
+        {/* Only show provider list in traditional flow (no jobRequestId) */}
+        {!jobRequestId && (
+        <>
         <View style={styles.sectionHeader}>
           <Text style={styles.sectionTitle}>Technicians / Providers ({providerCount})</Text>
           <View style={styles.sortPill}>
@@ -229,6 +330,8 @@ const ResultsScreen = () => {
             <Text style={styles.fallbackText}>{result.fallback}</Text>
           </View>
         )}
+        </>
+        )} {/* end !jobRequestId */}
 
         <TouchableOpacity style={styles.logsToggle} onPress={() => setShowLogs(!showLogs)} activeOpacity={0.75}>
           <Ionicons name={showLogs ? 'chevron-up' : 'flask-outline'} size={14} color={Colors.textMuted} />
@@ -340,6 +443,36 @@ const styles = StyleSheet.create({
 
   logsToggle: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, padding: Spacing.md },
   logsToggleText: { color: Colors.textMuted, fontSize: FontSize.sm },
+
+  // Real marketplace bids
+  realBidsSection: {
+    backgroundColor: Colors.surface, borderRadius: Radius.lg,
+    padding: Spacing.md, marginBottom: Spacing.md, ...Shadow.card,
+  },
+  realBidsHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: Spacing.sm },
+  realBidsTitle: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: Colors.text, flex: 1 },
+  realBidsWaiting: { fontSize: FontSize.sm, color: Colors.textMuted, textAlign: 'center', paddingVertical: 16 },
+  realBidCard: {
+    borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md,
+    padding: Spacing.sm, marginBottom: Spacing.sm,
+  },
+  realBidCardTop: { borderColor: Colors.primary, borderWidth: 2 },
+  recommendedBadge: {
+    backgroundColor: Colors.primary + '18', borderRadius: Radius.sm,
+    paddingHorizontal: 8, paddingVertical: 2, alignSelf: 'flex-start', marginBottom: 6,
+  },
+  recommendedText: { fontSize: FontSize.xs, color: Colors.primary, fontWeight: FontWeight.semibold },
+  realBidRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4 },
+  realBidName: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.text },
+  realBidRating: { fontSize: FontSize.xs, color: Colors.textMuted },
+  realBidPrice: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: Colors.success },
+  realBidEta: { fontSize: FontSize.xs, color: Colors.textMuted },
+  realBidMsg: { fontSize: FontSize.xs, color: Colors.textSecondary, marginBottom: 8 },
+  acceptBidBtn: {
+    backgroundColor: Colors.primary, borderRadius: Radius.md,
+    paddingVertical: 10, alignItems: 'center',
+  },
+  acceptBidBtnText: { fontSize: FontSize.sm, color: '#fff', fontWeight: FontWeight.semibold },
 });
 
 export default ResultsScreen;

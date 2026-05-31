@@ -51,15 +51,19 @@ export async function sendMessage(
   voice_id?: string,
   language?: string,
 ): Promise<ConversationTurn> {
-  const { data } = await axios.post(`${BASE_URL}/api/conversation`, {
-    session_id,
-    user_text,
-    user_id,
-    user_name,
-    history: history || [],
-    ...(voice_id ? { voice_id } : {}),
-    ...(language ? { language } : {}),
-  });
+  const { data } = await axios.post(
+    `${BASE_URL}/api/conversation`,
+    {
+      session_id,
+      user_text,
+      user_id,
+      user_name,
+      history: history || [],
+      ...(voice_id ? { voice_id } : {}),
+      ...(language ? { language } : {}),
+    },
+    { timeout: 35000 },
+  );
   return data;
 }
 
@@ -111,9 +115,8 @@ export async function negotiateProviders(
     });
     return data;
   } catch (e: any) {
-    // Fallback: if endpoint not yet deployed (404) or network issue, negotiate locally
-    const status = e?.response?.status;
-    if ((status === 404 || status === 422 || !e?.response) && providers?.length) {
+    // Fallback: negotiate locally on any server/network error
+    if (providers?.length) {
       return _localNegotiate(providers);
     }
     throw e;

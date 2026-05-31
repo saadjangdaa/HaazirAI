@@ -9,6 +9,7 @@ import AuthSplash from '../components/AuthSplash';
 import { auth } from '../services/firebase';
 import { LanguageProvider } from '../context/LanguageContext';
 import { MockDataProvider } from '../context/MockDataContext';
+import NotificationBootstrap from '../components/NotificationBootstrap';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -166,6 +167,7 @@ function RootLayoutNav() {
         <Stack.Screen name="voice-conversation" options={{ headerShown: false }} />
       </Stack>
       <AuthNavigationGuard />
+      <NotificationBootstrap />
     </>
   );
 }

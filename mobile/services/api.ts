@@ -703,3 +703,119 @@ export async function resolveUserId(
 export function isLoginRelatedError(message: string): boolean {
   return message.toLowerCase().includes('login');
 }
+
+// ─── Real Marketplace Flow — Job Requests + Worker Bids ──────────────────────
+
+export interface JobRequest {
+  job_request_id: string;
+  status: 'open' | 'bidding' | 'assigned' | 'expired' | 'cancelled';
+  service: string;
+  location: string;
+  city: string;
+  urgency: string;
+  estimated_price: number;
+  expires_at: string;
+  notified_count: number;
+  providers_found: number;
+  message: string;
+}
+
+export interface WorkerBid {
+  bid_id: string;
+  job_request_id: string;
+  worker_id: string;
+  provider_id: string;
+  provider_name: string;
+  price: number;
+  eta_minutes: number;
+  message: string;
+  rating: number;
+  status: 'pending' | 'accepted' | 'rejected';
+  created_at: string;
+  moltol_rank?: number;
+  recommended?: boolean;
+}
+
+export interface AvailableJob {
+  request_id: string;
+  service: string;
+  location: string;
+  city: string;
+  urgency: string;
+  estimated_price: number;
+  customer_name: string;
+  status: string;
+  created_at: string;
+  expires_at: string;
+  bid_count: number;
+}
+
+/** Customer: Post a job request → workers get notified */
+export async function createJobRequest(params: {
+  user_id: string;
+  service: string;
+  location: string;
+  city: string;
+  urgency?: string;
+  description?: string;
+  estimated_price?: number;
+  providers?: any[];
+}): Promise<JobRequest> {
+  const { data } = await client.post('/api/job-requests', params);
+  return data;
+}
+
+/** Customer: Poll bids for a job (call every 5s) */
+export async function getJobBids(job_request_id: string): Promise<{ bids: WorkerBid[]; count: number }> {
+  const { data } = await client.get(`/api/job-requests/${job_request_id}/bids`);
+  return data;
+}
+
+/** Customer: Accept a specific bid → creates booking */
+export async function acceptBid(
+  job_request_id: string,
+  bid_id: string,
+  customer_id: string,
+  payment_method = 'cash'
+): Promise<{
+  booking_id: string;
+  bid: WorkerBid;
+  receipt: Record<string, unknown>;
+  confirmation_message: string;
+  whatsapp_sent: boolean;
+}> {
+  const { data } = await client.post(
+    `/api/job-requests/${job_request_id}/accept-bid/${bid_id}`,
+    { customer_id, payment_method }
+  );
+  return data;
+}
+
+/** Worker: Get open jobs matching their service/city */
+export async function getWorkerAvailableJobs(
+  user_id: string,
+  service = '',
+  city = ''
+): Promise<{ jobs: AvailableJob[]; count: number }> {
+  const { data } = await client.get(`/api/job-requests/worker/${user_id}`, {
+    params: { service, city },
+  });
+  return data;
+}
+
+/** Worker: Submit a bid on an open job */
+export async function submitWorkerBid(
+  job_request_id: string,
+  bid: {
+    worker_id: string;
+    provider_id: string;
+    provider_name: string;
+    price: number;
+    eta_minutes?: number;
+    message?: string;
+    rating?: number;
+  }
+): Promise<{ success: boolean; bid: WorkerBid; message: string }> {
+  const { data } = await client.post(`/api/job-requests/${job_request_id}/bid`, bid);
+  return data;
+}

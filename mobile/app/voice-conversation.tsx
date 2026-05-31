@@ -161,21 +161,42 @@ export default function VoiceConversationScreen() {
     if (uiState === 'recording') {
       setUiState('processing');
       stopPulse();
+
+      // Show placeholder immediately so user sees their action was registered
+      const placeholderId = `ph-${Date.now()}`;
+      setChat((prev) => [...prev, { id: placeholderId, kind: 'text' as const, role: 'user' as const, text: '🎙 ...' }]);
+
       try {
         const { text } = await stopAndTranscribe();
+
         if (!text) {
+          // Replace placeholder with retry hint
+          setChat((prev) => prev.map((item) =>
+            item.id === placeholderId
+              ? mk({ kind: 'text', role: 'agent', text: '🎙 Awaaz clear nahi aayi — dobara bolein ya neeche type karein' })
+              : item
+          ));
           setUiState('idle');
-          setChat((prev) => [...prev, mk({ kind: 'text', role: 'agent', text: 'Awaaz sunai nahi di — thodi der ruk ke dobara bolein 🎙' })]);
           return;
         }
-        setChat((prev) => [...prev, mk({ kind: 'text', role: 'user', text })]);
+
+        // Replace placeholder with actual transcribed text
+        setChat((prev) => prev.map((item) =>
+          item.id === placeholderId ? { ...item, text } : item
+        ));
         setHistory((prev) => [...prev, { role: 'user', content: text }]);
         setUiState('searching');
-        // Send history BEFORE current message — backend appends it itself (avoid duplication on session restore)
         const turn = await sendMessage(sessionId.current, text, user?.id || 'anonymous', userName, history, voiceId, language);
         playAgentTurn(turn);
       } catch (e: any) {
-        Alert.alert('Error', e?.message || 'Masla hua — dobara try karein');
+        const msg = e?.code === 'ECONNABORTED' || e?.message?.includes('timeout')
+          ? 'Server slow hai — thodi der baad dobara try karein'
+          : 'Masla hua — type karke bhi bhej sakte hain';
+        setChat((prev) => prev.map((item) =>
+          item.id === placeholderId
+            ? mk({ kind: 'text', role: 'agent', text: `⚠️ ${msg}` })
+            : item
+        ));
         setUiState('idle');
       }
     } else if (uiState === 'idle') {
@@ -206,7 +227,7 @@ export default function VoiceConversationScreen() {
     setUiState('searching');
     try {
       // Send history BEFORE current message — backend appends it itself (avoid duplication on session restore)
-      const turn = await sendMessage(sessionId.current, text, user?.id || 'anonymous', userName, history);
+      const turn = await sendMessage(sessionId.current, text, user?.id || 'anonymous', userName, history, voiceId, language);
       playAgentTurn(turn);
     } catch (e: any) {
       Alert.alert('Error', e?.message || 'Masla hua — dobara try karein');
@@ -563,7 +584,7 @@ export default function VoiceConversationScreen() {
         {uiState === 'processing' && (
           <View style={styles.searchingCard}>
             <ActivityIndicator color={Colors.primary} size="small" />
-            <Text style={styles.searchingText}>Samajh raha hun...</Text>
+            <Text style={styles.searchingText}>Samajh rahi hun...</Text>
           </View>
         )}
       </ScrollView>

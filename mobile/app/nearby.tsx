@@ -1,14 +1,36 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  TextInput, StatusBar, Alert,
+  TextInput, StatusBar, Alert, ActivityIndicator, Modal, RefreshControl,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Colors, FontSize, FontWeight, Radius, Shadow, Spacing } from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
+import { useMockData } from '../context/MockDataContext';
+import { createJobRequest, formatApiError, requireUserId, getAllProviders, Provider } from '../services/api';
 import { MOCK_NEARBY_WORKERS, NearbyWorker } from '../data/mockData';
+
+// Map backend Provider → NearbyWorker shape used by WorkerCard
+function toNearbyWorker(p: Provider): NearbyWorker {
+  return {
+    id: p.id,
+    name: p.name,
+    service: p.service || 'Service',
+    rating: p.rating || 4.0,
+    reviews: p.review_count || 0,
+    priceMin: p.price_per_hour || 500,
+    priceMax: (p.price_per_hour || 500) * 2,
+    distanceKm: p.distance_km || 0,
+    available: p.available !== false,
+    verified: p.verified || false,
+    completedJobs: p.jobs_completed || 0,
+    area: p.area || '',
+    lat: p.lat || 0,
+    lng: p.lng || 0,
+  };
+}
 
 const SERVICES = ['All', 'AC Repair', 'Plumber', 'Electrician', 'Tutor', 'Carpenter', 'Beautician'];
 const SORTS = ['Distance', 'Rating', 'Price'] as const;
@@ -103,52 +125,143 @@ export default function NearbyScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
+  const { isMockMode } = useMockData();
 
   const [search, setSearch] = useState('');
   const [selectedService, setSelectedService] = useState('All');
   const [sortBy, setSortBy] = useState<SortKey>('Distance');
   const [availableOnly, setAvailableOnly] = useState(false);
 
+  // Real providers from backend
+  const [realWorkers, setRealWorkers] = useState<NearbyWorker[]>([]);
+  const [loadingWorkers, setLoadingWorkers] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const loadRealWorkers = async (isRefresh = false) => {
+    if (isMockMode) return;
+    isRefresh ? setRefreshing(true) : setLoadingWorkers(true);
+    try {
+      const providers = await getAllProviders(city);
+      setRealWorkers(providers.map(toNearbyWorker));
+    } catch {
+      // Fallback to mock on error
+      setRealWorkers(MOCK_NEARBY_WORKERS);
+    } finally {
+      setLoadingWorkers(false);
+      setRefreshing(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!isMockMode) loadRealWorkers();
+  }, [city, isMockMode]);
+
+  // Source: real providers or mock
+  const allWorkers = isMockMode ? MOCK_NEARBY_WORKERS : realWorkers;
+
+  // Job request modal state
+  const [modalWorker, setModalWorker] = useState<NearbyWorker | null>(null);
+  const [description, setDescription] = useState('');
+  const [urgency, setUrgency] = useState<'medium' | 'high'>('medium');
+  const [submitting, setSubmitting] = useState(false);
+
   const city = user?.city || 'Karachi';
 
   const filtered = useMemo(() => {
-    let list = [...MOCK_NEARBY_WORKERS];
-
+    let list = [...allWorkers];
     if (selectedService !== 'All') {
-      list = list.filter((w) => w.service === selectedService);
+      list = list.filter((w) =>
+        w.service.toLowerCase().includes(selectedService.toLowerCase()) ||
+        selectedService.toLowerCase().includes(w.service.toLowerCase())
+      );
     }
-    if (availableOnly) {
-      list = list.filter((w) => w.available);
-    }
+    if (availableOnly) list = list.filter((w) => w.available);
     if (search.trim()) {
       const q = search.toLowerCase();
-      list = list.filter((w) => w.name.toLowerCase().includes(q) || w.service.toLowerCase().includes(q));
+      list = list.filter((w) => w.name.toLowerCase().includes(q) || w.service.toLowerCase().includes(q) || w.area.toLowerCase().includes(q));
     }
-
     if (sortBy === 'Rating') list.sort((a, b) => b.rating - a.rating);
     else if (sortBy === 'Price') list.sort((a, b) => a.priceMin - b.priceMin);
     else list.sort((a, b) => a.distanceKm - b.distanceKm);
-
     return list;
-  }, [selectedService, sortBy, availableOnly, search]);
+  }, [allWorkers, selectedService, sortBy, availableOnly, search]);
 
   const handleBook = (worker: NearbyWorker) => {
-    Alert.alert(
-      `${worker.name} ko Book Karein`,
-      `${worker.service} · Rs ${worker.priceMin}–${worker.priceMax}\n\nAI agent aapki booking confirm karega.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Book Karein',
-          onPress: () => {
-            router.push({
-              pathname: '/booking',
-              params: { workerName: worker.name, service: worker.service, price: worker.priceMin },
-            });
-          },
+    if (isMockMode) {
+      // Mock mode: go directly to booking screen with provider data
+      router.push({
+        pathname: '/booking',
+        params: {
+          providerData: JSON.stringify({
+            id: worker.id,
+            name: worker.name,
+            service: worker.service,
+            area: worker.area,
+            city,
+            rating: worker.rating,
+            distance_km: worker.distanceKm,
+            verified: worker.verified,
+            price_per_hour: worker.priceMin,
+          }),
+          priceData: JSON.stringify({ total: worker.priceMin, estimated_base: worker.priceMin }),
         },
-      ]
-    );
+      });
+      return;
+    }
+    // Real mode: open job details modal
+    setModalWorker(worker);
+    setDescription('');
+    setUrgency('medium');
+  };
+
+  const handleSendJobRequest = async () => {
+    if (!modalWorker || !user?.id) return;
+    setSubmitting(true);
+    try {
+      const uid = requireUserId(user);
+      const job = await createJobRequest({
+        user_id: uid,
+        service: modalWorker.service,
+        location: modalWorker.area,
+        city,
+        urgency,
+        description,
+        estimated_price: modalWorker.priceMin,
+        // Pass this worker as the only provider so only they get notified
+        providers: [{
+          id: modalWorker.id,
+          name: modalWorker.name,
+          service: modalWorker.service,
+          area: modalWorker.area,
+          city,
+          rating: modalWorker.rating,
+        }],
+      });
+      setModalWorker(null);
+      Alert.alert(
+        '✅ Job Request Bhej Di!',
+        `${modalWorker.name} ko notify kar diya gaya.\nWoh accept karein ge toh aapko push notification aayega.`,
+        [{
+          text: 'Bids Dekhein',
+          onPress: () => router.push({
+            pathname: '/results',
+            params: {
+              data: JSON.stringify({
+                request_id: job.job_request_id,
+                extracted_intent: { service_type: modalWorker.service, location: modalWorker.area, city, urgency },
+                providers_ranked: [],
+                agent_logs: [],
+              }),
+              jobRequestId: job.job_request_id,
+            },
+          }),
+        }],
+      );
+    } catch (e) {
+      Alert.alert('Error', formatApiError(e));
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -221,7 +334,9 @@ export default function NearbyScreen() {
 
       {/* Sort row */}
       <View style={styles.sortRow}>
-        <Text style={styles.countText}>{filtered.length} workers mila</Text>
+        <Text style={styles.countText}>
+          {loadingWorkers ? 'Load ho raha hai...' : `${filtered.length} workers mila — ${city}`}
+        </Text>
         <View style={styles.sortBtns}>
           {SORTS.map((s) => (
             <TouchableOpacity
@@ -241,17 +356,99 @@ export default function NearbyScreen() {
         style={styles.list}
         contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + Spacing.xl }]}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => loadRealWorkers(true)}
+            tintColor={Colors.primary}
+          />
+        }
       >
-        {filtered.length === 0 ? (
+        {loadingWorkers ? (
+          <View style={styles.empty}>
+            <ActivityIndicator size="large" color={Colors.primary} />
+            <Text style={styles.emptyText}>{city} ke workers load ho rahe hain...</Text>
+          </View>
+        ) : filtered.length === 0 ? (
           <View style={styles.empty}>
             <Ionicons name="search-outline" size={40} color={Colors.textMuted} />
             <Text style={styles.emptyTitle}>Koi worker nahi mila</Text>
-            <Text style={styles.emptyText}>Filter change karein ya doosra area try karein</Text>
+            <Text style={styles.emptyText}>{city} mein koi worker nahi — filter change karein</Text>
           </View>
         ) : (
           filtered.map((w) => <WorkerCard key={w.id} worker={w} onBook={handleBook} />)
         )}
       </ScrollView>
+
+      {/* Job Request Modal */}
+      <Modal visible={!!modalWorker} transparent animationType="slide" onRequestClose={() => setModalWorker(null)}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalCard, { paddingBottom: insets.bottom + 16 }]}>
+            {/* Handle */}
+            <View style={styles.modalHandle} />
+
+            <Text style={styles.modalTitle}>
+              {modalWorker?.name} ko Job Request Bhejein
+            </Text>
+            <Text style={styles.modalSub}>
+              {modalWorker?.service} · {modalWorker?.area}, {city}
+            </Text>
+            <Text style={styles.modalPrice}>
+              Rs {modalWorker?.priceMin.toLocaleString()} – {modalWorker?.priceMax.toLocaleString()}
+            </Text>
+
+            {/* Description */}
+            <Text style={styles.inputLabel}>Kaam ka description (optional)</Text>
+            <TextInput
+              style={styles.descInput}
+              value={description}
+              onChangeText={setDescription}
+              placeholder="Maslan: 1.5 ton AC ki gas khatam ho gayi hai..."
+              placeholderTextColor={Colors.textMuted}
+              multiline
+            />
+
+            {/* Urgency */}
+            <Text style={styles.inputLabel}>Urgency</Text>
+            <View style={styles.urgencyRow}>
+              <TouchableOpacity
+                style={[styles.urgencyBtn, urgency === 'medium' && styles.urgencyBtnActive]}
+                onPress={() => setUrgency('medium')}
+              >
+                <Ionicons name="time-outline" size={16} color={urgency === 'medium' ? Colors.primary : Colors.textMuted} />
+                <Text style={[styles.urgencyText, urgency === 'medium' && styles.urgencyTextActive]}>Normal</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.urgencyBtn, urgency === 'high' && styles.urgencyBtnUrgent]}
+                onPress={() => setUrgency('high')}
+              >
+                <Ionicons name="flash" size={16} color={urgency === 'high' ? Colors.danger : Colors.textMuted} />
+                <Text style={[styles.urgencyText, urgency === 'high' && styles.urgencyTextUrgent]}>Jaldi chahiye</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Buttons */}
+            <View style={styles.modalBtns}>
+              <TouchableOpacity style={styles.cancelBtn} onPress={() => setModalWorker(null)}>
+                <Text style={styles.cancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.sendBtn, submitting && { opacity: 0.6 }]}
+                onPress={handleSendJobRequest}
+                disabled={submitting}
+              >
+                {submitting
+                  ? <ActivityIndicator size="small" color="#fff" />
+                  : <>
+                      <Ionicons name="send-outline" size={16} color="#fff" />
+                      <Text style={styles.sendText}>Request Bhejein</Text>
+                    </>
+                }
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -392,4 +589,58 @@ const styles = StyleSheet.create({
   empty: { alignItems: 'center', paddingTop: 60, gap: Spacing.sm },
   emptyTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: Colors.textPrimary },
   emptyText: { fontSize: FontSize.sm, color: Colors.textMuted, textAlign: 'center' },
+
+  // Job request modal
+  modalOverlay: {
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end',
+  },
+  modalCard: {
+    backgroundColor: Colors.surface,
+    borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    padding: Spacing.lg,
+  },
+  modalHandle: {
+    width: 40, height: 4, borderRadius: 2,
+    backgroundColor: Colors.border, alignSelf: 'center', marginBottom: Spacing.md,
+  },
+  modalTitle: {
+    fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: Colors.textPrimary, marginBottom: 4,
+  },
+  modalSub: { fontSize: FontSize.sm, color: Colors.textMuted, marginBottom: 2 },
+  modalPrice: {
+    fontSize: FontSize.md, fontWeight: FontWeight.semibold, color: Colors.success, marginBottom: Spacing.md,
+  },
+  inputLabel: {
+    fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: Colors.textMuted,
+    textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6, marginTop: Spacing.sm,
+  },
+  descInput: {
+    borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md,
+    paddingHorizontal: 14, paddingVertical: 10, minHeight: 72,
+    fontSize: FontSize.sm, color: Colors.textPrimary, backgroundColor: Colors.background,
+    textAlignVertical: 'top',
+  },
+  urgencyRow: { flexDirection: 'row', gap: Spacing.sm, marginBottom: Spacing.md },
+  urgencyBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 6, borderWidth: 1.5, borderColor: Colors.border,
+    borderRadius: Radius.md, paddingVertical: 10,
+  },
+  urgencyBtnActive: { borderColor: Colors.primary, backgroundColor: Colors.primaryLight },
+  urgencyBtnUrgent: { borderColor: Colors.danger, backgroundColor: Colors.dangerDim },
+  urgencyText: { fontSize: FontSize.sm, color: Colors.textMuted, fontWeight: FontWeight.medium },
+  urgencyTextActive: { color: Colors.primary, fontWeight: FontWeight.semibold },
+  urgencyTextUrgent: { color: Colors.danger, fontWeight: FontWeight.semibold },
+  modalBtns: { flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.sm },
+  cancelBtn: {
+    flex: 1, borderWidth: 1, borderColor: Colors.border,
+    borderRadius: Radius.md, paddingVertical: 13, alignItems: 'center',
+  },
+  cancelText: { fontSize: FontSize.sm, color: Colors.textMuted, fontWeight: FontWeight.medium },
+  sendBtn: {
+    flex: 2, backgroundColor: Colors.primary, borderRadius: Radius.md,
+    paddingVertical: 13, flexDirection: 'row', alignItems: 'center',
+    justifyContent: 'center', gap: 8,
+  },
+  sendText: { fontSize: FontSize.sm, color: '#fff', fontWeight: FontWeight.semibold },
 });

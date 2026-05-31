@@ -1,7 +1,7 @@
-"""Agent 5 — MOLTOL: AI Negotiation + Order Pooling."""
+"""Agent 5 — MOLTOL: AI Negotiation + Order Pooling + Real Bid Ranking."""
 import random
 from datetime import datetime
-from typing import List
+from typing import Dict, List, Any
 
 
 NEGOTIATION_MESSAGES_URDU = [
@@ -12,6 +12,40 @@ NEGOTIATION_MESSAGES_URDU = [
 
 
 class MoltolAgent:
+
+    def rank_real_bids(self, bids: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Rank actual worker bids (from Firestore) by composite score.
+        Called by GET /api/job-requests/{id}/bids so customer sees best bid first.
+        Score: 40% price (lower=better) + 30% ETA (faster=better) + 30% rating
+        """
+        if not bids:
+            return []
+
+        pending = [b for b in bids if b.get("status") == "pending"]
+        if not pending:
+            return bids  # already resolved, return as-is
+
+        max_price = max(b.get("price", 1) for b in pending) or 1
+        max_eta   = max(b.get("eta_minutes", 1) for b in pending) or 1
+
+        def score(b: Dict[str, Any]) -> float:
+            price_norm  = 1.0 - (b.get("price", max_price) / max_price)
+            eta_norm    = 1.0 - (b.get("eta_minutes", max_eta) / max_eta)
+            rating_norm = (float(b.get("rating", 4.0)) - 1.0) / 4.0
+            return price_norm * 0.40 + eta_norm * 0.30 + rating_norm * 0.30
+
+        ranked = sorted(pending, key=score, reverse=True)
+        # Tag best bid
+        for i, b in enumerate(ranked):
+            b["moltol_rank"] = i + 1
+            b["recommended"] = (i == 0)
+        return ranked
+
+    async def negotiate(self, intent: dict, providers: List[dict], pricing: dict) -> dict:
+        """Wrapper used by /api/conversation/negotiate — delegates to run_bidding."""
+        result = await self.run_bidding(providers, intent, "conv")
+        return result
 
     async def run_bidding(self, providers: List[dict], intent: dict, request_id: str) -> dict:
         start = datetime.now()
@@ -80,8 +114,29 @@ class MoltolAgent:
 
         return {
             "request_id": request_id,
+            "status": "success",
+            "top_bids": [
+                {
+                    "provider_id": b["provider_id"],
+                    "provider_name": b["provider_name"],
+                    "bid_price": b["bid_price"],
+                    "original_bid_price": b["bid_price"],
+                    "final_price": b["final_price"],
+                    "savings": b["bid_price"] - b["final_price"],
+                    "eta_minutes": b["eta_minutes"],
+                    "composite_score": b["rating"],
+                }
+                for b in top3
+            ],
             "bids": top3,
             "recommended_bid": recommended,
+            "recommendation": (
+                f"{recommended['provider_name']} best deal hai — "
+                f"Rs {recommended['final_price']:,} mein service milegi!"
+            ),
+            "total_negotiation_savings": sum(
+                b["bid_price"] - b["final_price"] for b in bids if b["negotiated"]
+            ),
             "negotiation_log": negotiation_log,
             "_log": {
                 "agent_name": "MOLTOL",

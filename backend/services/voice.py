@@ -38,24 +38,15 @@ async def transcribe_audio(audio_base64: str, mime_type: str = "audio/m4a") -> d
             "data": audio_base64,  # base64 string, not bytes
         }
     }
-    # Retry once — Gemini STT occasionally returns empty on first call due to transient rate limits
-    for attempt in range(2):
-        try:
-            raw = await generate_with_parts([audio_part, _TRANSCRIBE_PROMPT])
-            raw = (raw or "").strip()
-            json_match = re.search(r"\{.*\}", raw, re.DOTALL)
-            if json_match:
-                result = json.loads(json_match.group())
-                if result.get("text", "").strip():
-                    return result
-            elif raw:
-                return {"text": raw, "detected_language": "mixed", "confidence": 0.7}
-            # Empty result — wait 1 s then retry
-            if attempt == 0:
-                await asyncio.sleep(1)
-        except Exception as e:
-            print(f"Voice transcription error (attempt {attempt + 1}): {e}")
-            if attempt == 0:
-                await asyncio.sleep(1)
+    try:
+        raw = await generate_with_parts([audio_part, _TRANSCRIBE_PROMPT])
+        raw = (raw or "").strip()
+        json_match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if json_match:
+            return json.loads(json_match.group())
+        if raw:
+            return {"text": raw, "detected_language": "mixed", "confidence": 0.7}
+    except Exception as e:
+        print(f"Voice transcription error: {e}")
 
     return {"text": "", "detected_language": "unknown", "confidence": 0.0}
