@@ -1,7 +1,7 @@
 import React, { useCallback, useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  ActivityIndicator, RefreshControl,
+  ActivityIndicator, RefreshControl, StatusBar,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -94,6 +94,7 @@ export default function BookingsScreen() {
   if (loading && bookings.length === 0) {
     return (
       <View style={styles.rootWrap}>
+        <StatusBar barStyle="dark-content" backgroundColor={Colors.surface} />
         <View style={[styles.header, { paddingTop: insets.top + 6 }]}>
           <TouchableOpacity style={styles.menuBtn} onPress={() => setSidebarOpen(true)}>
             <Ionicons name="menu" size={22} color={Colors.textPrimary} />
@@ -112,6 +113,7 @@ export default function BookingsScreen() {
 
   return (
     <View style={styles.rootWrap}>
+      <StatusBar barStyle="dark-content" backgroundColor={Colors.surface} />
       {/* ── Header ── */}
       <View style={[styles.header, { paddingTop: insets.top + 6 }]}>
         <TouchableOpacity style={styles.menuBtn} onPress={() => setSidebarOpen(true)}>
@@ -126,7 +128,6 @@ export default function BookingsScreen() {
         contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
         refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={Colors.primary} />}
       >
-      <Text style={styles.title}>{tr.pageBookings}</Text>
 
       <View style={styles.summaryRow}>
         <View style={styles.summaryItem}>

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, Modal, Switch, Platform } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, Modal, Switch, Platform, StatusBar } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -77,6 +77,7 @@ export default function CustomerProfileScreen() {
 
   return (
     <View style={styles.rootWrap}>
+      <StatusBar barStyle="dark-content" backgroundColor={Colors.surface} />
       {/* ── Header ── */}
       <View style={[styles.header, { paddingTop: insets.top + 6 }]}>
         <TouchableOpacity style={styles.menuBtn} onPress={() => setSidebarOpen(true)}>

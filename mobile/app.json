@@ -38,7 +38,7 @@
       "supportsTablet": false,
       "bundleIdentifier": "com.haazir.ai",
       "config": {
-        "googleMapsApiKey": "AIzaSyDOLSRc5zgnQhS6bSc4zBO0K0edQSkdIqM"
+        "googleMapsApiKey": "AIzaSyBrk1qwmRpVbhH_URNwS_d0P8iVuRCFzoM"
       },
       "infoPlist": {
         "NSMicrophoneUsageDescription": "Haazir AI ko awaz sun'ne ke liye microphone chahiye",
@@ -62,7 +62,7 @@
       [
         "react-native-maps",
         {
-          "googleMapsApiKey": "AIzaSyDOLSRc5zgnQhS6bSc4zBO0K0edQSkdIqM"
+          "googleMapsApiKey": "AIzaSyBrk1qwmRpVbhH_URNwS_d0P8iVuRCFzoM"
         }
       ],
       [
