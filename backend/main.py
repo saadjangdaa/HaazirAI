@@ -1442,7 +1442,7 @@ async def create_job_request_endpoint(body: JobRequestCreate):
     - Sends push notifications to each matching worker
     Returns job_request_id + list of notified providers.
     """
-    from services.job_request_service import create_job_request, notify_matching_workers
+    from services.job_request_service import create_job_request, notify_matching_workers, notify_all_workers_by_service
 
     uid = _require_firebase_uid(body.user_id)
     await _require_complete_profile(uid)
@@ -1487,7 +1487,10 @@ async def create_job_request_endpoint(body: JobRequestCreate):
         estimated_price=estimated_price or body.estimated_price,
     )
 
-    notified = await notify_matching_workers(job, providers)
+    # Notify via providers list (if available) AND scan all workers by service+city
+    notified_providers = await notify_matching_workers(job, providers)
+    notified_workers = await notify_all_workers_by_service(job)
+    notified = list(set(notified_providers + [str(w) for w in notified_workers]))
 
     return {
         "job_request_id": job["request_id"],

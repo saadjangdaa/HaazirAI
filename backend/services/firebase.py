@@ -2117,10 +2117,24 @@ async def update_job_request(request_id: str, data: dict) -> bool:
     return await asyncio.to_thread(_doc_update, "job_requests", request_id, data)
 
 
+def _svc_match(job_service: str, filter_service: str) -> bool:
+    """Flexible service match: AC technician ↔ AC Repair both share 'ac' → match."""
+    if not filter_service:
+        return True
+    j = (job_service or "").lower().strip()
+    f = filter_service.lower().strip()
+    if not j:
+        return False
+    # Direct substring check in both directions
+    if f in j or j in f:
+        return True
+    # Word-overlap: {"ac","technician"} ∩ {"ac","repair"} = {"ac"} → match
+    return bool(set(j.split()) & set(f.split()))
+
+
 async def list_open_job_requests(service: str = "", city: str = "") -> List[dict]:
-    """Return open job_requests optionally filtered by service/city."""
+    """Return open job_requests optionally filtered by service/city (flexible match)."""
     svc = get_firebase_service()
-    results: List[dict] = []
 
     def _query():
         if svc.is_mock or MOCK_MODE:
@@ -2132,9 +2146,7 @@ async def list_open_job_requests(service: str = "", city: str = "") -> List[dict
                 bucket = _mock_bucket("job_requests")
                 docs = list(bucket.values())
             else:
-                q = db.collection("job_requests").where("status", "==", "open")
-                if city:
-                    q = q.where("city", "==", city)
+                q = db.collection("job_requests").where("status", "in", ["open", "bidding"])
                 docs = [dict(s.to_dict() or {}) | {"request_id": s.id} for s in q.stream()]
         out = []
         for d in docs:
@@ -2142,7 +2154,7 @@ async def list_open_job_requests(service: str = "", city: str = "") -> List[dict
                 continue
             if city and (d.get("city") or "").lower() != city.lower():
                 continue
-            if service and service.lower() not in (d.get("service") or "").lower():
+            if not _svc_match(d.get("service", ""), service):
                 continue
             out.append(d)
         out.sort(key=lambda x: x.get("created_at", ""), reverse=True)

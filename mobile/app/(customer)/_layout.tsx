@@ -18,15 +18,15 @@ export default function CustomerLayout() {
       />
       <Tabs.Screen
         name="bookings"
-        options={{ title: 'Orders' }}
+        options={{ headerShown: false }}
       />
       <Tabs.Screen
         name="disputes"
-        options={{ title: 'Disputes' }}
+        options={{ headerShown: false }}
       />
       <Tabs.Screen
         name="profile"
-        options={{ title: 'Profile' }}
+        options={{ headerShown: false }}
       />
     </Tabs>
   );

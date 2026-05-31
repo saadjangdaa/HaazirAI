@@ -141,6 +141,67 @@ async def notify_matching_workers(
     return notified
 
 
+def _skill_matches_service(worker_skills: List[str], job_service: str) -> bool:
+    """Flexible match: AC Repair skill matches AC technician job (share 'ac')."""
+    js = (job_service or "").lower().strip()
+    js_words = set(js.split())
+    for skill in (worker_skills or []):
+        sk = skill.lower().strip()
+        if sk in js or js in sk:
+            return True
+        if js_words & set(sk.split()):
+            return True
+    return False
+
+
+async def notify_all_workers_by_service(job_request: Dict[str, Any]) -> List[str]:
+    """
+    Scan ALL worker users in Firestore and notify those whose skills match
+    the job service + city. This catches workers not in providers.json.
+    """
+    from services.firebase import _query_all
+    service = job_request.get("service", "")
+    city = (job_request.get("city") or "").lower().strip()
+    request_id = job_request.get("request_id", "")
+    estimated_price = job_request.get("estimated_price", 0)
+    location = job_request.get("location", "")
+    urgency = job_request.get("urgency", "medium")
+
+    urgency_label = {"high": "ZARURI", "critical": "BAHUT ZARURI"}.get(urgency, "")
+    title = f"{'🚨 ' if urgency_label else '🔔 '}Naya Kaam — {service}"
+    body = f"{location}, {city.title()} • ~Rs {estimated_price:,} • Bid lagaen!"
+
+    users = _query_all("users")
+    notified_uids: List[str] = []
+
+    for u in users:
+        if u.get("role") != "worker":
+            continue
+        # City match (loose)
+        w_city = (u.get("city") or "").lower().strip()
+        if city and w_city and w_city != city:
+            continue
+        # Skill match
+        skills = u.get("skills") or []
+        if not _skill_matches_service(skills, service):
+            continue
+
+        uid = (u.get("user_id") or u.get("uid") or "").strip()
+        if not uid:
+            continue
+        push_token = (u.get("push_token") or "").strip()
+        if push_token:
+            await send_push(
+                push_token, title, body,
+                data={"type": "new_job_request", "job_request_id": request_id,
+                      "service": service, "city": city},
+            )
+        print(f"[JobRequest] Notified worker uid={uid} skills={skills[:2]} city={w_city}")
+        notified_uids.append(uid)
+
+    return notified_uids
+
+
 async def _find_worker_uid(provider_id: str) -> Optional[str]:
     """Find Firebase UID of worker linked to this provider_id."""
     from services.firebase import _query_all
