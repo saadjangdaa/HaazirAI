@@ -296,6 +296,9 @@ const ResultsScreen = () => {
           </>
         )}
 
+        {/* Only show provider list in traditional flow (no jobRequestId) */}
+        {!jobRequestId && (
+        <>
         <View style={styles.sectionHeader}>
           <Text style={styles.sectionTitle}>Technicians / Providers ({providerCount})</Text>
           <View style={styles.sortPill}>
@@ -327,6 +330,8 @@ const ResultsScreen = () => {
             <Text style={styles.fallbackText}>{result.fallback}</Text>
           </View>
         )}
+        </>
+        )} {/* end !jobRequestId */}
 
         <TouchableOpacity style={styles.logsToggle} onPress={() => setShowLogs(!showLogs)} activeOpacity={0.75}>
           <Ionicons name={showLogs ? 'chevron-up' : 'flask-outline'} size={14} color={Colors.textMuted} />
