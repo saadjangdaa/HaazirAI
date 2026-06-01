@@ -18,6 +18,7 @@ export interface Provider {
   verification_complete: boolean
   phone?: string
   email?: string
+  firebase_uid?: string
   experience_years?: number
   created_at?: string
   suspended_until?: string | null

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { ApiBanner } from '../components/Common/ApiBanner'
 import { fetchDashboard } from '../services/analytics'
 import { formatRs } from '../utils/formatting'
 import { formatDate, timeAgo } from '../utils/dates'
@@ -8,9 +9,18 @@ export function DashboardPage() {
     metrics: Record<string, number>
     recent_activity: Array<Record<string, string>>
   } | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    fetchDashboard().then(setData).catch(console.error)
+    fetchDashboard()
+      .then((d) => {
+        setData(d)
+        setError(null)
+      })
+      .catch((e: Error) => {
+        setData(null)
+        setError(e.message || 'API request failed')
+      })
   }, [])
 
   const m = data?.metrics || {}
@@ -28,6 +38,7 @@ export function DashboardPage() {
   return (
     <>
       <h1 className="page-title">Haazir Dost Admin Dashboard</h1>
+      {error && <ApiBanner message={error} />}
       <div className="metrics-grid">
         {cards.map((c) => (
           <div key={c.label} className="metric-card">

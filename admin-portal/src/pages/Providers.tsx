@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { ApiBanner } from '../components/Common/ApiBanner'
 import { Badge } from '../components/Common/Badge'
 import { Modal } from '../components/Common/Modal'
 import { useAuth } from '../hooks/useAuth'
@@ -21,14 +22,23 @@ const SERVICES = ['all', 'AC', 'Electrical', 'Plumbing', 'Hair']
 export function ProvidersPage() {
   const { canWrite } = useAuth()
   const [rows, setRows] = useState<Provider[]>([])
-  const [filters, setFilters] = useState({ status: 'all', city: 'all', service: 'all', search: '' })
+  const [filters, setFilters] = useState({ status: 'pending', city: 'all', service: 'all', search: '' })
+  const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<Provider | null>(null)
   const [rejectReason, setRejectReason] = useState('Document fraud')
   const [suspendReason, setSuspendReason] = useState('Poor quality')
   const [suspendDays, setSuspendDays] = useState(7)
 
   const load = useCallback(() => {
-    fetchProviders(filters).then((r) => setRows(r.providers)).catch(console.error)
+    fetchProviders(filters)
+      .then((r) => {
+        setRows(r.providers)
+        setError(null)
+      })
+      .catch((e: Error) => {
+        setRows([])
+        setError(e.message || 'Could not load providers')
+      })
   }, [filters])
 
   useEffect(() => {
@@ -49,6 +59,10 @@ export function ProvidersPage() {
   return (
     <>
       <h1 className="page-title">Provider Management</h1>
+      <p style={{ color: 'var(--muted)', marginBottom: '0.75rem' }}>
+        Naye worker signups yahan <strong>pending</strong> status mein dikhte hain — View → Approve.
+      </p>
+      {error && <ApiBanner message={error} />}
       <div className="filters">
         <select value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}>
           {STATUSES.map((s) => (
@@ -92,6 +106,13 @@ export function ProvidersPage() {
             </tr>
           </thead>
           <tbody>
+            {rows.length === 0 && !error && (
+              <tr>
+                <td colSpan={8} style={{ textAlign: 'center', padding: '1.5rem', color: 'var(--muted)' }}>
+                  Koi provider nahi — worker ne mobile se signup complete kiya? Status filter &quot;pending&quot; check karein.
+                </td>
+              </tr>
+            )}
             {rows.map((p) => (
               <tr key={p.id}>
                 <td>{p.name}</td>
@@ -119,6 +140,11 @@ export function ProvidersPage() {
           <p>
             <strong>Phone:</strong> {selected.phone || '—'} · <strong>Email:</strong> {selected.email || '—'}
           </p>
+          {selected.firebase_uid && (
+            <p>
+              <strong>Firebase UID:</strong> <code>{selected.firebase_uid}</code>
+            </p>
+          )}
           <p>
             {selected.city}, {selected.area} · {selected.service} · {selected.experience_years || 0} yrs
           </p>

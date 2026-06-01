@@ -13,7 +13,13 @@ export async function apiGet<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`, { headers: getAuthHeaders() })
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(err.detail || res.statusText)
+    const detail = typeof err.detail === 'string' ? err.detail : res.statusText
+    if (res.status === 404 && path.startsWith('/api/admin/')) {
+      throw new Error(
+        'Admin API is not on this server yet (404). Deploy the latest backend to Render, or set VITE_API_BASE_URL=http://localhost:8080 and run the backend locally.',
+      )
+    }
+    throw new Error(detail || res.statusText)
   }
   return res.json()
 }
@@ -26,7 +32,13 @@ export async function apiSend<T>(path: string, method: string, body?: unknown): 
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(err.detail || res.statusText)
+    const detail = typeof err.detail === 'string' ? err.detail : res.statusText
+    if (res.status === 404 && path.startsWith('/api/admin/')) {
+      throw new Error(
+        'Admin API is not on this server yet (404). Deploy the latest backend to Render, or use localhost:8080.',
+      )
+    }
+    throw new Error(detail || res.statusText)
   }
   return res.json()
 }
