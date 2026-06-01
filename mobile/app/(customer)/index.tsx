@@ -71,6 +71,7 @@ const CustomerHomeScreen = () => {
   const SIDEBAR_NAV: SidebarItem[] = [
     { label: tr.navHome,      icon: 'home-outline',          path: '/(customer)/' },
     { label: tr.navBookings,  icon: 'calendar-outline',      path: '/(customer)/bookings' },
+    { label: 'Meri Chats',    icon: 'chatbubbles-outline',   path: '/voice-chats' },
     { label: tr.navDisputes,  icon: 'shield-outline',        path: '/(customer)/disputes' },
     { label: tr.navProfile,   icon: 'person-outline',        path: '/(customer)/profile' },
     { label: 'Agent Traces',  icon: 'git-network-outline',   path: '/agent-traces', highlight: true, badge: 'NEW', dividerBefore: true },

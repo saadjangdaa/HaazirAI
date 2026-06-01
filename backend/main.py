@@ -907,12 +907,13 @@ async def conversation(body: ConversationRequest):
             user_name=body.user_name,
             history=body.history,
             language=body.language or 'roman_urdu',
+            user_city=body.user_city or '',
         )
 
         if result.get("search_trigger"):
             trigger = result["search_trigger"]
             service = _normalize_service(trigger.get("service", "service"))
-            location = trigger.get("location", "Islamabad")
+            location = trigger.get("location") or body.user_city or "Islamabad"
             urgency = trigger.get("urgency", "medium")
 
             orch: dict = {}
@@ -957,6 +958,7 @@ async def conversation(body: ConversationRequest):
                 providers=providers,
                 user_name=body.user_name,
                 history=None,
+                user_city=body.user_city or '',
             )
             result["response_text"] = follow_up["response_text"]
             result["providers"] = providers

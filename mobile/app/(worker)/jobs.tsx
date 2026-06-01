@@ -33,7 +33,7 @@ import { formatWorkerPrice, formatWorkerTime, isActiveWorkerStatus, isOfferStatu
 import { MOCK_WORKER_BOOKINGS } from '../../data/mockData';
 import { workerAcceptJob } from '../../services/chatService';
 import { db } from '../../services/firebase';
-import { collection, query, where, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, limit } from 'firebase/firestore';
 
 const STATUS_NEXT: Record<string, { label: string; nextStatus: string; icon: string }> = {
   confirmed:   { label: 'Rawaana Ho Gaya',  nextStatus: 'on_the_way',  icon: 'car-outline' },
@@ -89,7 +89,8 @@ export default function WorkerJobsScreen() {
 
   // Available jobs (real marketplace flow)
   const [activeTab, setActiveTab] = useState<'my_jobs' | 'available'>('my_jobs');
-  const [availableJobs, setAvailableJobs] = useState<AvailableJob[]>([]);
+  const [chatJobs, setChatJobs] = useState<AvailableJob[]>([]);
+  const [marketplaceJobs, setMarketplaceJobs] = useState<AvailableJob[]>([]);
   const [availableLoading, setAvailableLoading] = useState(false);
   const [bidModalJob, setBidModalJob] = useState<AvailableJob | null>(null);
   const [bidPrice, setBidPrice] = useState('');
@@ -141,6 +142,18 @@ export default function WorkerJobsScreen() {
     () => allBookings.filter((b) => isTerminalStatus(b.status || '')),
     [allBookings]
   );
+
+  // Merge targeted chat jobs + marketplace broadcast jobs, dedup by request_id
+  const availableJobs = useMemo<AvailableJob[]>(() => {
+    const seen = new Set<string>();
+    return [...marketplaceJobs, ...chatJobs]
+      .filter((j) => {
+        if (seen.has(j.request_id)) return false;
+        seen.add(j.request_id);
+        return true;
+      })
+      .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+  }, [chatJobs, marketplaceJobs]);
 
   useEffect(() => {
     if (!offer || acceptedId) return;
@@ -198,50 +211,68 @@ export default function WorkerJobsScreen() {
     }
   };
 
-  // Real-time listener on CHATS collection — query by worker_id (provider_id)
-  // chats already works, avoids job_requests permission/index issues
+  // Listener 1: targeted chat jobs — nearby worker direct bookings
   useEffect(() => {
     if (isMockMode || !user?.id) return;
-
-    if (activeTab === 'available') setAvailableLoading(true);
-
-    // worker_id in chats = provider_id (e.g. "p027")
     const providerIdOrUid = user.workerData?.providerId || user.id;
+    const q = query(collection(db, 'chats'), where('worker_id', '==', providerIdOrUid));
+    const unsub = onSnapshot(q, (snap) => {
+      const jobs: AvailableJob[] = snap.docs
+        .map((d) => d.data() as any)
+        .filter((c) => c.status === 'waiting' || c.status === 'open')
+        .map((c) => ({
+          request_id: c.job_request_id,
+          service: c.service,
+          location: c.location,
+          city: c.city,
+          urgency: c.urgency || 'medium',
+          estimated_price: c.estimated_price || 0,
+          customer_name: c.customer_name,
+          customer_id: c.customer_id || '',
+          status: 'open' as const,
+          created_at: c.created_at,
+          expires_at: c.expires_at || '',
+          bid_count: 0,
+        }));
+      setChatJobs(jobs);
+    }, (err) => console.warn('[ChatJobs] Firestore error:', err.code, err.message));
+    return () => unsub();
+  }, [user?.id, user?.workerData?.providerId, isMockMode]);
 
+  // Listener 2: marketplace jobs — voice agent broadcast (notified_provider_ids contains this worker)
+  useEffect(() => {
+    if (isMockMode || !user?.id) return;
+    if (activeTab === 'available') setAvailableLoading(true);
+    const providerIdOrUid = user.workerData?.providerId || user.id;
     const q = query(
-      collection(db, 'chats'),
-      where('worker_id', '==', providerIdOrUid),
+      collection(db, 'job_requests'),
+      where('notified_provider_ids', 'array-contains', providerIdOrUid),
+      limit(30),
     );
-
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const jobs: AvailableJob[] = snap.docs
-          .map((d) => d.data() as any)
-          .filter((c) => c.status === 'waiting' || c.status === 'open')
-          .map((c) => ({
-            request_id: c.job_request_id,
-            service: c.service,
-            location: c.location,
-            city: c.city,
-            urgency: c.urgency || 'medium',
-            estimated_price: c.estimated_price || 0,
-            customer_name: c.customer_name,
-            status: 'open',
-            created_at: c.created_at,
-            expires_at: c.expires_at || '',
-            bid_count: 0,
-          }));
-
-        setAvailableJobs(jobs);
-        setAvailableLoading(false);
-      },
-      (err) => {
-        console.warn('[AvailableJobs] Firestore error:', err.code, err.message);
-        setAvailableLoading(false);
-      },
-    );
-
+    const unsub = onSnapshot(q, (snap) => {
+      const jobs: AvailableJob[] = snap.docs
+        .map((d) => d.data() as any)
+        .filter((j) => j.status === 'open')
+        .map((j) => ({
+          request_id: j.request_id,
+          service: j.service,
+          location: j.location,
+          city: j.city,
+          urgency: j.urgency || 'medium',
+          estimated_price: j.estimated_price || 0,
+          customer_name: j.customer_name || 'Customer',
+          customer_id: j.customer_id || '',
+          status: 'open' as const,
+          created_at: j.created_at,
+          expires_at: j.expires_at || '',
+          bid_count: j.bid_count || 0,
+        }));
+      setMarketplaceJobs(jobs);
+      setAvailableLoading(false);
+    }, (err) => {
+      console.warn('[MarketplaceJobs] Firestore error:', err.code, err.message);
+      setAvailableLoading(false);
+    });
     return () => unsub();
   }, [user?.id, user?.workerData?.providerId, isMockMode]);
 
@@ -444,8 +475,15 @@ export default function WorkerJobsScreen() {
                       onPress={async () => {
                         if (!user?.id) return;
                         try {
-                          const workerName = displayName;
-                          await workerAcceptJob(job.request_id, user.id, workerName);
+                          await workerAcceptJob(job.request_id, user.id, displayName, {
+                            customer_id: (job as any).customer_id || '',
+                            customer_name: job.customer_name || 'Customer',
+                            service: job.service,
+                            location: job.location,
+                            city: job.city,
+                            urgency: job.urgency,
+                            estimated_price: job.estimated_price,
+                          });
                           router.push({
                             pathname: '/worker-chat',
                             params: {
