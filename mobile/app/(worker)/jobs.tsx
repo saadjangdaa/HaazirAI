@@ -33,7 +33,7 @@ import { formatWorkerPrice, formatWorkerTime, isActiveWorkerStatus, isOfferStatu
 import { MOCK_WORKER_BOOKINGS } from '../../data/mockData';
 import { workerAcceptJob } from '../../services/chatService';
 import { db } from '../../services/firebase';
-import { collection, query, where, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, limit } from 'firebase/firestore';
 
 const STATUS_NEXT: Record<string, { label: string; nextStatus: string; icon: string }> = {
   confirmed:   { label: 'Rawaana Ho Gaya',  nextStatus: 'on_the_way',  icon: 'car-outline' },
@@ -78,6 +78,7 @@ export default function WorkerJobsScreen() {
     }, 250);
   };
   const [bookings, setBookings] = useState<UserBooking[]>([]);
+  const [chatBookings, setChatBookings] = useState<UserBooking[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -88,7 +89,8 @@ export default function WorkerJobsScreen() {
 
   // Available jobs (real marketplace flow)
   const [activeTab, setActiveTab] = useState<'my_jobs' | 'available'>('my_jobs');
-  const [availableJobs, setAvailableJobs] = useState<AvailableJob[]>([]);
+  const [chatJobs, setChatJobs] = useState<AvailableJob[]>([]);
+  const [marketplaceJobs, setMarketplaceJobs] = useState<AvailableJob[]>([]);
   const [availableLoading, setAvailableLoading] = useState(false);
   const [bidModalJob, setBidModalJob] = useState<AvailableJob | null>(null);
   const [bidPrice, setBidPrice] = useState('');
@@ -123,16 +125,35 @@ export default function WorkerJobsScreen() {
 
   const offer = useMemo(
     () => bookings.find((b) => isOfferStatus(b.status) && b.booking_id !== acceptedId),
-    [bookings, acceptedId]
+    [bookings, acceptedId]  // offer only from backend bookings (real-time bid offers)
   );
+  // Merge backend bookings + chat-based jobs (dedup by booking_id)
+  const allBookings = useMemo(() => {
+    const seen = new Set(bookings.map((b) => b.booking_id));
+    const extras = chatBookings.filter((c) => !seen.has(c.booking_id));
+    return [...bookings, ...extras];
+  }, [bookings, chatBookings]);
+
   const activeJobs = useMemo(
-    () => bookings.filter((b) => isActiveWorkerStatus(b.status) && b.booking_id !== offer?.booking_id && (!isOfferStatus(b.status) || b.booking_id === acceptedId)),
-    [bookings, offer, acceptedId]
+    () => allBookings.filter((b) => isActiveWorkerStatus(b.status) && b.booking_id !== offer?.booking_id && (!isOfferStatus(b.status) || b.booking_id === acceptedId)),
+    [allBookings, offer, acceptedId]
   );
   const completedJobs = useMemo(
-    () => bookings.filter((b) => isTerminalStatus(b.status || '')),
-    [bookings]
+    () => allBookings.filter((b) => isTerminalStatus(b.status || '')),
+    [allBookings]
   );
+
+  // Merge targeted chat jobs + marketplace broadcast jobs, dedup by request_id
+  const availableJobs = useMemo<AvailableJob[]>(() => {
+    const seen = new Set<string>();
+    return [...marketplaceJobs, ...chatJobs]
+      .filter((j) => {
+        if (seen.has(j.request_id)) return false;
+        seen.add(j.request_id);
+        return true;
+      })
+      .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+  }, [chatJobs, marketplaceJobs]);
 
   useEffect(() => {
     if (!offer || acceptedId) return;
@@ -190,61 +211,115 @@ export default function WorkerJobsScreen() {
     }
   };
 
-  // Real-time Firestore listener — single-field query (no composite index needed)
-  // Always active so badge updates even when worker is on Meri Jobs tab
+  // Listener 1: targeted chat jobs — nearby worker direct bookings
+  useEffect(() => {
+    if (isMockMode || !user?.id) return;
+    const providerIdOrUid = user.workerData?.providerId || user.id;
+    const q = query(collection(db, 'chats'), where('worker_id', '==', providerIdOrUid));
+    const unsub = onSnapshot(q, (snap) => {
+      const jobs: AvailableJob[] = snap.docs
+        .map((d) => d.data() as any)
+        .filter((c) => c.status === 'waiting' || c.status === 'open')
+        .map((c) => ({
+          request_id: c.job_request_id,
+          service: c.service,
+          location: c.location,
+          city: c.city,
+          urgency: c.urgency || 'medium',
+          estimated_price: c.estimated_price || 0,
+          customer_name: c.customer_name,
+          customer_id: c.customer_id || '',
+          status: 'open' as const,
+          created_at: c.created_at,
+          expires_at: c.expires_at || '',
+          bid_count: 0,
+        }));
+      setChatJobs(jobs);
+    }, (err) => console.warn('[ChatJobs] Firestore error:', err.code, err.message));
+    return () => unsub();
+  }, [user?.id, user?.workerData?.providerId, isMockMode]);
+
+  // Listener 2: marketplace jobs — voice agent broadcast (notified_provider_ids contains this worker)
+  useEffect(() => {
+    if (isMockMode || !user?.id) return;
+    if (activeTab === 'available') setAvailableLoading(true);
+    const providerIdOrUid = user.workerData?.providerId || user.id;
+    const q = query(
+      collection(db, 'job_requests'),
+      where('notified_provider_ids', 'array-contains', providerIdOrUid),
+      limit(30),
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      const jobs: AvailableJob[] = snap.docs
+        .map((d) => d.data() as any)
+        .filter((j) => j.status === 'open')
+        .map((j) => ({
+          request_id: j.request_id,
+          service: j.service,
+          location: j.location,
+          city: j.city,
+          urgency: j.urgency || 'medium',
+          estimated_price: j.estimated_price || 0,
+          customer_name: j.customer_name || 'Customer',
+          customer_id: j.customer_id || '',
+          status: 'open' as const,
+          created_at: j.created_at,
+          expires_at: j.expires_at || '',
+          bid_count: j.bid_count || 0,
+        }));
+      setMarketplaceJobs(jobs);
+      setAvailableLoading(false);
+    }, (err) => {
+      console.warn('[MarketplaceJobs] Firestore error:', err.code, err.message);
+      setAvailableLoading(false);
+    });
+    return () => unsub();
+  }, [user?.id, user?.workerData?.providerId, isMockMode]);
+
+  // Listen to accepted/active/completed chats → show in Meri Jobs
   useEffect(() => {
     if (isMockMode || !user?.id) return;
 
-    if (activeTab === 'available') setAvailableLoading(true);
+    const providerIdOrUid = user.workerData?.providerId || user.id;
 
-    const workerCity = (user.city || '').trim().toLowerCase();
-    const workerSkills: string[] = user.workerData?.specializations || [];
-
-    // Single where clause only → no composite index required
     const q = query(
-      collection(db, 'job_requests'),
-      where('status', 'in', ['open', 'bidding']),
+      collection(db, 'chats'),
+      where('worker_id', '==', providerIdOrUid),
     );
 
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const docs = snap.docs.map(
-          (d) => ({ ...(d.data() as object), request_id: d.id } as AvailableJob),
-        );
+    const CHAT_TO_BOOKING_STATUS: Record<string, string> = {
+      accepted:    'confirmed',
+      on_the_way:  'on_the_way',
+      arrived:     'arrived',
+      in_progress: 'in_progress',
+      completed:   'completed',
+      cancelled:   'cancelled',
+    };
 
-        // Client-side: city + service filter
-        const filtered = docs.filter((j) => {
-          // City match (loose — skip if worker has no city set)
-          if (workerCity) {
-            const jCity = (j.city || '').trim().toLowerCase();
-            if (jCity && jCity !== workerCity) return false;
-          }
-          // Service match — word overlap
-          if (workerSkills.length) {
-            const js = (j.service || '').toLowerCase();
-            const matches = workerSkills.some((sk) => {
-              const s = sk.toLowerCase();
-              if (js.includes(s) || s.includes(js)) return true;
-              const jWords = new Set(js.split(/\s+/));
-              return s.split(/\s+/).some((w) => jWords.has(w));
-            });
-            if (!matches) return false;
-          }
-          return true;
-        });
+    const unsub2 = onSnapshot(q, (snap) => {
+      const jobs: UserBooking[] = snap.docs
+        .map((d) => d.data() as any)
+        .filter((c) => c.status && c.status !== 'waiting')
+        .map((c) => ({
+          booking_id: c.job_request_id,
+          user_id: c.customer_id,
+          service: c.service,
+          provider_id: c.worker_id,
+          provider_name: c.worker_name,
+          scheduled_time: c.created_at,
+          price: c.estimated_price || 0,
+          status: CHAT_TO_BOOKING_STATUS[c.status] || c.status,
+          created_at: c.created_at,
+          tracking_steps: [],
+          // store job_request_id so we can open the chat
+          _chat_id: c.job_request_id,
+          _customer_name: c.customer_name,
+        } as UserBooking & { _chat_id: string; _customer_name: string }));
+      setChatBookings(jobs);
+    });
 
-        setAvailableJobs(filtered);
-        setAvailableLoading(false);
-      },
-      (err) => {
-        console.warn('[AvailableJobs] Firestore error:', err.code, err.message);
-        setAvailableLoading(false);
-      },
-    );
-
-    return () => unsub();
-  }, [user?.id, user?.city, isMockMode]);
+    return () => unsub2();
+  }, [user?.id, user?.workerData?.providerId, isMockMode]);
 
   const handleSubmitBid = async () => {
     if (!bidModalJob || !user?.id || !bidPrice) return;
@@ -400,8 +475,15 @@ export default function WorkerJobsScreen() {
                       onPress={async () => {
                         if (!user?.id) return;
                         try {
-                          const workerName = displayName;
-                          await workerAcceptJob(job.request_id, user.id, workerName);
+                          await workerAcceptJob(job.request_id, user.id, displayName, {
+                            customer_id: (job as any).customer_id || '',
+                            customer_name: job.customer_name || 'Customer',
+                            service: job.service,
+                            location: job.location,
+                            city: job.city,
+                            urgency: job.urgency,
+                            estimated_price: job.estimated_price,
+                          });
                           router.push({
                             pathname: '/worker-chat',
                             params: {
@@ -663,6 +745,25 @@ export default function WorkerJobsScreen() {
                       <Text style={styles.jobPrice}>{formatWorkerPrice(job.price)}</Text>
                     </View>
                   </View>
+                  {/* Details button */}
+                  <TouchableOpacity
+                    style={styles.detailsBtn}
+                    activeOpacity={0.8}
+                    onPress={() => router.push({
+                      pathname: '/job-detail',
+                      params: {
+                        jobRequestId: job.booking_id,
+                        service: job.service || '',
+                        status: job.status || '',
+                        price: String(job.price || 0),
+                        customerName: (job as any)._customer_name || '',
+                      },
+                    })}
+                  >
+                    <Ionicons name="document-text-outline" size={14} color={Colors.primary} />
+                    <Text style={styles.detailsBtnText}>Details Dekhein</Text>
+                    <Ionicons name="chevron-forward" size={13} color={Colors.primary} />
+                  </TouchableOpacity>
                 </View>
               );
             })}
@@ -926,6 +1027,13 @@ const styles = StyleSheet.create({
   emptyTitle: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: Colors.textPrimary },
   emptyText: { fontSize: FontSize.sm, color: Colors.textMuted, textAlign: 'center' },
   emptySubText: { fontSize: FontSize.sm, color: Colors.textMuted, textAlign: 'center' },
+
+  detailsBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    marginTop: Spacing.sm, paddingTop: Spacing.sm,
+    borderTopWidth: 1, borderTopColor: Colors.border,
+  },
+  detailsBtnText: { flex: 1, fontSize: FontSize.sm, color: Colors.primary, fontWeight: FontWeight.semibold },
 
   jobCard: {
     backgroundColor: Colors.surface, borderRadius: Radius.xl,

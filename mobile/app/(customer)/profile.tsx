@@ -79,7 +79,10 @@ export default function CustomerProfileScreen() {
   };
 
   const doLogout = async () => {
-    try { await signOut(); } finally { router.replace('/login'); }
+    try { await signOut(); } catch {}
+    setTimeout(() => {
+      try { router.replace('/login' as any); } catch { router.push('/login' as any); }
+    }, 50);
   };
 
   const handleLogout = () => {

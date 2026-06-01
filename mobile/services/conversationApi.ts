@@ -50,6 +50,7 @@ export async function sendMessage(
   history?: HistoryEntry[],
   voice_id?: string,
   language?: string,
+  user_city?: string,
 ): Promise<ConversationTurn> {
   const { data } = await axios.post(
     `${BASE_URL}/api/conversation`,
@@ -61,6 +62,7 @@ export async function sendMessage(
       history: history || [],
       ...(voice_id ? { voice_id } : {}),
       ...(language ? { language } : {}),
+      ...(user_city ? { user_city } : {}),
     },
     { timeout: 35000 },
   );
@@ -73,8 +75,9 @@ export async function startConversation(
   user_name?: string,
   voice_id?: string,
   language?: string,
+  user_city?: string,
 ): Promise<ConversationTurn> {
-  return sendMessage(session_id, '__init__', user_id, user_name, [], voice_id, language);
+  return sendMessage(session_id, '__init__', user_id, user_name, [], voice_id, language, user_city);
 }
 
 function _localNegotiate(providers: any[]): { top_bids: NegotiatedBid[]; recommendation: string; total_savings: number } {
