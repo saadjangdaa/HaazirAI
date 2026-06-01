@@ -18,7 +18,7 @@
       "googleServicesFile": "./google-services.json",
       "config": {
         "googleMaps": {
-          "apiKey": "AIzaSyDOLSRc5zgnQhS6bSc4zBO0K0edQSkdIqM"
+          "apiKey": "AIzaSyBrk1qwmRpVbhH_URNwS_d0P8iVuRCFzoM"
         }
       },
       "permissions": [
@@ -86,7 +86,8 @@
           "microphonePermission": "Haazir AI ko awaz sun'ne ke liye microphone chahiye"
         }
       ],
-      "expo-notifications"
+      "expo-notifications",
+      "expo-asset"
     ],
     "scheme": "haazir",
     "extra": {
