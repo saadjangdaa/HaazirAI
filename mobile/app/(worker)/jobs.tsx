@@ -27,10 +27,13 @@ const WORKER_SIDEBAR_NAV: WorkerSidebarItem[] = [
 ];
 import {
   formatApiError, getWorkerBookings, requireUserId, updateBookingStatus, UserBooking,
-  getWorkerAvailableJobs, submitWorkerBid, AvailableJob, WorkerBid,
+  submitWorkerBid, AvailableJob, WorkerBid,
 } from '../../services/api';
 import { formatWorkerPrice, formatWorkerTime, isActiveWorkerStatus, isOfferStatus, isTerminalStatus, WORKER_STATUS_LABEL } from '../../utils/workerBookings';
 import { MOCK_WORKER_BOOKINGS } from '../../data/mockData';
+import { workerAcceptJob } from '../../services/chatService';
+import { db } from '../../services/firebase';
+import { collection, query, where, onSnapshot } from 'firebase/firestore';
 
 const STATUS_NEXT: Record<string, { label: string; nextStatus: string; icon: string }> = {
   confirmed:   { label: 'Rawaana Ho Gaya',  nextStatus: 'on_the_way',  icon: 'car-outline' },
@@ -187,25 +190,61 @@ export default function WorkerJobsScreen() {
     }
   };
 
-  const loadAvailableJobs = useCallback(async () => {
-    if (isMockMode || !user?.id) return;
-    setAvailableLoading(true);
-    try {
-      const uid = requireUserId(user);
-      const workerService = user.workerData?.specializations?.[0] || '';
-      const workerCity = user.city || '';
-      const res = await getWorkerAvailableJobs(uid, workerService, workerCity);
-      setAvailableJobs(res.jobs || []);
-    } catch (e) {
-      console.warn('[AvailableJobs]', formatApiError(e));
-    } finally {
-      setAvailableLoading(false);
-    }
-  }, [user?.id, isMockMode]);
-
+  // Real-time Firestore listener — single-field query (no composite index needed)
+  // Always active so badge updates even when worker is on Meri Jobs tab
   useEffect(() => {
-    if (activeTab === 'available') loadAvailableJobs();
-  }, [activeTab, loadAvailableJobs]);
+    if (isMockMode || !user?.id) return;
+
+    if (activeTab === 'available') setAvailableLoading(true);
+
+    const workerCity = (user.city || '').trim().toLowerCase();
+    const workerSkills: string[] = user.workerData?.specializations || [];
+
+    // Single where clause only → no composite index required
+    const q = query(
+      collection(db, 'job_requests'),
+      where('status', 'in', ['open', 'bidding']),
+    );
+
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const docs = snap.docs.map(
+          (d) => ({ ...(d.data() as object), request_id: d.id } as AvailableJob),
+        );
+
+        // Client-side: city + service filter
+        const filtered = docs.filter((j) => {
+          // City match (loose — skip if worker has no city set)
+          if (workerCity) {
+            const jCity = (j.city || '').trim().toLowerCase();
+            if (jCity && jCity !== workerCity) return false;
+          }
+          // Service match — word overlap
+          if (workerSkills.length) {
+            const js = (j.service || '').toLowerCase();
+            const matches = workerSkills.some((sk) => {
+              const s = sk.toLowerCase();
+              if (js.includes(s) || s.includes(js)) return true;
+              const jWords = new Set(js.split(/\s+/));
+              return s.split(/\s+/).some((w) => jWords.has(w));
+            });
+            if (!matches) return false;
+          }
+          return true;
+        });
+
+        setAvailableJobs(filtered);
+        setAvailableLoading(false);
+      },
+      (err) => {
+        console.warn('[AvailableJobs] Firestore error:', err.code, err.message);
+        setAvailableLoading(false);
+      },
+    );
+
+    return () => unsub();
+  }, [user?.id, user?.city, isMockMode]);
 
   const handleSubmitBid = async () => {
     if (!bidModalJob || !user?.id || !bidPrice) return;
@@ -231,7 +270,7 @@ export default function WorkerJobsScreen() {
       setBidPrice('');
       setBidEta('30');
       setBidMessage('');
-      loadAvailableJobs();
+      // Firestore listener auto-updates availableJobs
     } catch (e) {
       Alert.alert('Bid Failed', formatApiError(e));
     } finally {
@@ -305,9 +344,16 @@ export default function WorkerJobsScreen() {
             style={[styles.tab, activeTab === 'available' && styles.tabActive]}
             onPress={() => setActiveTab('available')}
           >
-            <Text style={[styles.tabText, activeTab === 'available' && styles.tabTextActive]}>
-              Available Jobs {availableJobs.length > 0 ? `(${availableJobs.length})` : ''}
-            </Text>
+            <View style={styles.tabInner}>
+              <Text style={[styles.tabText, activeTab === 'available' && styles.tabTextActive]}>
+                Available Jobs
+              </Text>
+              {availableJobs.length > 0 && (
+                <View style={styles.tabBadge}>
+                  <Text style={styles.tabBadgeText}>{availableJobs.length}</Text>
+                </View>
+              )}
+            </View>
           </TouchableOpacity>
         </View>
       )}
@@ -315,7 +361,7 @@ export default function WorkerJobsScreen() {
       <ScrollView
         style={styles.body}
         contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); activeTab === 'available' ? loadAvailableJobs() : load(); }} tintColor={Colors.primary} />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={Colors.primary} />}
         showsVerticalScrollIndicator={false}
       >
         {/* Available Jobs Tab */}
@@ -324,10 +370,10 @@ export default function WorkerJobsScreen() {
             {availableLoading ? (
               <ActivityIndicator size="large" color={Colors.primary} style={{ marginTop: 40 }} />
             ) : availableJobs.length === 0 ? (
-              <View style={styles.emptyWrap}>
+              <View style={styles.emptyCard}>
                 <Ionicons name="search-outline" size={48} color={Colors.border} />
                 <Text style={styles.emptyTitle}>Koi job nahi mili</Text>
-                <Text style={styles.emptySub}>Abhi aapke area mein koi naya kaam nahi hai — pull to refresh</Text>
+                <Text style={styles.emptySubText}>Abhi aapke area mein koi naya kaam nahi hai — pull to refresh</Text>
               </View>
             ) : (
               availableJobs.map((job) => (
@@ -347,17 +393,44 @@ export default function WorkerJobsScreen() {
                     <Text style={styles.availPrice}>~Rs {job.estimated_price.toLocaleString()}</Text>
                   )}
                   <Text style={styles.availBidCount}>{job.bid_count} bid{job.bid_count !== 1 ? 's' : ''} aa chuki hain</Text>
-                  <TouchableOpacity
-                    style={styles.bidBtn}
-                    onPress={() => {
-                      setBidModalJob(job);
-                      setBidPrice(job.estimated_price > 0 ? String(job.estimated_price) : '');
-                    }}
-                    activeOpacity={0.85}
-                  >
-                    <Ionicons name="hammer-outline" size={15} color="#fff" />
-                    <Text style={styles.bidBtnText}>Bid Lagaen</Text>
-                  </TouchableOpacity>
+                  <View style={styles.availJobActions}>
+                    {/* Direct Accept — for jobs sent directly to this worker */}
+                    <TouchableOpacity
+                      style={styles.acceptJobBtn}
+                      onPress={async () => {
+                        if (!user?.id) return;
+                        try {
+                          const workerName = displayName;
+                          await workerAcceptJob(job.request_id, user.id, workerName);
+                          router.push({
+                            pathname: '/worker-chat',
+                            params: {
+                              jobRequestId: job.request_id,
+                              customerName: job.customer_name || 'Customer',
+                              service: job.service,
+                            },
+                          });
+                        } catch (e) {
+                          Alert.alert('Error', formatApiError(e));
+                        }
+                      }}
+                      activeOpacity={0.85}
+                    >
+                      <Ionicons name="checkmark-circle-outline" size={15} color="#fff" />
+                      <Text style={styles.acceptJobBtnText}>Accept Karein</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.bidBtn}
+                      onPress={() => {
+                        setBidModalJob(job);
+                        setBidPrice(job.estimated_price > 0 ? String(job.estimated_price) : '');
+                      }}
+                      activeOpacity={0.85}
+                    >
+                      <Ionicons name="hammer-outline" size={15} color={Colors.primary} />
+                      <Text style={styles.bidBtnText}>Bid Lagaen</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
               ))
             )}
@@ -852,6 +925,7 @@ const styles = StyleSheet.create({
   },
   emptyTitle: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: Colors.textPrimary },
   emptyText: { fontSize: FontSize.sm, color: Colors.textMuted, textAlign: 'center' },
+  emptySubText: { fontSize: FontSize.sm, color: Colors.textMuted, textAlign: 'center' },
 
   jobCard: {
     backgroundColor: Colors.surface, borderRadius: Radius.xl,
@@ -890,6 +964,13 @@ const styles = StyleSheet.create({
   tab: {
     flex: 1, paddingVertical: 12, alignItems: 'center',
   },
+  tabInner: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  tabBadge: {
+    backgroundColor: Colors.danger, borderRadius: 10,
+    minWidth: 18, height: 18, paddingHorizontal: 4,
+    justifyContent: 'center', alignItems: 'center',
+  },
+  tabBadgeText: { fontSize: 10, fontWeight: FontWeight.black, color: '#fff' },
   tabActive: {
     borderBottomWidth: 2, borderBottomColor: Colors.primary,
   },
@@ -923,7 +1004,7 @@ const styles = StyleSheet.create({
     fontSize: FontSize.xs, color: Colors.danger, fontWeight: FontWeight.semibold,
   },
   availLocation: {
-    fontSize: FontSize.sm, color: Colors.text, marginBottom: 2,
+    fontSize: FontSize.sm, color: Colors.textSecondary, marginBottom: 2,
   },
   availPrice: {
     fontSize: FontSize.md, color: Colors.success, fontWeight: FontWeight.bold, marginBottom: 4,
@@ -931,13 +1012,21 @@ const styles = StyleSheet.create({
   availBidCount: {
     fontSize: FontSize.xs, color: Colors.textMuted, marginBottom: Spacing.sm,
   },
-  bidBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    gap: 6, backgroundColor: Colors.primary,
+  availJobActions: { flexDirection: 'row', gap: 8, marginTop: 4 },
+  acceptJobBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 6, backgroundColor: Colors.success,
     borderRadius: Radius.md, paddingVertical: 10,
   },
+  acceptJobBtnText: { fontSize: FontSize.sm, color: '#fff', fontWeight: FontWeight.bold },
+  bidBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 6, backgroundColor: Colors.primaryLight,
+    borderRadius: Radius.md, paddingVertical: 10,
+    borderWidth: 1.5, borderColor: Colors.primaryDim,
+  },
   bidBtnText: {
-    fontSize: FontSize.sm, color: '#fff', fontWeight: FontWeight.semibold,
+    fontSize: FontSize.sm, color: Colors.primary, fontWeight: FontWeight.semibold,
   },
   // Bid modal overlay
   bidModal: {
@@ -951,7 +1040,7 @@ const styles = StyleSheet.create({
     padding: Spacing.lg, paddingBottom: 36,
   },
   bidModalTitle: {
-    fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: Colors.text, marginBottom: 4,
+    fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: Colors.textPrimary, marginBottom: 4,
   },
   bidModalSub: {
     fontSize: FontSize.sm, color: Colors.textMuted, marginBottom: Spacing.md,
@@ -962,7 +1051,7 @@ const styles = StyleSheet.create({
   bidInput: {
     borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md,
     paddingHorizontal: 14, paddingVertical: 10,
-    fontSize: FontSize.md, color: Colors.text, backgroundColor: Colors.bg,
+    fontSize: FontSize.md, color: Colors.textPrimary, backgroundColor: Colors.inputBg,
   },
   bidModalBtns: {
     flexDirection: 'row', gap: 10, marginTop: Spacing.lg,
