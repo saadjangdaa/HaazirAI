@@ -116,21 +116,26 @@ const CustomerHomeScreen = () => {
 
   useEffect(() => {
     let mounted = true;
-    let retryTimer: ReturnType<typeof setTimeout>;
+    let attempt = 0;
+    const MAX_ATTEMPTS = 4;
+    const RETRY_MS = [15000, 20000, 25000]; // 15s, 20s, 25s between retries
+
     const check = async () => {
-      const { ok } = await pingApi();
+      const { ok, url } = await pingApi();
+      if (__DEV__) console.log(`[Haazir] ping attempt=${attempt} ok=${ok} url=${url}`);
       if (!mounted) return;
       setApiOk(ok);
-      if (!ok) {
+      if (!ok && attempt < MAX_ATTEMPTS) {
         setApiWakingUp(true);
-        retryTimer = setTimeout(async () => {
-          const { ok: ok2 } = await pingApi();
-          if (mounted) { setApiOk(ok2); setApiWakingUp(false); }
-        }, 20000);
+        const delay = RETRY_MS[attempt] ?? 25000;
+        attempt++;
+        setTimeout(check, delay);
+      } else {
+        setApiWakingUp(false);
       }
     };
     check();
-    return () => { mounted = false; clearTimeout(retryTimer); };
+    return () => { mounted = false; };
   }, []);
 
   useEffect(() => {
