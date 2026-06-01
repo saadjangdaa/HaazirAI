@@ -143,12 +143,23 @@ async def lifespan(app: FastAPI):
         _cron_task = None
         _cron_stop = None
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI(
     title="Haazir Dost API",
     description="Pakistan's agentic home-services orchestrator",
     version="1.0.0",
     lifespan=lifespan,
 )
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 from services.user_validation import (
     is_profile_complete,
     mirror_profile_root_fields,
