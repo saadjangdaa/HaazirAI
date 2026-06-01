@@ -219,18 +219,22 @@ export default function VoiceConversationScreen() {
   useEffect(() => {
     if (!langReady || isResumingRef.current) return;
     let cancelled = false;
+    const startTime = Date.now();
+    const MAX_WAIT_MS = 60000;
+    const RETRY_MS = 5000;
 
-    const tryGreeting = async (attempt: number) => {
+    const tryGreeting = async () => {
       try {
-        const turn = await startConversation(sessionId.current, user?.id || 'user_001', userName, voiceId, language, user?.city || '');
+        const turn = await startConversation(
+          sessionId.current, user?.id || 'user_001', userName, voiceId, language, user?.city || '',
+        );
         if (!cancelled) playAgentTurn(turn);
       } catch {
         if (cancelled) return;
-        if (attempt < 2) {
-          // Silent retry after 4s — keep spinner showing
-          setTimeout(() => { if (!cancelled) tryGreeting(attempt + 1); }, 4000);
+        if (Date.now() - startTime < MAX_WAIT_MS) {
+          // Keep spinner, retry silently
+          setTimeout(tryGreeting, RETRY_MS);
         } else {
-          // All retries exhausted — show Fatima-style fallback
           const name = userName.split(' ')[0] || userName;
           const greeting = name
             ? `Assalam-o-Alaikum ${name}! Main Fatima hun — Haazir AI ki assistant. Aaj kya chahiye?`
@@ -241,7 +245,7 @@ export default function VoiceConversationScreen() {
       }
     };
 
-    tryGreeting(0);
+    tryGreeting();
     return () => { cancelled = true; };
   }, [langReady]);
 
