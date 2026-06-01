@@ -48,7 +48,13 @@ export default function WorkerProfileScreen() {
     setAvailability((prev) => prev.map((v, idx) => (idx === i ? !v : v)));
 
   const doLogout = async () => {
-    try { await signOut(); } finally { router.replace('/login'); }
+    try {
+      await signOut();
+    } catch {}
+    // Small delay so Firebase auth state propagates before navigation
+    setTimeout(() => {
+      try { router.replace('/login' as any); } catch { router.push('/login' as any); }
+    }, 50);
   };
 
   const handleLogout = () => {

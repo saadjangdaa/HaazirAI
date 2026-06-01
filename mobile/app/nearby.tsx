@@ -279,11 +279,13 @@ export default function NearbyScreen() {
           job_request_id: job.job_request_id,
           customer_id: uid,
           customer_name: customerName,
-          worker_id: workerForChat.id,
+          worker_id: workerForChat.id,   // provider_id e.g. "p027"
           worker_name: workerForChat.name,
           service: workerForChat.service,
           location: workerForChat.area,
           city,
+          urgency,
+          estimated_price: workerForChat.priceMin,
         });
       } catch (chatErr) {
         console.warn('[Chat] create failed:', chatErr);

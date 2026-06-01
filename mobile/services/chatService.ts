@@ -29,11 +29,14 @@ export interface ChatDoc {
   job_request_id: string;
   customer_id: string;
   customer_name: string;
-  worker_id: string | null;
+  worker_id: string | null;   // provider_id of the targeted worker (e.g. "p027")
+  worker_uid: string | null;  // Firebase UID of the worker (set after accept)
   worker_name: string;
   service: string;
   location: string;
   city: string;
+  urgency: string;
+  estimated_price: number;
   status: ChatStatus;
   messages: ChatMessage[];
   created_at: string;
@@ -57,15 +60,26 @@ export async function createChat(params: {
   job_request_id: string;
   customer_id: string;
   customer_name: string;
-  worker_id: string;
+  worker_id: string;        // provider_id e.g. "p027"
   worker_name: string;
   service: string;
   location: string;
   city: string;
+  urgency?: string;
+  estimated_price?: number;
 }): Promise<void> {
   const data: ChatDoc = {
-    ...params,
+    job_request_id: params.job_request_id,
+    customer_id: params.customer_id,
+    customer_name: params.customer_name,
     worker_id: params.worker_id || null,
+    worker_uid: null,
+    worker_name: params.worker_name,
+    service: params.service,
+    location: params.location,
+    city: params.city,
+    urgency: params.urgency || 'medium',
+    estimated_price: params.estimated_price || 0,
     status: 'waiting',
     messages: [
       sysMsg(`Request ${params.worker_name} ko bhej di gayi. Unka jawab aa rha hai...`),
@@ -84,7 +98,7 @@ export async function workerAcceptJob(
 ): Promise<void> {
   const ref = doc(db, 'chats', jobRequestId);
   await updateDoc(ref, {
-    worker_id: workerId,
+    worker_uid: workerId,   // actual Firebase UID of the accepting worker
     status: 'accepted',
     updated_at: nowIso(),
     messages: arrayUnion(
