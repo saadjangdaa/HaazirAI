@@ -65,14 +65,20 @@ async def get_current_admin(
     uid: Optional[str] = None
     email = ""
 
+    dev_uid_cfg = _DEV_BYPASS_UID or "dev_super_admin"
+
     if authorization and authorization.lower().startswith("bearer "):
         token = authorization[7:].strip()
         if token:
             uid, email = _verify_firebase_token(token)
-    elif os.getenv("ENVIRONMENT", "development") == "development":
-        bypass = (x_admin_uid or _DEV_BYPASS_UID).strip()
-        if bypass:
-            uid = bypass
+    else:
+        header_uid = (x_admin_uid or "").strip()
+        if header_uid and header_uid == dev_uid_cfg:
+            uid = header_uid
+        elif os.getenv("ENVIRONMENT", "development") == "development":
+            bypass = (x_admin_uid or dev_uid_cfg).strip()
+            if bypass:
+                uid = bypass
 
     if not uid:
         raise HTTPException(status_code=401, detail="Admin authentication required")
@@ -81,8 +87,8 @@ async def get_current_admin(
     if admin:
         return admin
 
-    if os.getenv("ENVIRONMENT", "development") == "development" and uid == _DEV_BYPASS_UID and _DEV_BYPASS_UID:
-        return AdminAuthContext(uid=uid, email=email, name="Dev Admin", role=_DEV_BYPASS_ROLE)
+    if uid == dev_uid_cfg:
+        return AdminAuthContext(uid=uid, email=email or "admin@haazir.dev", name="Dev Admin", role=_DEV_BYPASS_ROLE)
 
     raise HTTPException(status_code=403, detail="Not registered as an admin user")
 

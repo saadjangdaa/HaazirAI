@@ -14,54 +14,33 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _mock_bucket(name: str) -> dict:
-    from services.firebase import MOCK_MODE, _mock_store  # type: ignore[attr-defined]
-
-    if not MOCK_MODE:
-        return {}
-    if name not in _mock_store:
-        _mock_store[name] = {}
-    return _mock_store[name]
-
-
 async def _list_collection(name: str) -> List[Tuple[str, dict]]:
-    from services.firebase import MOCK_MODE, _db  # type: ignore[attr-defined]
+    from services.firebase import _get_db, is_mock_mode, _mock_bucket
 
-    if MOCK_MODE:
+    if is_mock_mode():
         return list(_mock_bucket(name).items())
-    return [(snap.id, snap.to_dict() or {}) for snap in _db.collection(name).stream()]
+    db = _get_db()
+    if db is None:
+        return list(_mock_bucket(name).items())
+    return [(snap.id, snap.to_dict() or {}) for snap in db.collection(name).stream()]
 
 
 async def _get_doc(collection: str, doc_id: str) -> Optional[dict]:
-    from services.firebase import MOCK_MODE, _db  # type: ignore[attr-defined]
+    from services.firebase import _doc_get
 
-    if MOCK_MODE:
-        return _mock_bucket(collection).get(doc_id)
-    snap = _db.collection(collection).document(doc_id).get()
-    return snap.to_dict() if snap.exists else None
+    return _doc_get(collection, doc_id)
 
 
 async def _set_doc(collection: str, doc_id: str, data: dict, merge: bool = True) -> None:
-    from services.firebase import MOCK_MODE, _db  # type: ignore[attr-defined]
+    from services.firebase import _doc_set
 
-    if MOCK_MODE:
-        existing = _mock_bucket(collection).get(doc_id) or {}
-        _mock_bucket(collection)[doc_id] = {**existing, **data} if merge else dict(data)
-        return
-    ref = _db.collection(collection).document(doc_id)
-    if merge:
-        ref.set(data, merge=True)
-    else:
-        ref.set(data)
+    _doc_set(collection, doc_id, data, merge=merge)
 
 
 async def _delete_doc(collection: str, doc_id: str) -> bool:
-    from services.firebase import MOCK_MODE, _db  # type: ignore[attr-defined]
+    from services.firebase import _doc_delete
 
-    if MOCK_MODE:
-        return _mock_bucket(collection).pop(doc_id, None) is not None
-    _db.collection(collection).document(doc_id).delete()
-    return True
+    return _doc_delete(collection, doc_id)
 
 
 # ─── Admin users ─────────────────────────────────────────────────────────────
@@ -199,6 +178,7 @@ def _format_provider_admin(doc_id: str, data: dict) -> dict:
         "documents": docs or _default_documents(data),
         "phone": (data or {}).get("phone", ""),
         "email": (data or {}).get("email", ""),
+        "firebase_uid": (data or {}).get("firebase_uid") or (data or {}).get("user_id") or "",
         "experience_years": (data or {}).get("experience_years", 0),
         "created_at": (data or {}).get("created_at", ""),
         "suspended_until": (data or {}).get("suspended_until"),
@@ -275,23 +255,39 @@ async def _patch_provider(provider_id: str, patch: dict, actor: AdminAuthContext
 
 
 async def approve_provider(provider_id: str, actor: AdminAuthContext, notes: str = "") -> dict:
-    return await _patch_provider(
+    from services.firebase import list_users_by_provider, update_user
+
+    result = await _patch_provider(
         provider_id,
         {"admin_status": "active", "available": True, "approved_at": _now_iso(), "approval_notes": notes},
         actor,
         "APPROVED",
         f'Approved provider "{provider_id}"',
     )
+    for uid in await list_users_by_provider(provider_id):
+        await update_user(uid, {"approval_status": "active"})
+    user = await _get_doc("users", provider_id)
+    if user and user.get("role") == "worker":
+        await update_user(provider_id, {"approval_status": "active", "provider_id": provider_id})
+    return result
 
 
 async def reject_provider(provider_id: str, reason: str, actor: AdminAuthContext) -> dict:
-    return await _patch_provider(
+    from services.firebase import list_users_by_provider, update_user
+
+    result = await _patch_provider(
         provider_id,
         {"admin_status": "rejected", "available": False, "reject_reason": reason},
         actor,
         "REJECTED",
         f'Rejected provider "{provider_id}": {reason}',
     )
+    for uid in await list_users_by_provider(provider_id):
+        await update_user(uid, {"approval_status": "rejected"})
+    user = await _get_doc("users", provider_id)
+    if user and user.get("role") == "worker":
+        await update_user(provider_id, {"approval_status": "rejected"})
+    return result
 
 
 async def suspend_provider(
@@ -652,7 +648,19 @@ async def seed_default_admin_if_empty() -> None:
     rows = await list_admin_users()
     if rows:
         return
+    await ensure_dev_admin_user()
+
+
+async def ensure_dev_admin_user() -> None:
+    """Ensure ADMIN_DEV_UID exists in admin_users (local + Render with header login)."""
+    import os
+
     dev_uid = os.getenv("ADMIN_DEV_UID", "dev_super_admin").strip()
+    if not dev_uid:
+        return
+    existing = await get_admin_user_by_uid(dev_uid)
+    if existing:
+        return
     await _set_doc(
         "admin_users",
         dev_uid,

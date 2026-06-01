@@ -27,6 +27,14 @@ import { requireCurrentUser, waitForAuthUser } from '../services/authSession';
 
 export type UserRole = 'customer' | 'worker';
 
+export type WorkerApprovalStatus =
+  | 'none'
+  | 'pending'
+  | 'active'
+  | 'rejected'
+  | 'suspended'
+  | 'inactive';
+
 /** Worker-specific fields on unified users/{uid} document. */
 export interface WorkerData {
   specializations: string[];
@@ -50,6 +58,8 @@ export interface AuthUser {
   role: UserRole;
   profileComplete: boolean;
   workerOnboarded: boolean;
+  /** Gate worker app until admin approves providers/{uid}. */
+  workerApprovalStatus: WorkerApprovalStatus;
   workerData?: WorkerData;
 }
 
@@ -73,6 +83,8 @@ interface AuthContextType {
   completeWorkerSignup: (data: WorkerData) => Promise<AuthUser>;
   /** Await POST /api/users/sync before booking/request flows — returns fresh server profile. */
   ensureProfileSyncedBeforeRequest: () => Promise<AuthUser>;
+  /** Reload profile from backend (e.g. after admin approval). */
+  refreshProfile: () => Promise<AuthUser | null>;
   signOut: () => Promise<void>;
 }
 
@@ -138,6 +150,25 @@ function isWorkerOnboarded(profile: UserProfile | null, role: UserRole): boolean
   return Array.isArray(skills) && skills.length > 0;
 }
 
+function parseWorkerApprovalStatus(
+  profile: UserProfile | null,
+  role: UserRole
+): WorkerApprovalStatus {
+  if (role !== 'worker') return 'active';
+  const raw = (profile?.approval_status || '').trim().toLowerCase();
+  if (
+    raw === 'active' ||
+    raw === 'pending' ||
+    raw === 'rejected' ||
+    raw === 'suspended' ||
+    raw === 'inactive'
+  ) {
+    return raw as WorkerApprovalStatus;
+  }
+  if (isWorkerOnboarded(profile, role)) return 'pending';
+  return 'none';
+}
+
 function nameToUsername(name: string, uid: string): string {
   const slug = name
     .trim()
@@ -195,6 +226,7 @@ function mapProfileToAuthUser(fbUser: User, profile: UserProfile | null, roleHin
     role,
     profileComplete,
     workerOnboarded: isWorkerOnboarded(profile, role),
+    workerApprovalStatus: parseWorkerApprovalStatus(profile, role),
     workerData,
   };
 }
@@ -470,6 +502,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
   };
 
+  const refreshProfile = useCallback(async (): Promise<AuthUser | null> => {
+    const fbUser = auth.currentUser;
+    if (!fbUser) return null;
+    const mapped = await bootstrapFromFirebase(fbUser, { sync: true });
+    if (mountedRef.current) setUser(mapped);
+    return mapped;
+  }, [bootstrapFromFirebase]);
+
   const ensureProfileSyncedBeforeRequest = useCallback(async (): Promise<AuthUser> => {
     const fbUser = requireCurrentUser();
     const current = user;
@@ -527,6 +567,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         signUp,
         completeWorkerSignup,
         ensureProfileSyncedBeforeRequest,
+        refreshProfile,
         signOut,
       }}
     >

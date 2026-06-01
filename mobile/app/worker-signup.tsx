@@ -78,7 +78,7 @@ export default function WorkerSignupScreen() {
         availability: true,
         rating: 0,
       });
-      router.replace('/(worker)/jobs');
+      router.replace('/worker-pending');
     } catch (e) {
       const msg = formatAuthBootstrapError(e);
       setErrorMsg(msg || 'Registration fail ho gayi — dobara koshish karein');

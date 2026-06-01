@@ -106,7 +106,7 @@ export default function SignupScreen() {
           <View style={styles.workerNotice}>
             <Ionicons name="information-circle-outline" size={14} color={Colors.workerAccent} />
             <Text style={styles.workerNoticeText}>
-              Agle step mein skills aur details bhi bherni hongi
+              Skills bharne ke baad admin approval zaroori hai — approve hone tak app limited rahegi
             </Text>
           </View>
         )}
