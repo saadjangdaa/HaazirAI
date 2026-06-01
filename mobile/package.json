@@ -21,6 +21,7 @@
     "@react-navigation/elements": "^2.9.18",
     "axios": "^1.7.0",
     "expo": "~55.0.26",
+    "expo-asset": "~55.0.17",
     "expo-audio": "~55.0.14",
     "expo-build-properties": "~55.0.14",
     "expo-constants": "~55.0.16",
