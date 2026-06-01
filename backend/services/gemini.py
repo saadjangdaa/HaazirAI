@@ -47,6 +47,20 @@ if not MOCK_MODE:
         MOCK_MODE = True
 
 
+def _should_rotate(error: Exception) -> bool:
+    """Rotate to next key on rate-limits AND access/permission errors."""
+    s = str(error)
+    return (
+        "429" in s
+        or "403" in s
+        or "quota" in s.lower()
+        or "rate" in s.lower()
+        or "denied" in s.lower()
+        or "permission" in s.lower()
+        or "access" in s.lower()
+    )
+
+
 def _is_rate_limit(error: Exception) -> bool:
     s = str(error)
     return "429" in s or "quota" in s.lower() or "rate" in s.lower()
@@ -67,7 +81,7 @@ def _extract_response_text(response) -> str:
 
 
 async def _try_generate(content) -> str:
-    """Try all keys in sequence, rotating on 429. Falls back to mock if all exhausted."""
+    """Try all keys in sequence, rotating on any error. Falls back to mock if all exhausted."""
     global _current_key_idx, MOCK_MODE
 
     tried = 0
@@ -80,17 +94,14 @@ async def _try_generate(content) -> str:
             )
             return _extract_response_text(response)
         except Exception as e:
-            if _is_rate_limit(e):
-                next_idx = _current_key_idx + 1
-                if next_idx < len(_ALL_KEYS):
-                    print(f"[gemini] key #{_current_key_idx + 1} rate-limited → switching to key #{next_idx + 1}")
-                    _init_model(next_idx)
-                    tried += 1
-                else:
-                    print("[gemini] all keys rate-limited — falling back to mock")
-                    return None
+            print(f"[gemini] key #{_current_key_idx + 1} error: {e}")
+            next_idx = _current_key_idx + 1
+            if next_idx < len(_ALL_KEYS):
+                print(f"[gemini] rotating to key #{next_idx + 1} of {len(_ALL_KEYS)}")
+                _init_model(next_idx)
+                tried += 1
             else:
-                print(f"[gemini] API error: {e} — falling back to mock")
+                print(f"[gemini] all {len(_ALL_KEYS)} keys exhausted — falling back to mock")
                 return None
 
     return None
@@ -172,17 +183,14 @@ async def generate_chat(
                     text = response.text  # fallback for older SDK versions
                 return text.strip() or None
             except Exception as e:
-                if _is_rate_limit(e):
-                    next_idx = _current_key_idx + 1
-                    if next_idx < len(_ALL_KEYS):
-                        print(f"[gemini] key #{_current_key_idx + 1} rate-limited → switching to key #{next_idx + 1}")
-                        _init_model(next_idx)
-                        tried += 1
-                    else:
-                        print("[gemini] all keys rate-limited — falling back to mock")
-                        return None
+                print(f"[gemini] key #{_current_key_idx + 1} error: {e}")
+                next_idx = _current_key_idx + 1
+                if next_idx < len(_ALL_KEYS):
+                    print(f"[gemini] rotating to key #{next_idx + 1} of {len(_ALL_KEYS)}")
+                    _init_model(next_idx)
+                    tried += 1
                 else:
-                    print(f"[gemini] API error: {e} — falling back to mock")
+                    print(f"[gemini] all {len(_ALL_KEYS)} keys exhausted — falling back to mock")
                     return None
             tried += 1
         return None
@@ -199,15 +207,20 @@ async def generate_chat(
 def _mock_gemini_response(prompt: str, system_prompt: str = "") -> str:
     sp_lower = system_prompt.lower()
 
-    # Translation call — return input text unchanged so Uplift TTS still gets usable text
-    if (
+    # Translation call — return input text unchanged so Uplift TTS still gets usable text.
+    # Only apply when system_prompt clearly identifies a translation task, NOT a conversation.
+    is_translation = (
         "translator" in sp_lower
-        or "urdu script" in sp_lower
         or "nastaliq" in sp_lower
         or (not system_prompt and "translate" in prompt.lower())
-    ):
-        parts = prompt.strip().split('\n\n')
-        return parts[-1] if parts else prompt
+    )
+    # "urdu script" check only if NOT a conversation agent (avoid false positives)
+    if not is_translation and "urdu script" in sp_lower and "fatima" not in sp_lower and "[search:" not in sp_lower:
+        is_translation = True
+    if is_translation:
+        # Return only plain text — strip any prompt wrapper lines like "Fatima: ..."
+        lines = [l for l in prompt.strip().splitlines() if not l.strip().lower().startswith(("fatima:", "user:"))]
+        return " ".join(lines).strip() or prompt.strip()
 
     if "samajh" in sp_lower or ("extract" in sp_lower and "service" in sp_lower):
         p_lower = prompt.lower()
