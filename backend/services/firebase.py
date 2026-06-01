@@ -185,19 +185,12 @@ class FirebaseService:
         except ImportError:
             cfg_path = ""
 
-        if credentials_path:
-            path = credentials_path
-        elif env_path:
-            path = env_path
-        elif cfg_path:
-            path = cfg_path
-        else:
-            path = "firebase-key.json"
-
-        if not os.path.isabs(path):
-            path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", path))
-
-        self._resolved_credentials_path = path
+        path = self._resolve_valid_credentials_path(
+            credentials_path,
+            env_path,
+            cfg_path,
+        )
+        self._resolved_credentials_path = path or ""
 
         # In-memory mock stores (collection -> doc_id -> dict)
         self._mock_store: Dict[str, Dict[str, Any]] = {
@@ -214,10 +207,11 @@ class FirebaseService:
         # Slot locks for claim_slot_atomic in mock mode: "provider_id/slug" -> booking_id
         self._mock_slot_claims: Dict[str, str] = {}
 
-        if not os.path.isfile(path):
+        if not path or not os.path.isfile(path):
             logger.warning(
-                "❌ Firebase: credentials file not found at %s — using in-memory mock Firestore",
-                path,
+                "❌ Firebase: no valid service account JSON — using in-memory mock Firestore. "
+                "Mobile data is on Render/Firestore; replace backend/firebase-key.json with "
+                "Firebase Console → Project haazir-ai → Service accounts → Generate key.",
             )
             return
 
@@ -235,6 +229,54 @@ class FirebaseService:
             logger.error("❌ Firebase init failed: %s — mock mode enabled", e)
             self._mock = True
             self._db = None
+
+    @staticmethod
+    def _valid_service_account_file(candidate: str) -> Optional[str]:
+        """Return normalized path if JSON looks like a real service account."""
+        import json
+
+        if not candidate or not os.path.isfile(candidate):
+            return None
+        try:
+            with open(candidate, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return None
+        pk = str(data.get("private_key") or "")
+        if not pk or "REPLACE" in pk:
+            return None
+        pid = str(data.get("project_id") or "")
+        if not pid or pid == "your-project-id":
+            return None
+        if not data.get("client_email"):
+            return None
+        return os.path.normpath(candidate)
+
+    def _resolve_valid_credentials_path(
+        self,
+        explicit: Optional[str],
+        env_path: str,
+        cfg_path: str,
+    ) -> Optional[str]:
+        backend_root = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
+        candidates: list[str] = []
+        for raw in (explicit, env_path, cfg_path, os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")):
+            if not raw:
+                continue
+            p = raw if os.path.isabs(raw) else os.path.normpath(os.path.join(backend_root, raw))
+            candidates.append(p)
+        for name in ("firebase-key.json", "firebase-credentials.json"):
+            candidates.append(os.path.join(backend_root, name))
+
+        seen: set[str] = set()
+        for candidate in candidates:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            valid = self._valid_service_account_file(candidate)
+            if valid:
+                return valid
+        return None
 
     @property
     def is_mock(self) -> bool:

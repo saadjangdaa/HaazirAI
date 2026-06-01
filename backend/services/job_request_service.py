@@ -177,6 +177,15 @@ async def notify_all_workers_by_service(job_request: Dict[str, Any]) -> List[str
     for u in users:
         if u.get("role") != "worker":
             continue
+        uid = (u.get("user_id") or u.get("uid") or "").strip()
+        approval = (u.get("approval_status") or "").strip().lower()
+        if approval and approval != "active":
+            continue
+        if not approval and uid:
+            from services.worker_registration import get_worker_approval_status
+
+            if await get_worker_approval_status(uid) != "active":
+                continue
         # City match (loose)
         w_city = (u.get("city") or "").lower().strip()
         if city and w_city and w_city != city:
@@ -186,7 +195,6 @@ async def notify_all_workers_by_service(job_request: Dict[str, Any]) -> List[str
         if not _skill_matches_service(skills, service):
             continue
 
-        uid = (u.get("user_id") or u.get("uid") or "").strip()
         if not uid:
             continue
         push_token = (u.get("push_token") or "").strip()
@@ -230,6 +238,10 @@ async def submit_bid(
     rating: float = 0.0,
 ) -> Dict[str, Any]:
     """Worker submits a bid on a job request."""
+    from services.worker_registration import require_approved_worker
+
+    await require_approved_worker(worker_id)
+
     job = await get_job_request(job_request_id)
     if not job:
         raise ValueError(f"Job request {job_request_id} not found")

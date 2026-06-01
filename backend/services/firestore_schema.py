@@ -23,6 +23,8 @@ ACTIVE_COLLECTIONS = frozenset(
         "notifications",
         "job_requests",
         "bids",
+        "admin_users",
+        "audit_logs",
     }
 )
 

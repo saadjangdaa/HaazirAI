@@ -129,6 +129,12 @@ _cron_task: Optional[asyncio.Task] = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _cron_stop, _cron_task
+    from backend.services.admin_service import ensure_dev_admin_user
+
+    try:
+        await ensure_dev_admin_user()
+    except Exception as exc:
+        logger.warning("Admin user seed skipped: %s", exc)
     if internal_cron_enabled():
         _cron_stop = asyncio.Event()
         _cron_task = asyncio.create_task(notification_cron_loop(_cron_stop))
@@ -159,6 +165,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+from backend.routers.admin_portal import router as admin_portal_router
+
+app.include_router(admin_portal_router)
 
 from services.user_validation import (
     is_profile_complete,
@@ -333,6 +343,13 @@ async def health():
         "instance_id": APP_INSTANCE_ID,
         "firebase": mode,
         "environment": config.ENVIRONMENT,
+        "admin_api": True,
+        "hint": (
+            "Replace backend/firebase-key.json with real Firebase service account (project haazir-ai) "
+            "so admin portal sees the same worker data as the mobile app."
+            if mode == "mock"
+            else None
+        ),
         "features": {
             "dispute_repeat_allowed": True,
             "dispute_two_sided": not dispute_instant_resolve_enabled(),
@@ -347,8 +364,6 @@ async def health():
             "notification_reminder_cron": cron_secret_configured(),
             "notification_cron_internal_loop": internal_cron_enabled(),
         },
-        "firebase": mode,
-        "environment": config.ENVIRONMENT,
     }
 
 
@@ -791,13 +806,23 @@ async def sync_user(body: UserSyncRequest):
 
     payload = mirror_profile_root_fields(payload)
     await sync_user_profile(uid, payload)
+    approval_status = None
     if body.role == "worker":
-        await resolve_worker_provider_id(uid, persist=True)
+        from services.worker_registration import (
+            ensure_worker_provider_application,
+            get_worker_approval_status,
+        )
+
+        doc_after = await get_user(uid)
+        if doc_after and is_profile_complete(doc_after):
+            await ensure_worker_provider_application(uid)
+        approval_status = await get_worker_approval_status(uid)
     doc = await get_user(uid)
     return {
         "success": True,
         "user_id": uid,
         "profile_complete": is_profile_complete(doc),
+        "approval_status": approval_status,
     }
 
 
@@ -810,7 +835,12 @@ async def get_user_profile(user_id: str):
     normalized = mirror_profile_root_fields({**doc})
     if normalized.get("phone") and not (doc.get("phone") or "").strip():
         await sync_user_profile(uid, normalized)
-    return {**normalized, "profile_complete": is_profile_complete(normalized)}
+    out = {**normalized, "profile_complete": is_profile_complete(normalized)}
+    if normalized.get("role") == "worker":
+        from services.worker_registration import get_worker_approval_status
+
+        out["approval_status"] = await get_worker_approval_status(uid)
+    return out
 
 
 @app.get("/api/logs/{request_id}")
