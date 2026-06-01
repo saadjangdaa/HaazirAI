@@ -207,7 +207,11 @@ async def list_providers_admin(
     min_rating: Optional[float] = None,
     search: Optional[str] = None,
 ) -> List[dict]:
-    from services.firebase import list_provider_entries
+    from services.firebase import is_mock_mode, list_provider_entries
+    from services.worker_registration import sync_all_worker_applications
+
+    if not is_mock_mode():
+        await sync_all_worker_applications()
 
     rows = []
     for doc_id, data in await list_provider_entries():

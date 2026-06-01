@@ -1,5 +1,17 @@
 const BASE = import.meta.env.VITE_API_BASE_URL || ''
 
+export interface BackendHealth {
+  firebase?: 'mock' | 'connected'
+  hint?: string | null
+  admin_api?: boolean
+}
+
+export async function fetchBackendHealth(): Promise<BackendHealth> {
+  const res = await fetch(`${BASE}/health`)
+  if (!res.ok) throw new Error('Backend health check failed')
+  return res.json()
+}
+
 export function getAuthHeaders(): Record<string, string> {
   const token = localStorage.getItem('admin_token')
   const devUid = localStorage.getItem('admin_dev_uid') || import.meta.env.VITE_ADMIN_DEV_UID

@@ -152,6 +152,28 @@ async def ensure_worker_provider_application(user_id: str) -> str:
     return pid
 
 
+async def sync_all_worker_applications() -> int:
+    """Backfill providers/{uid} for every complete worker in Firestore (admin portal)."""
+    from services.firebase import _query_all, is_mock_mode
+
+    if is_mock_mode():
+        return 0
+
+    synced = 0
+    for u in _query_all("users"):
+        if u.get("role") != "worker":
+            continue
+        uid = (u.get("user_id") or u.get("uid") or u.get("id") or "").strip()
+        if not uid or not is_profile_complete(u):
+            continue
+        try:
+            await ensure_worker_provider_application(uid)
+            synced += 1
+        except ValueError:
+            continue
+    return synced
+
+
 async def require_approved_worker(user_id: str) -> str:
     """Raise ValueError if worker cannot access worker APIs yet. Returns provider_id."""
     status = await get_worker_approval_status(user_id)

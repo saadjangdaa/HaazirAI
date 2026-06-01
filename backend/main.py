@@ -343,6 +343,13 @@ async def health():
         "instance_id": APP_INSTANCE_ID,
         "firebase": mode,
         "environment": config.ENVIRONMENT,
+        "admin_api": True,
+        "hint": (
+            "Replace backend/firebase-key.json with real Firebase service account (project haazir-ai) "
+            "so admin portal sees the same worker data as the mobile app."
+            if mode == "mock"
+            else None
+        ),
         "features": {
             "dispute_repeat_allowed": True,
             "dispute_two_sided": not dispute_instant_resolve_enabled(),
@@ -357,8 +364,6 @@ async def health():
             "notification_reminder_cron": cron_secret_configured(),
             "notification_cron_internal_loop": internal_cron_enabled(),
         },
-        "firebase": mode,
-        "environment": config.ENVIRONMENT,
     }
 
 

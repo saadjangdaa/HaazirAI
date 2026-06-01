@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { ApiBanner } from '../components/Common/ApiBanner'
+import { fetchBackendHealth } from '../services/api'
 import { fetchDashboard } from '../services/analytics'
 import { formatRs } from '../utils/formatting'
 import { formatDate, timeAgo } from '../utils/dates'
@@ -10,6 +11,17 @@ export function DashboardPage() {
     recent_activity: Array<Record<string, string>>
   } | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [firebaseMode, setFirebaseMode] = useState<string | null>(null)
+  const [firebaseHint, setFirebaseHint] = useState<string | null>(null)
+
+  useEffect(() => {
+    fetchBackendHealth()
+      .then((h) => {
+        setFirebaseMode(h.firebase || null)
+        setFirebaseHint(h.hint || null)
+      })
+      .catch(() => {})
+  }, [])
 
   useEffect(() => {
     fetchDashboard()
@@ -38,6 +50,14 @@ export function DashboardPage() {
   return (
     <>
       <h1 className="page-title">Haazir Dost Admin Dashboard</h1>
+      {firebaseMode === 'mock' && (
+        <ApiBanner
+          message={
+            firebaseHint ||
+            'Backend mock Firestore use kar raha hai — mobile workers yahan nahi dikhenge. backend/firebase-key.json mein asli Firebase service account lagayein aur backend restart karein.'
+          }
+        />
+      )}
       {error && <ApiBanner message={error} />}
       <div className="metrics-grid">
         {cards.map((c) => (

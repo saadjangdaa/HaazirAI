@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiBanner } from '../components/Common/ApiBanner'
+import { fetchBackendHealth } from '../services/api'
 import { Badge } from '../components/Common/Badge'
 import { Modal } from '../components/Common/Modal'
 import { useAuth } from '../hooks/useAuth'
@@ -24,10 +25,17 @@ export function ProvidersPage() {
   const [rows, setRows] = useState<Provider[]>([])
   const [filters, setFilters] = useState({ status: 'pending', city: 'all', service: 'all', search: '' })
   const [error, setError] = useState<string | null>(null)
+  const [firebaseMode, setFirebaseMode] = useState<string | null>(null)
   const [selected, setSelected] = useState<Provider | null>(null)
   const [rejectReason, setRejectReason] = useState('Document fraud')
   const [suspendReason, setSuspendReason] = useState('Poor quality')
   const [suspendDays, setSuspendDays] = useState(7)
+
+  useEffect(() => {
+    fetchBackendHealth()
+      .then((h) => setFirebaseMode(h.firebase || null))
+      .catch(() => {})
+  }, [])
 
   const load = useCallback(() => {
     fetchProviders(filters)
@@ -62,6 +70,9 @@ export function ProvidersPage() {
       <p style={{ color: 'var(--muted)', marginBottom: '0.75rem' }}>
         Naye worker signups yahan <strong>pending</strong> status mein dikhte hain — View → Approve.
       </p>
+      {firebaseMode === 'mock' && (
+        <ApiBanner message="Firebase mock mode — worker signups mobile/Render Firestore mein hain, yahan nahi. backend/firebase-key.json replace karein (project haazir-ai)." />
+      )}
       {error && <ApiBanner message={error} />}
       <div className="filters">
         <select value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}>
