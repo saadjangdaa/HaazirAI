@@ -66,6 +66,7 @@ class ConversationRequest(BaseModel):
     user_text: str
     user_id: str = "user_001"
     user_name: Optional[str] = None
+    user_city: Optional[str] = None   # user's registered city (Karachi, Lahore, etc.)
     providers: Optional[List[dict]] = None
     history: Optional[List[dict]] = None  # [{role: user|assistant, content: str}]
     voice_id: Optional[str] = None  # language-specific Uplift AI voice agent ID

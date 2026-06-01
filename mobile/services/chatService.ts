@@ -6,6 +6,7 @@
 import { db } from './firebase';
 import {
   doc, setDoc, updateDoc, onSnapshot, arrayUnion, getDoc,
+  collection, query, where, limit,
 } from 'firebase/firestore';
 
 export type ChatStatus =
@@ -90,28 +91,63 @@ export async function createChat(params: {
   await setDoc(doc(db, 'chats', params.job_request_id), data);
 }
 
-/** Worker accepts the job — updates status + adds messages */
+/** Worker accepts the job — updates existing chat or creates one for marketplace jobs */
 export async function workerAcceptJob(
   jobRequestId: string,
   workerId: string,
   workerName: string,
+  jobData?: {
+    customer_id?: string;
+    customer_name?: string;
+    service?: string;
+    location?: string;
+    city?: string;
+    urgency?: string;
+    estimated_price?: number;
+  },
 ): Promise<void> {
   const ref = doc(db, 'chats', jobRequestId);
-  await updateDoc(ref, {
-    worker_uid: workerId,   // actual Firebase UID of the accepting worker
-    status: 'accepted',
-    updated_at: nowIso(),
-    messages: arrayUnion(
-      sysMsg(`✅ ${workerName} ne kaam accept kar liya!`),
-      {
-        id: mkId(),
-        sender_role: 'worker',
-        sender_name: workerName,
-        text: 'Assalam o Alaikum! May thodi der mein pahunch raha hon. Apna address ready rakhein.',
-        ts: nowIso(),
-      },
-    ),
-  });
+  const snap = await getDoc(ref);
+  const now = nowIso();
+  const acceptMsgs = [
+    sysMsg(`✅ ${workerName} ne kaam accept kar liya!`),
+    {
+      id: mkId(),
+      sender_role: 'worker' as const,
+      sender_name: workerName,
+      text: 'Assalam o Alaikum! May thodi der mein pahunch raha hon. Apna address ready rakhein.',
+      ts: now,
+    },
+  ];
+
+  if (snap.exists()) {
+    await updateDoc(ref, {
+      worker_uid: workerId,
+      worker_name: workerName,
+      status: 'accepted',
+      updated_at: now,
+      messages: arrayUnion(...acceptMsgs),
+    });
+  } else {
+    // Marketplace job — no chat doc yet, create one
+    await setDoc(ref, {
+      job_request_id: jobRequestId,
+      customer_id: jobData?.customer_id || '',
+      customer_name: jobData?.customer_name || 'Customer',
+      worker_id: null,
+      worker_uid: workerId,
+      worker_name: workerName,
+      service: jobData?.service || 'Service',
+      location: jobData?.location || '',
+      city: jobData?.city || '',
+      urgency: jobData?.urgency || 'medium',
+      estimated_price: jobData?.estimated_price || 0,
+      status: 'accepted',
+      messages: acceptMsgs,
+      created_at: now,
+      updated_at: now,
+    });
+  }
 }
 
 /** Worker updates status (on the way, arrived, etc.) */
@@ -179,6 +215,7 @@ export async function saveJobRequestToFirestore(params: {
   description: string;
   estimated_price: number;
   expires_at: string;
+  notified_provider_ids?: string[];
 }): Promise<void> {
   const now = nowIso();
   await setDoc(doc(db, 'job_requests', params.job_request_id), {
@@ -195,6 +232,57 @@ export async function saveJobRequestToFirestore(params: {
     bid_count: 0,
     created_at: now,
     expires_at: params.expires_at || new Date(Date.now() + 20 * 60 * 1000).toISOString(),
-    notified_provider_ids: [],
+    notified_provider_ids: params.notified_provider_ids || [],
+  });
+}
+
+// ── Voice session persistence ─────────────────────────────────────────────────
+
+export interface VoiceSessionSummary {
+  session_id: string;
+  user_id: string;
+  title: string;
+  last_message: string;
+  phase: string;
+  service_type?: string;
+  status: 'active' | 'completed';
+  created_at: string;
+  updated_at: string;
+}
+
+export interface VoiceSessionDoc extends VoiceSessionSummary {
+  history: Array<{ role: 'user' | 'assistant'; content: string }>;
+}
+
+export async function saveVoiceSession(params: VoiceSessionDoc): Promise<void> {
+  const ref = doc(db, 'voice_sessions', params.session_id);
+  const snap = await getDoc(ref);
+  const now = nowIso();
+  if (snap.exists()) {
+    await updateDoc(ref, { ...params, updated_at: now });
+  } else {
+    await setDoc(ref, { ...params, created_at: now, updated_at: now });
+  }
+}
+
+export async function getVoiceSession(sessionId: string): Promise<VoiceSessionDoc | null> {
+  const snap = await getDoc(doc(db, 'voice_sessions', sessionId));
+  return snap.exists() ? (snap.data() as VoiceSessionDoc) : null;
+}
+
+export function subscribeToUserVoiceSessions(
+  userId: string,
+  callback: (sessions: VoiceSessionSummary[]) => void,
+): () => void {
+  const q = query(
+    collection(db, 'voice_sessions'),
+    where('user_id', '==', userId),
+    limit(30),
+  );
+  return onSnapshot(q, (snap) => {
+    const sessions = snap.docs
+      .map((d) => d.data() as VoiceSessionSummary)
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+    callback(sessions);
   });
 }
