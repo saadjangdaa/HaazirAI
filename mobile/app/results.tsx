@@ -450,7 +450,7 @@ const styles = StyleSheet.create({
     padding: Spacing.md, marginBottom: Spacing.md, ...Shadow.card,
   },
   realBidsHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: Spacing.sm },
-  realBidsTitle: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: Colors.text, flex: 1 },
+  realBidsTitle: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: Colors.textPrimary, flex: 1 },
   realBidsWaiting: { fontSize: FontSize.sm, color: Colors.textMuted, textAlign: 'center', paddingVertical: 16 },
   realBidCard: {
     borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md,
@@ -463,7 +463,7 @@ const styles = StyleSheet.create({
   },
   recommendedText: { fontSize: FontSize.xs, color: Colors.primary, fontWeight: FontWeight.semibold },
   realBidRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4 },
-  realBidName: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.text },
+  realBidName: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.textPrimary },
   realBidRating: { fontSize: FontSize.xs, color: Colors.textMuted },
   realBidPrice: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: Colors.success },
   realBidEta: { fontSize: FontSize.xs, color: Colors.textMuted },

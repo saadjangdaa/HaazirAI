@@ -10,6 +10,7 @@ import { Colors, FontSize, FontWeight, Radius, Shadow, Spacing } from '../consta
 import { useAuth } from '../context/AuthContext';
 import { useMockData } from '../context/MockDataContext';
 import { createJobRequest, formatApiError, requireUserId, getAllProviders, Provider } from '../services/api';
+import { createChat, saveJobRequestToFirestore } from '../services/chatService';
 import { MOCK_NEARBY_WORKERS, NearbyWorker } from '../data/mockData';
 
 // Map backend Provider → NearbyWorker shape used by WorkerCard
@@ -35,6 +36,23 @@ function toNearbyWorker(p: Provider): NearbyWorker {
 const SERVICES = ['All', 'AC Repair', 'Plumber', 'Electrician', 'Tutor', 'Carpenter', 'Beautician'];
 const SORTS = ['Distance', 'Rating', 'Price'] as const;
 type SortKey = typeof SORTS[number];
+
+// Backend providers use "AC technician", "Plumber", etc. — map chip labels to keywords
+const SERVICE_KEYWORDS: Record<string, string[]> = {
+  'AC Repair':    ['ac', 'air condition', 'aircondition', 'hvac', 'cooling'],
+  'Plumber':      ['plumb', 'pipe', 'water', 'drainage', 'sanitary'],
+  'Electrician':  ['electric', 'wiring', 'power', 'fault'],
+  'Tutor':        ['tutor', 'teach', 'math', 'physics', 'education', 'academy'],
+  'Carpenter':    ['carpent', 'wood', 'furniture', 'cabinet'],
+  'Beautician':   ['beauty', 'salon', 'hair', 'makeup', 'mehndi'],
+};
+
+function serviceMatches(workerService: string, chip: string): boolean {
+  const s = workerService.toLowerCase();
+  const keywords = SERVICE_KEYWORDS[chip];
+  if (keywords) return keywords.some((kw) => s.includes(kw));
+  return s.includes(chip.toLowerCase()) || chip.toLowerCase().includes(s);
+}
 
 const SERVICE_ICONS: Record<string, any> = {
   'All': 'apps-outline',
@@ -132,6 +150,8 @@ export default function NearbyScreen() {
   const [sortBy, setSortBy] = useState<SortKey>('Distance');
   const [availableOnly, setAvailableOnly] = useState(false);
 
+  const city = user?.city || 'Karachi';
+
   // Real providers from backend
   const [realWorkers, setRealWorkers] = useState<NearbyWorker[]>([]);
   const [loadingWorkers, setLoadingWorkers] = useState(false);
@@ -165,15 +185,10 @@ export default function NearbyScreen() {
   const [urgency, setUrgency] = useState<'medium' | 'high'>('medium');
   const [submitting, setSubmitting] = useState(false);
 
-  const city = user?.city || 'Karachi';
-
   const filtered = useMemo(() => {
     let list = [...allWorkers];
     if (selectedService !== 'All') {
-      list = list.filter((w) =>
-        w.service.toLowerCase().includes(selectedService.toLowerCase()) ||
-        selectedService.toLowerCase().includes(w.service.toLowerCase())
-      );
+      list = list.filter((w) => serviceMatches(w.service, selectedService));
     }
     if (availableOnly) list = list.filter((w) => w.available);
     if (search.trim()) {
@@ -217,46 +232,73 @@ export default function NearbyScreen() {
   const handleSendJobRequest = async () => {
     if (!modalWorker || !user?.id) return;
     setSubmitting(true);
+    const workerForChat = modalWorker;
     try {
       const uid = requireUserId(user);
       const job = await createJobRequest({
         user_id: uid,
-        service: modalWorker.service,
-        location: modalWorker.area,
+        service: workerForChat.service,
+        location: workerForChat.area,
         city,
         urgency,
         description,
-        estimated_price: modalWorker.priceMin,
-        // Pass this worker as the only provider so only they get notified
+        estimated_price: workerForChat.priceMin,
         providers: [{
-          id: modalWorker.id,
-          name: modalWorker.name,
-          service: modalWorker.service,
-          area: modalWorker.area,
+          id: workerForChat.id,
+          name: workerForChat.name,
+          service: workerForChat.service,
+          area: workerForChat.area,
           city,
-          rating: modalWorker.rating,
+          rating: workerForChat.rating,
         }],
       });
+
+      const customerName = user.username?.split('_')[0] || 'Customer';
+
+      // Write job_request to Firestore directly (backend may be in mock mode)
+      try {
+        await saveJobRequestToFirestore({
+          job_request_id: job.job_request_id,
+          customer_id: uid,
+          customer_name: customerName,
+          service: workerForChat.service,
+          location: workerForChat.area,
+          city,
+          urgency,
+          description,
+          estimated_price: workerForChat.priceMin,
+          expires_at: job.expires_at,
+        });
+      } catch (e) {
+        console.warn('[JobRequest] Firestore write failed:', e);
+      }
+
+      // Create Firestore chat doc for real-time tracking
+      try {
+        await createChat({
+          job_request_id: job.job_request_id,
+          customer_id: uid,
+          customer_name: customerName,
+          worker_id: workerForChat.id,
+          worker_name: workerForChat.name,
+          service: workerForChat.service,
+          location: workerForChat.area,
+          city,
+        });
+      } catch (chatErr) {
+        console.warn('[Chat] create failed:', chatErr);
+      }
+
       setModalWorker(null);
-      Alert.alert(
-        '✅ Job Request Bhej Di!',
-        `${modalWorker.name} ko notify kar diya gaya.\nWoh accept karein ge toh aapko push notification aayega.`,
-        [{
-          text: 'Bids Dekhein',
-          onPress: () => router.push({
-            pathname: '/results',
-            params: {
-              data: JSON.stringify({
-                request_id: job.job_request_id,
-                extracted_intent: { service_type: modalWorker.service, location: modalWorker.area, city, urgency },
-                providers_ranked: [],
-                agent_logs: [],
-              }),
-              jobRequestId: job.job_request_id,
-            },
-          }),
-        }],
-      );
+      // Navigate to chat screen instead of Alert
+      router.push({
+        pathname: '/job-chat',
+        params: {
+          jobRequestId: job.job_request_id,
+          workerName: workerForChat.name,
+          service: workerForChat.service,
+        },
+      });
     } catch (e) {
       Alert.alert('Error', formatApiError(e));
     } finally {
