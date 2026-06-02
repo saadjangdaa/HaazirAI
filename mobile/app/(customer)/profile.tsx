@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, Modal, Switch, Platform } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, Modal, Switch, Platform, StatusBar, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -8,9 +8,11 @@ import { Colors, Spacing, Radius, FontSize, Shadow } from '../../constants/theme
 import { useAuth } from '../../context/AuthContext';
 import { useLang, LANGUAGE_LABELS } from '../../context/LanguageContext';
 import { useMockData } from '../../context/MockDataContext';
-import { getUserBookings, requireUserId } from '../../services/api';
+import { getUserBookings, requireUserId, syncUserProfile } from '../../services/api';
 import { MOCK_CUSTOMER_STATS } from '../../data/mockData';
 import type { Language } from '../../constants/translations';
+
+const CITIES = ['Karachi', 'Lahore', 'Islamabad'] as const;
 
 const ALL_LANGS = Object.entries(LANGUAGE_LABELS) as [Language, string][];
 
@@ -59,9 +61,28 @@ export default function CustomerProfileScreen() {
   }, [user?.id, isMockMode]);
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [selectedCity, setSelectedCity] = useState(user?.city || '');
+  const [savingCity, setSavingCity] = useState(false);
+
+  const handleCitySelect = async (city: string) => {
+    if (isMockMode) { setSelectedCity(city); return; }
+    if (!user?.id) return;
+    setSelectedCity(city);
+    setSavingCity(true);
+    try {
+      await syncUserProfile({ user_id: user.id, email: user.email, role: user.role, city });
+    } catch {
+      // silently ignore — city is set optimistically in state
+    } finally {
+      setSavingCity(false);
+    }
+  };
 
   const doLogout = async () => {
-    try { await signOut(); } finally { router.replace('/login'); }
+    try { await signOut(); } catch {}
+    setTimeout(() => {
+      try { router.replace('/login' as any); } catch { router.push('/login' as any); }
+    }, 50);
   };
 
   const handleLogout = () => {
@@ -77,6 +98,7 @@ export default function CustomerProfileScreen() {
 
   return (
     <View style={styles.rootWrap}>
+      <StatusBar barStyle="dark-content" backgroundColor={Colors.surface} />
       {/* ── Header ── */}
       <View style={[styles.header, { paddingTop: insets.top + 6 }]}>
         <TouchableOpacity style={styles.menuBtn} onPress={() => setSidebarOpen(true)}>
@@ -192,6 +214,34 @@ export default function CustomerProfileScreen() {
         <Text style={styles.aiText}>
           Pakistan's first agentic home services platform. 9 AI agents milkar aapka best provider chunte hain — bilkul fikr mat karo!
         </Text>
+      </View>
+
+      {/* City Picker */}
+      <View style={[styles.cityCard, Shadow.card]}>
+        <View style={styles.cityHeader}>
+          <Ionicons name="location-outline" size={16} color={Colors.primary} />
+          <Text style={styles.cityTitle}>Apna Shehar</Text>
+          {savingCity && <ActivityIndicator size="small" color={Colors.primary} style={{ marginLeft: 'auto' }} />}
+          {!savingCity && selectedCity ? (
+            <View style={styles.citySavedBadge}>
+              <Ionicons name="checkmark-circle" size={12} color={Colors.success} />
+              <Text style={styles.citySavedText}>Saved</Text>
+            </View>
+          ) : null}
+        </View>
+        <View style={styles.cityChips}>
+          {CITIES.map((c) => (
+            <TouchableOpacity
+              key={c}
+              style={[styles.cityChip, selectedCity === c && styles.cityChipActive]}
+              onPress={() => handleCitySelect(c)}
+              activeOpacity={0.75}
+            >
+              <Text style={[styles.cityChipText, selectedCity === c && styles.cityChipTextActive]}>{c}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+        <Text style={styles.cityHint}>Is shehar ke workers aapko seedha milenge</Text>
       </View>
 
       {/* Language Picker */}
@@ -316,4 +366,16 @@ const styles = StyleSheet.create({
   langOptionText: { fontSize: FontSize.md, color: Colors.textPrimary, fontWeight: '600' },
   langOptionTextActive: { color: Colors.primary, fontWeight: '800' },
   langCheck: { color: Colors.primary, fontSize: FontSize.lg, fontWeight: '800' },
+
+  cityCard: { backgroundColor: Colors.surface, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.border, padding: Spacing.md, marginBottom: Spacing.md },
+  cityHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: Spacing.sm },
+  cityTitle: { fontSize: FontSize.md, fontWeight: '700', color: Colors.textPrimary },
+  citySavedBadge: { flexDirection: 'row', alignItems: 'center', gap: 3, marginLeft: 'auto', backgroundColor: Colors.successDim, borderRadius: Radius.full, paddingHorizontal: 7, paddingVertical: 3 },
+  citySavedText: { fontSize: FontSize.xs, color: Colors.success, fontWeight: '700' },
+  cityChips: { flexDirection: 'row', gap: Spacing.sm, marginBottom: Spacing.sm },
+  cityChip: { flex: 1, paddingVertical: 10, borderRadius: Radius.md, borderWidth: 1.5, borderColor: Colors.border, alignItems: 'center', backgroundColor: Colors.inputBg },
+  cityChipActive: { borderColor: Colors.primary, backgroundColor: Colors.primaryDim },
+  cityChipText: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.textMuted },
+  cityChipTextActive: { color: Colors.primary, fontWeight: '800' },
+  cityHint: { fontSize: FontSize.xs, color: Colors.textMuted },
 });

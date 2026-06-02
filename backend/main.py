@@ -4,6 +4,7 @@ Haazir AI — route registration entry for uvicorn.
 Run from repo root ONLY:
   python -m uvicorn backend.main:app --host 0.0.0.0 --port 8080
 """
+import asyncio
 import json
 import os
 import sys
@@ -27,7 +28,7 @@ for _path in (_REPO_ROOT, _BACKEND_DIR):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from fastapi import HTTPException
+from fastapi import Depends, HTTPException
 from fastapi.responses import JSONResponse
 
 from backend.app import APP_INSTANCE_ID, app
@@ -53,7 +54,11 @@ from models.request import (
     ConvDirectBookRequest,
     UserSyncRequest,
     BookingStatusUpdate,
+    JobRequestCreate,
+    WorkerBidCreate,
+    AcceptBidRequest,
 )
+from models.investigation import ComplaintCreateBody, WorkerDefenseBody
 from agents.orchestrator import run_full_orchestration
 from agents.hisaab import HisaabAgent
 from agents.moltol import MoltolAgent
@@ -92,6 +97,7 @@ from services.firebase import (
     cleanup_bookings_with_invalid_user_id,
     verify_providers_integrity,
     get_provider,
+    get_job_request,
 )
 from services.users_integrity import normalize_role
 from services.worker_service import get_worker_bookings, resolve_worker_provider_id, summarize_worker_earnings
@@ -103,15 +109,54 @@ from services.dispute_service import (
     list_worker_disputes,
     respond_to_dispute,
 )
+from services.investigation_service import (
+    create_complaint_record,
+    maybe_open_investigation_for_provider,
+    submit_worker_defense,
+    verify_and_update_complaint,
+)
 from services.dispute_eligibility import NO_SHOW_GRACE_HOURS, assess_dispute_eligibility
 from services.push_notify import (
     notify_booking_created,
     notify_feedback_received,
     process_pending_notifications,
 )
+from services.notification_cron import (
+    cron_secret_configured,
+    internal_cron_enabled,
+    notification_cron_loop,
+    require_cron_secret,
+    run_notification_cron,
+)
+
+_cron_stop: Optional[asyncio.Event] = None
+_cron_task: Optional[asyncio.Task] = None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _cron_stop, _cron_task
+    from backend.services.admin_service import ensure_dev_admin_user
+
+    try:
+        await ensure_dev_admin_user()
+    except Exception as exc:
+        logger.warning("Admin user seed skipped: %s", exc)
+    if internal_cron_enabled():
+        _cron_stop = asyncio.Event()
+        _cron_task = asyncio.create_task(notification_cron_loop(_cron_stop))
     yield
+    if _cron_stop is not None:
+        _cron_stop.set()
+    if _cron_task is not None:
+        try:
+            await _cron_task
+        except asyncio.CancelledError:
+            pass
+        _cron_task = None
+        _cron_stop = None
+
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(
     title="Haazir Dost API",
@@ -119,6 +164,19 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+from backend.routers.admin_portal import router as admin_portal_router
+
+app.include_router(admin_portal_router)
+
 from services.user_validation import (
     is_profile_complete,
     mirror_profile_root_fields,
@@ -204,6 +262,41 @@ def _fallback_ranked_providers(intent: dict, limit: int = 8) -> list:
         p.setdefault("ranking_score", 1.0 - i * 0.05)
         p.setdefault("ranking_reason_urdu", "Aapki request ke liye qareeb technician")
     return ranked
+
+
+_KNOWN_CITIES = {"karachi", "lahore", "islamabad", "rawalpindi", "faisalabad", "peshawar", "quetta", "multan"}
+
+_AREA_CITY_MAP: dict[str, str] = {
+    "clifton": "Karachi", "defence": "Karachi", "dha khi": "Karachi",
+    "gulshan": "Karachi", "gulshan-e-iqbal": "Karachi", "gulshan iqbal": "Karachi",
+    "nazimabad": "Karachi", "korangi": "Karachi", "malir": "Karachi",
+    "saddar": "Karachi", "north karachi": "Karachi", "surjani": "Karachi",
+    "lyari": "Karachi", "orangi": "Karachi", "federal b": "Karachi",
+    "gulberg": "Lahore", "johar town": "Lahore", "model town": "Lahore",
+    "dha lahore": "Lahore", "bahria town": "Lahore", "cantt": "Lahore",
+    "g-13": "Islamabad", "g-11": "Islamabad", "g-10": "Islamabad",
+    "f-7": "Islamabad", "f-6": "Islamabad", "f-10": "Islamabad",
+    "i-8": "Islamabad", "i-10": "Islamabad", "e-7": "Islamabad",
+}
+
+
+def _resolve_city(location: str, user_city: str = "") -> str:
+    """Map a location string (area/neighbourhood/city) to a canonical city name."""
+    loc_lower = (location or "").lower().strip()
+    if not loc_lower:
+        return user_city or "Islamabad"
+    # Already a known city
+    if loc_lower in _KNOWN_CITIES:
+        return location.title()
+    # Check area→city map
+    for area, city in _AREA_CITY_MAP.items():
+        if area in loc_lower:
+            return city
+    # "DHA" alone is ambiguous — use user_city
+    if "dha" in loc_lower:
+        return user_city or "Karachi"
+    # Unknown area — fall back to user's registered city
+    return user_city or "Islamabad"
 
 
 def _filter_providers_by_service(providers: list, intent: dict) -> list:
@@ -292,6 +385,13 @@ async def health():
         "instance_id": APP_INSTANCE_ID,
         "firebase": mode,
         "environment": config.ENVIRONMENT,
+        "admin_api": True,
+        "hint": (
+            "Replace backend/firebase-key.json with real Firebase service account (project haazir-ai) "
+            "so admin portal sees the same worker data as the mobile app."
+            if mode == "mock"
+            else None
+        ),
         "features": {
             "dispute_repeat_allowed": True,
             "dispute_two_sided": not dispute_instant_resolve_enabled(),
@@ -303,9 +403,9 @@ async def health():
             "agent_logs_on_request": True,
             "fcm_pipeline": True,
             "notification_dedupe_seconds": 90,
+            "notification_reminder_cron": cron_secret_configured(),
+            "notification_cron_internal_loop": internal_cron_enabled(),
         },
-        "firebase": mode,
-        "environment": config.ENVIRONMENT,
     }
 
 
@@ -484,6 +584,32 @@ async def trigger_bidding(body: BidRequest):
     return await run_bidding(body.request_id, providers, intent)
 
 
+async def _after_pakka_booking(
+    booking_id: str,
+    user_id: str,
+    pakka_result: dict,
+) -> dict:
+    """
+    EVENT 1: notify customer + worker at creation (assigned).
+    Schedule reminders, then confirm (EVENT 2 confirmed push).
+    """
+    reminder_times = pakka_result.get("reminder_times") or []
+    if reminder_times:
+        await schedule_booking_reminders(
+            booking_id,
+            user_id,
+            reminder_times,
+            "Haazir AI reminder: booking {booking_id} is coming up soon.",
+        )
+    booking = await get_booking(booking_id)
+    if booking:
+        try:
+            await notify_booking_created(booking)
+        except Exception as e:
+            logger.warning("[Push] notify_booking_created failed: %s", e)
+    return await set_booking_status(booking_id, "confirmed")
+
+
 @app.post("/api/book")
 async def confirm_booking(body: BookingRequest):
     """PAKKA agent confirms a specific booking."""
@@ -514,12 +640,7 @@ async def confirm_booking(body: BookingRequest):
     booking_id = result["booking_id"]
 
     await append_user_booking(uid, booking_id)
-    if result.get("reminder_times"):
-        await schedule_booking_reminders(
-            booking_id, uid, result["reminder_times"],
-            "Haazir AI reminder: booking {booking_id} is coming up soon.",
-        )
-    updated = await set_booking_status(booking_id, "confirmed")
+    updated = await _after_pakka_booking(booking_id, uid, result)
     return {
         "booking_id": booking_id,
         "receipt": result["receipt"],
@@ -588,6 +709,50 @@ async def finalize_dispute_route(dispute_id: str, body: DisputeFinalizeRequest):
     """Phase E — JHAGRA final resolution after HIFAZAT review (under_review)."""
     uid = _require_firebase_uid(body.user_id)
     return await finalize_dispute(user_id=uid, dispute_id=dispute_id)
+
+
+@app.post("/api/complaints")
+async def file_complaint(body: ComplaintCreateBody):
+    uid = _require_firebase_uid(body.user_id)
+    if uid != body.user_id:
+        body.user_id = uid
+    return await create_complaint_record(
+        booking_id=body.booking_id,
+        user_id=uid,
+        provider_id=body.provider_id,
+        customer_statement=body.customer_statement,
+        severity=body.severity,
+        evidence_url=body.evidence_url,
+    )
+
+
+@app.patch("/api/complaints/{complaint_id}/verify")
+async def verify_complaint_route(complaint_id: str, verified: bool = True):
+    return await verify_and_update_complaint(complaint_id, verified)
+
+
+@app.post("/api/investigations/{investigation_id}/defense")
+async def submit_worker_defense_route(investigation_id: str, body: WorkerDefenseBody):
+    worker_uid = _require_firebase_uid(body.worker_uid)
+    return await submit_worker_defense(
+        investigation_id=investigation_id,
+        worker_uid=worker_uid,
+        statement=body.statement,
+    )
+
+
+@app.post("/api/providers/{provider_id}/pakka/late-arrival")
+async def pakka_late_arrival(provider_id: str, minutes_late: int):
+    if minutes_late <= 20:
+        return {"ok": True, "provider_id": provider_id, "minutes_late": minutes_late, "triggered": False}
+    opened = await maybe_open_investigation_for_provider(provider_id, trigger="pakka_late_arrival")
+    return {
+        "ok": True,
+        "provider_id": provider_id,
+        "minutes_late": minutes_late,
+        "triggered": bool(opened),
+        "investigation": opened,
+    }
 
 
 @app.get("/api/booking/{booking_id}")
@@ -727,13 +892,23 @@ async def sync_user(body: UserSyncRequest):
 
     payload = mirror_profile_root_fields(payload)
     await sync_user_profile(uid, payload)
+    approval_status = None
     if body.role == "worker":
-        await resolve_worker_provider_id(uid, persist=True)
+        from services.worker_registration import (
+            ensure_worker_provider_application,
+            get_worker_approval_status,
+        )
+
+        doc_after = await get_user(uid)
+        if doc_after and is_profile_complete(doc_after):
+            await ensure_worker_provider_application(uid)
+        approval_status = await get_worker_approval_status(uid)
     doc = await get_user(uid)
     return {
         "success": True,
         "user_id": uid,
         "profile_complete": is_profile_complete(doc),
+        "approval_status": approval_status,
     }
 
 
@@ -746,7 +921,12 @@ async def get_user_profile(user_id: str):
     normalized = mirror_profile_root_fields({**doc})
     if normalized.get("phone") and not (doc.get("phone") or "").strip():
         await sync_user_profile(uid, normalized)
-    return {**normalized, "profile_complete": is_profile_complete(normalized)}
+    out = {**normalized, "profile_complete": is_profile_complete(normalized)}
+    if normalized.get("role") == "worker":
+        from services.worker_registration import get_worker_approval_status
+
+        out["approval_status"] = await get_worker_approval_status(uid)
+    return out
 
 
 @app.get("/api/logs/{request_id}")
@@ -835,167 +1015,103 @@ async def conversation(body: ConversationRequest):
     from services.uplift_tts import text_to_speech
     from services.whatsapp import send_booking_whatsapp
 
-    result = await run_conversation(
-        session_id=body.session_id,
-        user_message=body.user_text,
-        providers=body.providers,
-        user_name=body.user_name,
-        history=body.history,
-        language=body.language or 'roman_urdu',
-    )
+    try:
+        result = await run_conversation(
+            session_id=body.session_id,
+            user_message=body.user_text,
+            providers=body.providers,
+            user_name=body.user_name,
+            history=body.history,
+            language=body.language or 'roman_urdu',
+            user_city=body.user_city or '',
+        )
 
-    if result.get("search_trigger"):
-        trigger = result["search_trigger"]
-        service = _normalize_service(trigger.get("service", "service"))
-        location = trigger.get("location", "Islamabad")
-        urgency = trigger.get("urgency", "medium")
+        if result.get("search_trigger"):
+            trigger = result["search_trigger"]
+            service = _normalize_service(trigger.get("service", "service"))
+            raw_location = trigger.get("location") or body.user_city or "Islamabad"
+            # Map neighbourhood/area to canonical city (e.g. "Clifton" → "Karachi")
+            city = _resolve_city(raw_location, body.user_city or "")
+            location = city  # use resolved city for provider search
+            urgency = trigger.get("urgency", "medium")
 
-        orch: dict = {}
-        try:
-            orch = await run_samajh_workflow(
-                user_input=f"Mujhe {service} chahiye, location: {location}, urgency: {urgency}",
-                source="text",
-                user_location=location,
-            )
-        except Exception as _se:
-            logger.warning("[conversation] run_samajh_workflow failed: %s", _se)
+            orch: dict = {}
+            try:
+                orch = await asyncio.wait_for(
+                    run_samajh_workflow(
+                        user_input=f"Mujhe {service} chahiye, location: {city}, urgency: {urgency}",
+                        source="text",
+                        user_location=city,
+                    ),
+                    timeout=15.0,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("[conversation] run_samajh_workflow timed out — using fallback providers")
+            except Exception as _se:
+                logger.warning("[conversation] run_samajh_workflow failed: %s", _se)
 
-        providers = list((orch.get("providers_ranked") or []))[:3]
-        if not providers:
-            # Use service-filtered fallback — never inject unrelated categories
-            fallback_intent = orch.get("intent") or {
-                "service_type": service,
-                "city": location,
-            }
-            providers = _fallback_ranked_providers(fallback_intent, limit=3)
+            providers = list((orch.get("providers_ranked") or []))[:3]
+            if not providers:
+                fallback_intent = orch.get("intent") or {"service_type": service, "city": location}
+                providers = _fallback_ranked_providers(fallback_intent, limit=3)
 
-        # Safeguard: strip any cross-category providers before sending to frontend
-        search_intent = orch.get("intent") or {"service_type": service, "city": location}
-        providers = _filter_providers_by_service(providers, search_intent)
+            search_intent = orch.get("intent") or {"service_type": service, "city": location}
+            providers = _filter_providers_by_service(providers, search_intent)
 
-        # Cache for book_trigger + negotiate endpoint
-        _session_search_cache[body.session_id] = {
-            "service": service,
-            "location": location,
-            "urgency": urgency,
-            "providers": providers,
-            "intent": orch.get("intent") or {
-                "service_type": service,
+            _session_search_cache[body.session_id] = {
+                "service": service,
                 "location": location,
                 "urgency": urgency,
-                "job_complexity": "intermediate",
-            },
-        }
-
-        follow_up = await run_conversation(
-            session_id=body.session_id,
-            user_message="[system: search complete]",
-            providers=providers,
-            user_name=body.user_name,
-            history=None,  # session already exists at this point
-        )
-        result["response_text"] = follow_up["response_text"]
-        result["providers"] = providers
-        result["request_id"] = new_request_id()
-
-        # If follow_up AI prematurely generated [BOOK:] (before user picked provider),
-        # ignore it and keep phase at "confirming" so user sees the provider list.
-        if follow_up.get("book_trigger"):
-            logger.warning("[conversation] follow_up book_trigger ignored — search results just arrived, user hasn't picked a provider yet")
-            result["phase"] = "confirming"
-        else:
-            result["phase"] = follow_up["phase"]
-
-    # Safety: if both search and book triggered in the same response, ignore book.
-    # [BOOK: ...] can only fire AFTER [RESULTS: ...] shown in a separate turn.
-    if result.get("search_trigger") and result.get("book_trigger"):
-        logger.warning("[conversation] book_trigger ignored — appeared with search_trigger in same turn (premature booking prevented)")
-        result["book_trigger"] = None
-
-    if result.get("book_trigger"):
-        trigger = result["book_trigger"]
-        provider_id = trigger.get("provider_id", "")
-        payment_method = trigger.get("payment", "cash")
-        uid = body.user_id or "anonymous"
-
-        # Resolve provider — session cache first, then Firestore, then JSON fallback
-        cached = _session_search_cache.get(body.session_id, {})
-        cached_providers = cached.get("providers") or []
-        provider = next((p for p in cached_providers if str(p.get("id")) == str(provider_id)), None)
-        if not provider:
-            provider = await get_provider(provider_id)
-        if not provider:
-            all_json = _load_providers()
-            provider = next((p for p in all_json if p.get("id") == provider_id), None)
-        if not provider:
-            provider = (cached_providers or _load_providers())[0]
-
-        if is_mock_mode():
-            # Mock booking — Firebase not connected
-            booking_id = f"HAZ-{uuid.uuid4().hex[:8].upper()}"
-            result["booking_result"] = {
-                "booking_id": booking_id,
-                "provider": provider,
-                "receipt": {
-                    "service": provider.get("service", "Service"),
-                    "location": f"{provider.get('area', '')}, {provider.get('city', 'Islamabad')}",
-                    "scheduled_time": "Tomorrow 10:00 AM",
-                    "estimated_price": f"Rs. {provider.get('price_per_hour', provider.get('base_rate', 2500)):,}",
-                    "payment_methods": [payment_method.title()],
-                    "status": "confirmed",
+                "providers": providers,
+                "intent": orch.get("intent") or {
+                    "service_type": service,
+                    "location": location,
+                    "urgency": urgency,
+                    "job_complexity": "intermediate",
                 },
-                "confirmation_message": (
-                    f"✅ {provider.get('name')} kal 10:00 AM pe aayenge. "
-                    f"Rs. {provider.get('price_per_hour', provider.get('base_rate', 2500)):,}. Ref: {booking_id}"
-                ),
-                "reminders": [],
-                "payment_method": payment_method,
-                "whatsapp_sent": False,
             }
-        else:
-            # Real booking via Hisaab + Pakka + Firebase
-            intent = cached.get("intent") or {
-                "service_type": cached.get("service", provider.get("service", "service")),
-                "time_preference": "flexible",
-                "urgency": cached.get("urgency", "medium"),
-                "job_complexity": "intermediate",
-                "emergency": False,
-                "location": cached.get("location", ""),
-                "city": provider.get("city", "Islamabad"),
-            }
-            intent.setdefault("city", provider.get("city", "Islamabad"))
-            intent.setdefault("time_preference", "flexible")
-            try:
-                pricing = await hisaab_agent.calculate_price(intent, provider)
-                booking_res = await pakka_agent.create_booking(intent, provider, pricing, uid)
-                booking_res.pop("_log", None)
-                booking_id = booking_res["booking_id"]
-                await append_user_booking(uid, booking_id)
 
-                # WhatsApp notification
-                user_doc = await get_user(uid)
-                user_phone = (user_doc or {}).get("phone", "")
-                whatsapp_sent = False
-                if user_phone:
-                    whatsapp_sent = await send_booking_whatsapp(
-                        user_phone, booking_id,
-                        provider.get("name", "Provider"),
-                        intent.get("service_type", "service"),
-                        pricing["total"],
-                        booking_res.get("scheduled_time", ""),
-                    )
+            follow_up = await run_conversation(
+                session_id=body.session_id,
+                user_message="[system: search complete]",
+                providers=providers,
+                user_name=body.user_name,
+                history=None,
+                user_city=body.user_city or '',
+            )
+            result["response_text"] = follow_up["response_text"]
+            result["providers"] = providers
+            result["request_id"] = new_request_id()
 
-                result["booking_result"] = {
-                    "booking_id": booking_id,
-                    "provider": provider,
-                    "receipt": booking_res["receipt"],
-                    "confirmation_message": booking_res["confirmation_message"],
-                    "reminders": booking_res.get("reminder_times", []),
-                    "payment_method": payment_method,
-                    "whatsapp_sent": whatsapp_sent,
-                }
-            except Exception as _be:
-                logger.error("[conversation] book_trigger real booking failed: %s", _be)
+            if follow_up.get("book_trigger"):
+                logger.warning("[conversation] follow_up book_trigger ignored — search results just arrived, user hasn't picked a provider yet")
+                result["phase"] = "confirming"
+            else:
+                result["phase"] = follow_up["phase"]
+
+        # Safety: if both search and book triggered in the same response, ignore book.
+        if result.get("search_trigger") and result.get("book_trigger"):
+            logger.warning("[conversation] book_trigger ignored — appeared with search_trigger in same turn")
+            result["book_trigger"] = None
+
+        if result.get("book_trigger"):
+            trigger = result["book_trigger"]
+            provider_id = trigger.get("provider_id", "")
+            payment_method = trigger.get("payment", "cash")
+            uid = body.user_id or "anonymous"
+
+            cached = _session_search_cache.get(body.session_id, {})
+            cached_providers = cached.get("providers") or []
+            provider = next((p for p in cached_providers if str(p.get("id")) == str(provider_id)), None)
+            if not provider:
+                provider = await get_provider(provider_id)
+            if not provider:
+                all_json = _load_providers()
+                provider = next((p for p in all_json if p.get("id") == provider_id), None)
+            if not provider:
+                provider = (cached_providers or _load_providers())[0]
+
+            if is_mock_mode():
                 booking_id = f"HAZ-{uuid.uuid4().hex[:8].upper()}"
                 result["booking_result"] = {
                     "booking_id": booking_id,
@@ -1016,27 +1132,95 @@ async def conversation(body: ConversationRequest):
                     "payment_method": payment_method,
                     "whatsapp_sent": False,
                 }
-        result["phase"] = "done"
+            else:
+                intent = cached.get("intent") or {
+                    "service_type": cached.get("service", provider.get("service", "service")),
+                    "time_preference": "flexible",
+                    "urgency": cached.get("urgency", "medium"),
+                    "job_complexity": "intermediate",
+                    "emergency": False,
+                    "location": cached.get("location", ""),
+                    "city": provider.get("city", "Islamabad"),
+                }
+                intent.setdefault("city", provider.get("city", "Islamabad"))
+                intent.setdefault("time_preference", "flexible")
+                try:
+                    pricing = await hisaab_agent.calculate_price(intent, provider)
+                    booking_res = await pakka_agent.create_booking(intent, provider, pricing, uid)
+                    booking_res.pop("_log", None)
+                    booking_id = booking_res["booking_id"]
+                    await append_user_booking(uid, booking_id)
+                    await _after_pakka_booking(booking_id, uid, booking_res)
 
-    audio_base64 = None
-    if result.get("response_text"):
-        try:
-            from services.uplift_tts import LANGUAGE_VOICE_MAP
-            lang = body.language or 'roman_urdu'
-            tts_voice_id = body.voice_id or LANGUAGE_VOICE_MAP.get(lang, LANGUAGE_VOICE_MAP["roman_urdu"])
-            # Use pre-translated Urdu script from conversation if available (avoids second Gemini call)
-            tts_input = result.get("tts_text") or result.get("response_text")
-            # Only translate if tts_text not already in Urdu script (roman_urdu + no tts_text = need translation)
-            tts_translate = (lang == 'roman_urdu') and not result.get("tts_text")
-            tts_kwargs: dict = {"translate": tts_translate, "voice_id": tts_voice_id}
-            tts = await text_to_speech(tts_input, **tts_kwargs)
-            if tts.get("success"):
-                audio_base64 = tts.get("audio_base64")
-        except Exception as e:
-            logger.warning("[conversation] TTS error: %s", e)
+                    user_doc = await get_user(uid)
+                    user_phone = (user_doc or {}).get("phone", "")
+                    whatsapp_sent = False
+                    if user_phone:
+                        whatsapp_sent = await send_booking_whatsapp(
+                            user_phone, booking_id,
+                            provider.get("name", "Provider"),
+                            intent.get("service_type", "service"),
+                            pricing["total"],
+                            booking_res.get("scheduled_time", ""),
+                        )
 
-    result["audio_base64"] = audio_base64
-    return result
+                    result["booking_result"] = {
+                        "booking_id": booking_id,
+                        "provider": provider,
+                        "receipt": booking_res["receipt"],
+                        "confirmation_message": booking_res["confirmation_message"],
+                        "reminders": booking_res.get("reminder_times", []),
+                        "payment_method": payment_method,
+                        "whatsapp_sent": whatsapp_sent,
+                    }
+                except Exception as _be:
+                    logger.error("[conversation] booking failed: %s", _be)
+                    booking_id = f"HAZ-{uuid.uuid4().hex[:8].upper()}"
+                    result["booking_result"] = {
+                        "booking_id": booking_id,
+                        "provider": provider,
+                        "receipt": {
+                            "service": provider.get("service", "Service"),
+                            "location": f"{provider.get('area', '')}, {provider.get('city', 'Islamabad')}",
+                            "scheduled_time": "Tomorrow 10:00 AM",
+                            "estimated_price": f"Rs. {provider.get('price_per_hour', provider.get('base_rate', 2500)):,}",
+                            "payment_methods": [payment_method.title()],
+                            "status": "confirmed",
+                        },
+                        "confirmation_message": (
+                            f"✅ {provider.get('name')} kal 10:00 AM pe aayenge. "
+                            f"Rs. {provider.get('price_per_hour', provider.get('base_rate', 2500)):,}. Ref: {booking_id}"
+                        ),
+                        "reminders": [],
+                        "payment_method": payment_method,
+                        "whatsapp_sent": False,
+                    }
+            result["phase"] = "done"
+
+        audio_base64 = None
+        if result.get("response_text"):
+            try:
+                from services.uplift_tts import LANGUAGE_VOICE_MAP
+                lang = body.language or 'roman_urdu'
+                tts_voice_id = body.voice_id or LANGUAGE_VOICE_MAP.get(lang, LANGUAGE_VOICE_MAP["roman_urdu"])
+                tts_translate = (lang == 'roman_urdu')
+                tts = await text_to_speech(result["response_text"], translate=tts_translate, voice_id=tts_voice_id)
+                if tts.get("success"):
+                    audio_base64 = tts.get("audio_base64")
+            except Exception as e:
+                logger.warning("[conversation] TTS error: %s", e)
+
+        result["audio_base64"] = audio_base64
+        return result
+
+    except Exception as _conv_err:
+        logger.error("[conversation] unhandled error: %s", _conv_err, exc_info=True)
+        return {
+            "session_id": body.session_id,
+            "response_text": "Thoda masla hua — dobara bolein.",
+            "phase": "intake",
+            "audio_base64": None,
+        }
 
 
 @app.post("/api/conversation/negotiate")
@@ -1109,6 +1293,7 @@ async def conversation_direct_book(body: ConvDirectBookRequest):
     booking_id = booking_res["booking_id"]
 
     await append_user_booking(uid, booking_id)
+    updated = await _after_pakka_booking(booking_id, uid, booking_res)
 
     # WhatsApp notification
     user_doc = await get_user(uid)
@@ -1131,6 +1316,7 @@ async def conversation_direct_book(body: ConvDirectBookRequest):
         "reminders": booking_res.get("reminder_times", []),
         "payment_method": body.payment_method,
         "whatsapp_sent": whatsapp_sent,
+        "status": updated.get("status"),
     }
 
 
@@ -1225,6 +1411,19 @@ async def process_notifications():
     if os.getenv("ENVIRONMENT", "development") != "development":
         raise HTTPException(status_code=403, detail="Process only allowed in development")
     return await process_pending_notifications()
+
+
+@app.post(
+    "/api/cron/process-notifications",
+    dependencies=[Depends(require_cron_secret)],
+)
+@app.get(
+    "/api/cron/process-notifications",
+    dependencies=[Depends(require_cron_secret)],
+)
+async def cron_process_notifications():
+    """Production: call every 5–15 min from Render Cron / external scheduler."""
+    return await run_notification_cron()
 
 
 @app.post("/api/admin/cleanup-invalid-bookings")
@@ -1363,6 +1562,224 @@ async def adk_request(request: ServiceRequest):
             "error": str(e),
             "orchestrator": "google-adk"
         }
+
+# ── Real Marketplace Flow — Job Requests + Worker Bids ────────────────────────
+
+@app.post("/api/job-requests")
+async def create_job_request_endpoint(body: JobRequestCreate):
+    """
+    Real flow Step 1: Customer posts a job.
+    - Saves job_request to Firestore
+    - Runs SAMAJH + DHUNDHO to find matching providers
+    - Sends push notifications to each matching worker
+    Returns job_request_id + list of notified providers.
+    """
+    from services.job_request_service import create_job_request, notify_matching_workers, notify_all_workers_by_service
+
+    uid = _require_firebase_uid(body.user_id)
+    await _require_complete_profile(uid)
+
+    user = await get_user(uid)
+    customer_name = (user or {}).get("display_name") or (user or {}).get("username") or "Customer"
+
+    # Use SAMAJH+DHUNDHO if no providers passed from frontend
+    providers = body.providers or []
+    estimated_price = body.estimated_price
+
+    if not providers:
+        try:
+            orch = await run_samajh_workflow(
+                user_input=f"{body.service} chahiye, {body.location}, {body.city}",
+                source="text",
+                user_location=body.location,
+            )
+            providers = list((orch.get("providers_ranked") or []))[:10]
+            price_breakdown = orch.get("price_breakdown") or {}
+            if not estimated_price and price_breakdown.get("total"):
+                estimated_price = int(price_breakdown["total"])
+        except Exception as _e:
+            logger.warning("[job-request] orchestration failed: %s", _e)
+            providers = _fallback_ranked_providers(
+                {"service_type": body.service, "city": body.city}, limit=10
+            )
+
+    # Filter to matching service only
+    providers = _filter_providers_by_service(
+        providers, {"service_type": body.service}
+    )
+
+    job = await create_job_request(
+        customer_id=uid,
+        customer_name=customer_name,
+        service=body.service,
+        location=body.location,
+        city=body.city,
+        urgency=body.urgency,
+        description=body.description,
+        estimated_price=estimated_price or body.estimated_price,
+    )
+
+    # Notify via providers list (if available) AND scan all workers by service+city
+    notified_providers = await notify_matching_workers(job, providers)
+    notified_workers = await notify_all_workers_by_service(job)
+    notified = list(set(notified_providers + [str(w) for w in notified_workers]))
+
+    return {
+        "job_request_id": job["request_id"],
+        "status": job["status"],
+        "service": job["service"],
+        "location": job["location"],
+        "city": job["city"],
+        "estimated_price": job["estimated_price"],
+        "expires_at": job["expires_at"],
+        "notified_count": len(notified),
+        "providers_found": len(providers),
+        "message": f"{len(notified)} workers ko notify kar diya gaya — bids aa rahi hain...",
+    }
+
+
+@app.get("/api/job-requests/{job_request_id}")
+async def get_job_request_endpoint(job_request_id: str):
+    """Get job request details + current bids."""
+    from services.firebase import get_job_request, list_bids_for_job
+    job = await get_job_request(job_request_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job request not found")
+    bids = await list_bids_for_job(job_request_id)
+    return {**job, "bids": bids, "bid_count": len(bids)}
+
+
+@app.get("/api/job-requests/{job_request_id}/bids")
+async def get_job_bids(job_request_id: str):
+    """Real-time bid list for customer polling (every 5 sec)."""
+    from services.firebase import list_bids_for_job
+    from agents.moltol import MoltolAgent as _Moltol
+    bids = await list_bids_for_job(job_request_id)
+    ranked = _Moltol().rank_real_bids(bids)
+    return {"job_request_id": job_request_id, "bids": ranked, "count": len(ranked)}
+
+
+@app.post("/api/job-requests/{job_request_id}/bid")
+async def submit_worker_bid(job_request_id: str, body: WorkerBidCreate):
+    """
+    Real flow Step 2: Worker submits a bid on an open job.
+    Worker must be linked to a provider_id in their user profile.
+    """
+    from services.job_request_service import submit_bid
+
+    uid = _require_firebase_uid(body.worker_id)
+
+    try:
+        bid = await submit_bid(
+            job_request_id=job_request_id,
+            worker_id=uid,
+            provider_id=body.provider_id,
+            provider_name=body.provider_name,
+            price=body.price,
+            eta_minutes=body.eta_minutes,
+            message=body.message,
+            rating=body.rating,
+        )
+        return {"success": True, "bid": bid, "message": "Aapki bid submit ho gayi!"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/job-requests/{job_request_id}/accept-bid/{bid_id}")
+async def accept_worker_bid(job_request_id: str, bid_id: str, body: AcceptBidRequest):
+    """
+    Real flow Step 3: Customer accepts a bid → HISAAB + PAKKA create booking.
+    """
+    from services.job_request_service import accept_bid
+    from services.whatsapp import send_booking_whatsapp
+
+    uid = _require_firebase_uid(body.customer_id)
+
+    try:
+        accepted = await accept_bid(
+            job_request_id=job_request_id,
+            bid_id=bid_id,
+            customer_id=uid,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Resolve provider for PAKKA
+    provider_id = accepted.get("provider_id", "")
+    provider = await get_provider(provider_id)
+    if not provider:
+        all_json = _load_providers()
+        provider = next((p for p in all_json if p.get("id") == provider_id), None)
+    if not provider:
+        provider = {"id": provider_id, "name": accepted.get("provider_name", "Provider"),
+                    "service": "service", "city": "Islamabad", "price_per_hour": accepted.get("price", 2000)}
+
+    job = await get_job_request(job_request_id) or {}
+    intent = {
+        "service_type": job.get("service", provider.get("service", "service")),
+        "time_preference": "flexible",
+        "urgency": job.get("urgency", "medium"),
+        "job_complexity": "intermediate",
+        "emergency": False,
+        "location": job.get("location", ""),
+        "city": job.get("city", provider.get("city", "Islamabad")),
+    }
+    pricing = {"total": accepted.get("price", 0)}
+
+    booking_res = await pakka_agent.create_booking(intent, provider, pricing, uid)
+    booking_res.pop("_log", None)
+    booking_id = booking_res["booking_id"]
+
+    await append_user_booking(uid, booking_id)
+
+    # WhatsApp
+    user_doc = await get_user(uid)
+    user_phone = (user_doc or {}).get("phone", "")
+    whatsapp_sent = False
+    if user_phone:
+        whatsapp_sent = await send_booking_whatsapp(
+            user_phone, booking_id,
+            accepted.get("provider_name", "Provider"),
+            intent["service_type"],
+            pricing["total"],
+            booking_res.get("scheduled_time", ""),
+        )
+
+    return {
+        "booking_id": booking_id,
+        "bid": accepted,
+        "provider": provider,
+        "receipt": booking_res["receipt"],
+        "confirmation_message": booking_res["confirmation_message"],
+        "payment_method": body.payment_method,
+        "whatsapp_sent": whatsapp_sent,
+    }
+
+
+@app.get("/api/job-requests/worker/{user_id}")
+async def get_worker_available_jobs(user_id: str, service: str = "", city: str = ""):
+    """
+    Worker sees open job requests matching their service/city where they haven't bid yet.
+    service and city query params are optional — if omitted, uses worker's profile.
+    """
+    from services.job_request_service import get_available_jobs_for_worker
+
+    uid = _require_firebase_uid(user_id)
+
+    # Auto-fill service/city from worker profile if not provided
+    if not service or not city:
+        user = await get_user(uid)
+        if user:
+            if not service:
+                skills = user.get("skills") or []
+                if skills:
+                    service = skills[0]
+            if not city:
+                city = user.get("city") or ""
+
+    jobs = await get_available_jobs_for_worker(uid, service=service, city=city)
+    return {"jobs": jobs, "count": len(jobs), "worker_id": uid}
+
 
 if __name__ == "__main__":
     print(

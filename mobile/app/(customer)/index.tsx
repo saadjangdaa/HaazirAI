@@ -8,7 +8,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '../../constants/theme';
-import { pingApi, requireUserId, getUserBookings } from '../../services/api';
+import { pingApi, requireUserId, getUserBookings, createJobRequest } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import { useLang } from '../../context/LanguageContext';
 import { useMockData } from '../../context/MockDataContext';
@@ -71,6 +71,7 @@ const CustomerHomeScreen = () => {
   const SIDEBAR_NAV: SidebarItem[] = [
     { label: tr.navHome,      icon: 'home-outline',          path: '/(customer)/' },
     { label: tr.navBookings,  icon: 'calendar-outline',      path: '/(customer)/bookings' },
+    { label: 'Meri Chats',    icon: 'chatbubbles-outline',   path: '/voice-chats' },
     { label: tr.navDisputes,  icon: 'shield-outline',        path: '/(customer)/disputes' },
     { label: tr.navProfile,   icon: 'person-outline',        path: '/(customer)/profile' },
     { label: 'Agent Traces',  icon: 'git-network-outline',   path: '/agent-traces', highlight: true, badge: 'NEW', dividerBefore: true },
@@ -116,21 +117,26 @@ const CustomerHomeScreen = () => {
 
   useEffect(() => {
     let mounted = true;
-    let retryTimer: ReturnType<typeof setTimeout>;
+    let attempt = 0;
+    const MAX_ATTEMPTS = 4;
+    const RETRY_MS = [15000, 20000, 25000]; // 15s, 20s, 25s between retries
+
     const check = async () => {
-      const { ok } = await pingApi();
+      const { ok, url } = await pingApi();
+      if (__DEV__) console.log(`[Haazir] ping attempt=${attempt} ok=${ok} url=${url}`);
       if (!mounted) return;
       setApiOk(ok);
-      if (!ok) {
+      if (!ok && attempt < MAX_ATTEMPTS) {
         setApiWakingUp(true);
-        retryTimer = setTimeout(async () => {
-          const { ok: ok2 } = await pingApi();
-          if (mounted) { setApiOk(ok2); setApiWakingUp(false); }
-        }, 20000);
+        const delay = RETRY_MS[attempt] ?? 25000;
+        attempt++;
+        setTimeout(check, delay);
+      } else {
+        setApiWakingUp(false);
       }
     };
     check();
-    return () => { mounted = false; clearTimeout(retryTimer); };
+    return () => { mounted = false; };
   }, []);
 
   useEffect(() => {
@@ -275,13 +281,49 @@ const CustomerHomeScreen = () => {
     }
   };
 
+  const handleRealJobRequest = async (service: string, loc: string, urgency = 'medium') => {
+    if (!user?.id) { router.push('/voice-conversation'); return; }
+    try {
+      const uid = requireUserId(user);
+      const city = user.city || 'Islamabad';
+      const job = await createJobRequest({
+        user_id: uid,
+        service,
+        location: loc || city,
+        city,
+        urgency,
+      });
+      // Navigate to results with jobRequestId so it polls real bids
+      router.push({
+        pathname: '/results',
+        params: {
+          data: JSON.stringify({
+            request_id: job.job_request_id,
+            extracted_intent: { service_type: service, location: loc, city, urgency },
+            providers_ranked: [],
+            agent_logs: [],
+          }),
+          jobRequestId: job.job_request_id,
+        },
+      });
+    } catch {
+      // Fallback to voice conversation if API fails
+      router.push('/voice-conversation');
+    }
+  };
+
   const handleQuickService = (label: string, danger?: boolean) => {
     const area = location.trim() || user?.city || 'G-13, Islamabad';
     if (danger) {
       setInput('EMERGENCY! Gas leak ho rahi hai, foran koi bhejein');
-    } else {
-      setInput(`Mujhe ${label} chahiye — ${area}`);
+      router.push('/voice-conversation');
+      return;
     }
+    if (!isMockMode) {
+      handleRealJobRequest(label, area);
+      return;
+    }
+    setInput(`Mujhe ${label} chahiye — ${area}`);
     if (!location.trim()) setLocation(area);
     router.push('/voice-conversation');
   };
@@ -414,9 +456,13 @@ const CustomerHomeScreen = () => {
               <TouchableOpacity
                 style={[styles.bookBtn, !selectedProvider.available && styles.bookBtnDisabled]}
                 onPress={() => {
-                  setInput(`Mujhe ${selectedProvider!.service} chahiye — ${selectedProvider!.area}`);
-                  setLocation(selectedProvider!.area);
-                  router.push('/voice-conversation');
+                  if (!isMockMode) {
+                    handleRealJobRequest(selectedProvider!.service, selectedProvider!.area);
+                  } else {
+                    setInput(`Mujhe ${selectedProvider!.service} chahiye — ${selectedProvider!.area}`);
+                    setLocation(selectedProvider!.area);
+                    router.push('/voice-conversation');
+                  }
                 }}
                 activeOpacity={0.85}
                 disabled={!selectedProvider.available}

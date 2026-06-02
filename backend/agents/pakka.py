@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timedelta
 
 from services.firebase import check_slot_conflict, save_booking
+from services.investigation_service import is_provider_eligible_for_assignment
 from services.scheduling import scheduled_time_from_intent
 
 TRAVEL_BUFFER_MINUTES = 30
@@ -42,6 +43,8 @@ class PakkaAgent:
         provider_id = provider.get("id")
         provider_name = provider.get("name", "Provider")
         total_price = pricing.get("total", 1000)
+        if not is_provider_eligible_for_assignment(provider):
+            raise ValueError(f"Provider {provider_id} is not eligible for assignment")
 
         scheduled_time = original_requested_time
 

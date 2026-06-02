@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, ScrollView, StyleSheet,
-  Alert, ActivityIndicator, Animated, Easing,
+  Alert, ActivityIndicator, Animated, Easing, StatusBar,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -422,6 +422,7 @@ export default function DisputesScreen() {
   // ── Main Screen ───────────────────────────────────────────────────────
   return (
     <View style={styles.rootWrap}>
+      <StatusBar barStyle="dark-content" backgroundColor={Colors.surface} />
       <DisputeHeader insets={insets} onMenu={() => setSidebarOpen(true)} />
       <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 32 }]}>
 

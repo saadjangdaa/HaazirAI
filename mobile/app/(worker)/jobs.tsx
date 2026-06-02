@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   View, Text, TouchableOpacity, ScrollView, StyleSheet, Switch,
   ActivityIndicator, Alert, RefreshControl, StatusBar,
-  Animated, Dimensions,
+  Animated, Dimensions, TextInput,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -25,9 +25,15 @@ const WORKER_SIDEBAR_NAV: WorkerSidebarItem[] = [
   { label: 'Agent Logs',    icon: 'flask-outline',         path: '/logs' },
   { label: 'Nearby Workers',icon: 'people-outline',        path: '/nearby', dividerBefore: true },
 ];
-import { formatApiError, getWorkerBookings, requireUserId, updateBookingStatus, UserBooking } from '../../services/api';
+import {
+  formatApiError, getWorkerBookings, requireUserId, updateBookingStatus, UserBooking,
+  submitWorkerBid, AvailableJob, WorkerBid,
+} from '../../services/api';
 import { formatWorkerPrice, formatWorkerTime, isActiveWorkerStatus, isOfferStatus, isTerminalStatus, WORKER_STATUS_LABEL } from '../../utils/workerBookings';
 import { MOCK_WORKER_BOOKINGS } from '../../data/mockData';
+import { workerAcceptJob, workerCancelJob } from '../../services/chatService';
+import { db } from '../../services/firebase';
+import { collection, query, where, onSnapshot, limit } from 'firebase/firestore';
 
 const STATUS_NEXT: Record<string, { label: string; nextStatus: string; icon: string }> = {
   confirmed:   { label: 'Rawaana Ho Gaya',  nextStatus: 'on_the_way',  icon: 'car-outline' },
@@ -72,6 +78,7 @@ export default function WorkerJobsScreen() {
     }, 250);
   };
   const [bookings, setBookings] = useState<UserBooking[]>([]);
+  const [chatBookings, setChatBookings] = useState<UserBooking[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -79,6 +86,17 @@ export default function WorkerJobsScreen() {
   const [countdown, setCountdown] = useState(59);
   const [busy, setBusy] = useState(false);
   const [advancingId, setAdvancingId] = useState<string | null>(null);
+
+  // Available jobs (real marketplace flow)
+  const [activeTab, setActiveTab] = useState<'my_jobs' | 'available'>('my_jobs');
+  const [chatJobs, setChatJobs] = useState<AvailableJob[]>([]);
+  const [marketplaceJobs, setMarketplaceJobs] = useState<AvailableJob[]>([]);
+  const [availableLoading, setAvailableLoading] = useState(false);
+  const [bidModalJob, setBidModalJob] = useState<AvailableJob | null>(null);
+  const [bidPrice, setBidPrice] = useState('');
+  const [bidEta, setBidEta] = useState('30');
+  const [bidMessage, setBidMessage] = useState('');
+  const [submittingBid, setSubmittingBid] = useState(false);
 
   const load = useCallback(async () => {
     if (isMockMode) {
@@ -107,16 +125,35 @@ export default function WorkerJobsScreen() {
 
   const offer = useMemo(
     () => bookings.find((b) => isOfferStatus(b.status) && b.booking_id !== acceptedId),
-    [bookings, acceptedId]
+    [bookings, acceptedId]  // offer only from backend bookings (real-time bid offers)
   );
+  // Merge backend bookings + chat-based jobs (dedup by booking_id)
+  const allBookings = useMemo(() => {
+    const seen = new Set(bookings.map((b) => b.booking_id));
+    const extras = chatBookings.filter((c) => !seen.has(c.booking_id));
+    return [...bookings, ...extras];
+  }, [bookings, chatBookings]);
+
   const activeJobs = useMemo(
-    () => bookings.filter((b) => isActiveWorkerStatus(b.status) && b.booking_id !== offer?.booking_id && (!isOfferStatus(b.status) || b.booking_id === acceptedId)),
-    [bookings, offer, acceptedId]
+    () => allBookings.filter((b) => isActiveWorkerStatus(b.status) && b.booking_id !== offer?.booking_id && (!isOfferStatus(b.status) || b.booking_id === acceptedId)),
+    [allBookings, offer, acceptedId]
   );
   const completedJobs = useMemo(
-    () => bookings.filter((b) => isTerminalStatus(b.status || '')),
-    [bookings]
+    () => allBookings.filter((b) => isTerminalStatus(b.status || '')),
+    [allBookings]
   );
+
+  // Merge targeted chat jobs + marketplace broadcast jobs, dedup by request_id
+  const availableJobs = useMemo<AvailableJob[]>(() => {
+    const seen = new Set<string>();
+    return [...marketplaceJobs, ...chatJobs]
+      .filter((j) => {
+        if (seen.has(j.request_id)) return false;
+        seen.add(j.request_id);
+        return true;
+      })
+      .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+  }, [chatJobs, marketplaceJobs]);
 
   useEffect(() => {
     if (!offer || acceptedId) return;
@@ -174,6 +211,191 @@ export default function WorkerJobsScreen() {
     }
   };
 
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
+
+  const handleCancelJob = (booking: UserBooking) => {
+    const st = (booking.status || '').toLowerCase();
+    // Only allow cancel before worker has arrived
+    if (!['confirmed', 'on_the_way'].includes(st)) return;
+
+    Alert.alert(
+      'Job Cancel Karein?',
+      `Kya aap "${booking.service || 'yeh kaam'}" cancel karna chahte hain? Customer ko notify kar diya jayega.`,
+      [
+        { text: 'Nahi', style: 'cancel' },
+        {
+          text: 'Haan, Cancel Karein',
+          style: 'destructive',
+          onPress: async () => {
+            if (!booking.booking_id) return;
+            if (isMockMode) {
+              setBookings(prev => prev.map(b =>
+                b.booking_id === booking.booking_id ? { ...b, status: 'cancelled' } : b
+              ));
+              return;
+            }
+            setCancellingId(booking.booking_id);
+            try {
+              await updateBookingStatus(booking.booking_id, 'cancelled');
+              // Also update Firestore chat doc if this is a chat-based job
+              const chatId = (booking as any)._chat_id;
+              if (chatId) {
+                await workerCancelJob(chatId, user?.username || 'Worker');
+              }
+              await load();
+            } catch (e) {
+              Alert.alert('Cancel failed', formatApiError(e));
+            } finally {
+              setCancellingId(null);
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  // Listener 1: targeted chat jobs — nearby worker direct bookings
+  useEffect(() => {
+    if (isMockMode || !user?.id) return;
+    const providerIdOrUid = user.workerData?.providerId || user.id;
+    const q = query(collection(db, 'chats'), where('worker_id', '==', providerIdOrUid));
+    const unsub = onSnapshot(q, (snap) => {
+      const jobs: AvailableJob[] = snap.docs
+        .map((d) => d.data() as any)
+        .filter((c) => c.status === 'waiting' || c.status === 'open')
+        .map((c) => ({
+          request_id: c.job_request_id,
+          service: c.service,
+          location: c.location,
+          city: c.city,
+          urgency: c.urgency || 'medium',
+          estimated_price: c.estimated_price || 0,
+          customer_name: c.customer_name,
+          customer_id: c.customer_id || '',
+          status: 'open' as const,
+          created_at: c.created_at,
+          expires_at: c.expires_at || '',
+          bid_count: 0,
+        }));
+      setChatJobs(jobs);
+    }, (err) => console.warn('[ChatJobs] Firestore error:', err.code, err.message));
+    return () => unsub();
+  }, [user?.id, user?.workerData?.providerId, isMockMode]);
+
+  // Listener 2: marketplace jobs — voice agent broadcast (notified_provider_ids contains this worker)
+  useEffect(() => {
+    if (isMockMode || !user?.id) return;
+    if (activeTab === 'available') setAvailableLoading(true);
+    const providerIdOrUid = user.workerData?.providerId || user.id;
+    const q = query(
+      collection(db, 'job_requests'),
+      where('notified_provider_ids', 'array-contains', providerIdOrUid),
+      limit(30),
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      const jobs: AvailableJob[] = snap.docs
+        .map((d) => d.data() as any)
+        .filter((j) => j.status === 'open')
+        .map((j) => ({
+          request_id: j.request_id,
+          service: j.service,
+          location: j.location,
+          city: j.city,
+          urgency: j.urgency || 'medium',
+          estimated_price: j.estimated_price || 0,
+          customer_name: j.customer_name || 'Customer',
+          customer_id: j.customer_id || '',
+          status: 'open' as const,
+          created_at: j.created_at,
+          expires_at: j.expires_at || '',
+          bid_count: j.bid_count || 0,
+        }));
+      setMarketplaceJobs(jobs);
+      setAvailableLoading(false);
+    }, (err) => {
+      console.warn('[MarketplaceJobs] Firestore error:', err.code, err.message);
+      setAvailableLoading(false);
+    });
+    return () => unsub();
+  }, [user?.id, user?.workerData?.providerId, isMockMode]);
+
+  // Listen to accepted/active/completed chats → show in Meri Jobs
+  useEffect(() => {
+    if (isMockMode || !user?.id) return;
+
+    const providerIdOrUid = user.workerData?.providerId || user.id;
+
+    const q = query(
+      collection(db, 'chats'),
+      where('worker_id', '==', providerIdOrUid),
+    );
+
+    const CHAT_TO_BOOKING_STATUS: Record<string, string> = {
+      accepted:    'confirmed',
+      on_the_way:  'on_the_way',
+      arrived:     'arrived',
+      in_progress: 'in_progress',
+      completed:   'completed',
+      cancelled:   'cancelled',
+    };
+
+    const unsub2 = onSnapshot(q, (snap) => {
+      const jobs: UserBooking[] = snap.docs
+        .map((d) => d.data() as any)
+        .filter((c) => c.status && c.status !== 'waiting')
+        .map((c) => ({
+          booking_id: c.job_request_id,
+          user_id: c.customer_id,
+          service: c.service,
+          provider_id: c.worker_id,
+          provider_name: c.worker_name,
+          scheduled_time: c.created_at,
+          price: c.estimated_price || 0,
+          status: CHAT_TO_BOOKING_STATUS[c.status] || c.status,
+          created_at: c.created_at,
+          tracking_steps: [],
+          // store job_request_id so we can open the chat
+          _chat_id: c.job_request_id,
+          _customer_name: c.customer_name,
+        } as UserBooking & { _chat_id: string; _customer_name: string }));
+      setChatBookings(jobs);
+    });
+
+    return () => unsub2();
+  }, [user?.id, user?.workerData?.providerId, isMockMode]);
+
+  const handleSubmitBid = async () => {
+    if (!bidModalJob || !user?.id || !bidPrice) return;
+    const price = parseInt(bidPrice, 10);
+    if (isNaN(price) || price < 100) {
+      Alert.alert('Galat Price', 'Valid price enter karein (minimum Rs 100)');
+      return;
+    }
+    setSubmittingBid(true);
+    try {
+      const uid = requireUserId(user);
+      await submitWorkerBid(bidModalJob.request_id, {
+        worker_id: uid,
+        provider_id: user.workerData?.providerId || uid,
+        provider_name: user.username || 'Worker',
+        price,
+        eta_minutes: parseInt(bidEta, 10) || 30,
+        message: bidMessage || `Rs ${price.toLocaleString()} mein ${parseInt(bidEta,10)||30} minute mein pahunch sakta hoon.`,
+        rating: user.workerData?.rating || 4.0,
+      });
+      Alert.alert('Bid Submit Ho Gayi! 🎉', 'Customer ke jawaab ka intezaar karein.');
+      setBidModalJob(null);
+      setBidPrice('');
+      setBidEta('30');
+      setBidMessage('');
+      // Firestore listener auto-updates availableJobs
+    } catch (e) {
+      Alert.alert('Bid Failed', formatApiError(e));
+    } finally {
+      setSubmittingBid(false);
+    }
+  };
+
   const displayName = isMockMode
     ? 'Mohammad Rashid'
     : (user?.username || user?.email?.split('@')[0] || 'Worker');
@@ -225,12 +447,176 @@ export default function WorkerJobsScreen() {
         </View>
       </View>
 
+      {/* Tab switcher — only in real mode */}
+      {!isMockMode && (
+        <View style={styles.tabRow}>
+          <TouchableOpacity
+            style={[styles.tab, activeTab === 'my_jobs' && styles.tabActive]}
+            onPress={() => setActiveTab('my_jobs')}
+          >
+            <Text style={[styles.tabText, activeTab === 'my_jobs' && styles.tabTextActive]}>
+              Meri Jobs
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.tab, activeTab === 'available' && styles.tabActive]}
+            onPress={() => setActiveTab('available')}
+          >
+            <View style={styles.tabInner}>
+              <Text style={[styles.tabText, activeTab === 'available' && styles.tabTextActive]}>
+                Available Jobs
+              </Text>
+              {availableJobs.length > 0 && (
+                <View style={styles.tabBadge}>
+                  <Text style={styles.tabBadgeText}>{availableJobs.length}</Text>
+                </View>
+              )}
+            </View>
+          </TouchableOpacity>
+        </View>
+      )}
+
       <ScrollView
         style={styles.body}
         contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={Colors.primary} />}
         showsVerticalScrollIndicator={false}
       >
+        {/* Available Jobs Tab */}
+        {!isMockMode && activeTab === 'available' && (
+          <View>
+            {availableLoading ? (
+              <ActivityIndicator size="large" color={Colors.primary} style={{ marginTop: 40 }} />
+            ) : availableJobs.length === 0 ? (
+              <View style={styles.emptyCard}>
+                <Ionicons name="search-outline" size={48} color={Colors.border} />
+                <Text style={styles.emptyTitle}>Koi job nahi mili</Text>
+                <Text style={styles.emptySubText}>Abhi aapke area mein koi naya kaam nahi hai — pull to refresh</Text>
+              </View>
+            ) : (
+              availableJobs.map((job) => (
+                <View key={job.request_id} style={styles.availJobCard}>
+                  <View style={styles.availJobHeader}>
+                    <View style={styles.availServiceBadge}>
+                      <Text style={styles.availServiceText}>{job.service}</Text>
+                    </View>
+                    {job.urgency === 'high' || job.urgency === 'critical' ? (
+                      <View style={styles.urgentBadge}>
+                        <Text style={styles.urgentText}>🚨 ZARURI</Text>
+                      </View>
+                    ) : null}
+                  </View>
+                  <Text style={styles.availLocation}>📍 {job.location}, {job.city}</Text>
+                  {job.estimated_price > 0 && (
+                    <Text style={styles.availPrice}>~Rs {job.estimated_price.toLocaleString()}</Text>
+                  )}
+                  <Text style={styles.availBidCount}>{job.bid_count} bid{job.bid_count !== 1 ? 's' : ''} aa chuki hain</Text>
+                  <View style={styles.availJobActions}>
+                    {/* Direct Accept — for jobs sent directly to this worker */}
+                    <TouchableOpacity
+                      style={styles.acceptJobBtn}
+                      onPress={async () => {
+                        if (!user?.id) return;
+                        try {
+                          await workerAcceptJob(job.request_id, user.id, displayName, {
+                            customer_id: (job as any).customer_id || '',
+                            customer_name: job.customer_name || 'Customer',
+                            service: job.service,
+                            location: job.location,
+                            city: job.city,
+                            urgency: job.urgency,
+                            estimated_price: job.estimated_price,
+                          });
+                          router.push({
+                            pathname: '/worker-chat',
+                            params: {
+                              jobRequestId: job.request_id,
+                              customerName: job.customer_name || 'Customer',
+                              service: job.service,
+                            },
+                          });
+                        } catch (e) {
+                          Alert.alert('Error', formatApiError(e));
+                        }
+                      }}
+                      activeOpacity={0.85}
+                    >
+                      <Ionicons name="checkmark-circle-outline" size={15} color="#fff" />
+                      <Text style={styles.acceptJobBtnText}>Accept Karein</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.bidBtn}
+                      onPress={() => {
+                        setBidModalJob(job);
+                        setBidPrice(job.estimated_price > 0 ? String(job.estimated_price) : '');
+                      }}
+                      activeOpacity={0.85}
+                    >
+                      <Ionicons name="hammer-outline" size={15} color={Colors.primary} />
+                      <Text style={styles.bidBtnText}>Bid Lagaen</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              ))
+            )}
+          </View>
+        )}
+
+        {/* Bid submission modal */}
+        {bidModalJob && (
+          <View style={styles.bidModal}>
+            <View style={styles.bidModalCard}>
+              <Text style={styles.bidModalTitle}>{bidModalJob.service} — Bid Lagaen</Text>
+              <Text style={styles.bidModalSub}>📍 {bidModalJob.location}, {bidModalJob.city}</Text>
+              <Text style={styles.bidModalLabel}>Aapka Price (Rs)</Text>
+              <TextInput
+                style={styles.bidInput}
+                value={bidPrice}
+                onChangeText={setBidPrice}
+                keyboardType="numeric"
+                placeholder="Maslan: 2500"
+                placeholderTextColor={Colors.textMuted}
+              />
+              <Text style={styles.bidModalLabel}>ETA (minutes)</Text>
+              <TextInput
+                style={styles.bidInput}
+                value={bidEta}
+                onChangeText={setBidEta}
+                keyboardType="numeric"
+                placeholder="30"
+                placeholderTextColor={Colors.textMuted}
+              />
+              <Text style={styles.bidModalLabel}>Message (optional)</Text>
+              <TextInput
+                style={[styles.bidInput, { height: 70 }]}
+                value={bidMessage}
+                onChangeText={setBidMessage}
+                placeholder="Customer ko kuch kehna chahte hain?"
+                placeholderTextColor={Colors.textMuted}
+                multiline
+              />
+              <View style={styles.bidModalBtns}>
+                <TouchableOpacity style={styles.bidCancelBtn} onPress={() => setBidModalJob(null)}>
+                  <Text style={styles.bidCancelText}>Baad mein</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.bidSubmitBtn, submittingBid && { opacity: 0.6 }]}
+                  onPress={handleSubmitBid}
+                  disabled={submittingBid}
+                >
+                  {submittingBid
+                    ? <ActivityIndicator size="small" color="#fff" />
+                    : <Text style={styles.bidSubmitText}>Bid Bhejein</Text>
+                  }
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        )}
+
+        {/* My Jobs tab — show only when on my_jobs tab */}
+        {(isMockMode || activeTab === 'my_jobs') && (
+          <>
         {/* Error banner */}
         {loadError && (
           <View style={styles.errorBanner}>
@@ -327,6 +713,8 @@ export default function WorkerJobsScreen() {
             const enRoute = ['on_the_way', 'arrived', 'in_progress'].includes(st);
             const nextStep = STATUS_NEXT[st];
             const isAdvancing = advancingId === job.booking_id;
+            const isCancelling = cancellingId === job.booking_id;
+            const canCancel = ['confirmed', 'on_the_way'].includes(st);
             return (
               <View key={job.booking_id} style={[styles.jobCard, Shadow.sm]}>
                 <View style={styles.jobRow}>
@@ -351,7 +739,7 @@ export default function WorkerJobsScreen() {
                   <TouchableOpacity
                     style={styles.advanceBtn}
                     onPress={() => handleStatusAdvance(job)}
-                    disabled={isAdvancing}
+                    disabled={isAdvancing || isCancelling}
                     activeOpacity={0.8}
                   >
                     {isAdvancing ? (
@@ -361,6 +749,23 @@ export default function WorkerJobsScreen() {
                         <Ionicons name={nextStep.icon as any} size={14} color={Colors.primary} />
                         <Text style={styles.advanceBtnText}>{nextStep.label}</Text>
                         <Ionicons name="chevron-forward" size={14} color={Colors.primary} />
+                      </>
+                    )}
+                  </TouchableOpacity>
+                )}
+                {canCancel && (
+                  <TouchableOpacity
+                    style={styles.cancelJobBtn}
+                    onPress={() => handleCancelJob(job)}
+                    disabled={isCancelling || isAdvancing}
+                    activeOpacity={0.8}
+                  >
+                    {isCancelling ? (
+                      <ActivityIndicator size="small" color={Colors.danger} />
+                    ) : (
+                      <>
+                        <Ionicons name="close-circle-outline" size={14} color={Colors.danger} />
+                        <Text style={styles.cancelJobBtnText}>Job Cancel Karein</Text>
                       </>
                     )}
                   </TouchableOpacity>
@@ -402,10 +807,31 @@ export default function WorkerJobsScreen() {
                       <Text style={styles.jobPrice}>{formatWorkerPrice(job.price)}</Text>
                     </View>
                   </View>
+                  {/* Details button */}
+                  <TouchableOpacity
+                    style={styles.detailsBtn}
+                    activeOpacity={0.8}
+                    onPress={() => router.push({
+                      pathname: '/job-detail',
+                      params: {
+                        jobRequestId: job.booking_id,
+                        service: job.service || '',
+                        status: job.status || '',
+                        price: String(job.price || 0),
+                        customerName: (job as any)._customer_name || '',
+                      },
+                    })}
+                  >
+                    <Ionicons name="document-text-outline" size={14} color={Colors.primary} />
+                    <Text style={styles.detailsBtnText}>Details Dekhein</Text>
+                    <Ionicons name="chevron-forward" size={13} color={Colors.primary} />
+                  </TouchableOpacity>
                 </View>
               );
             })}
           </>
+        )}
+          </> // close My Jobs conditional
         )}
       </ScrollView>
 
@@ -662,6 +1088,14 @@ const styles = StyleSheet.create({
   },
   emptyTitle: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: Colors.textPrimary },
   emptyText: { fontSize: FontSize.sm, color: Colors.textMuted, textAlign: 'center' },
+  emptySubText: { fontSize: FontSize.sm, color: Colors.textMuted, textAlign: 'center' },
+
+  detailsBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    marginTop: Spacing.sm, paddingTop: Spacing.sm,
+    borderTopWidth: 1, borderTopColor: Colors.border,
+  },
+  detailsBtnText: { flex: 1, fontSize: FontSize.sm, color: Colors.primary, fontWeight: FontWeight.semibold },
 
   jobCard: {
     backgroundColor: Colors.surface, borderRadius: Radius.xl,
@@ -690,5 +1124,130 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: FontSize.sm, fontWeight: FontWeight.semibold,
     color: Colors.primary,
+  },
+  cancelJobBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    marginTop: Spacing.sm, paddingTop: Spacing.sm, paddingVertical: 8,
+    borderTopWidth: 1, borderTopColor: Colors.dangerDim,
+    backgroundColor: Colors.dangerDim, borderRadius: Radius.md,
+  },
+  cancelJobBtnText: {
+    fontSize: FontSize.sm, fontWeight: FontWeight.semibold,
+    color: Colors.danger,
+  },
+  // Tab switcher
+  tabRow: {
+    flexDirection: 'row',
+    backgroundColor: Colors.surface,
+    borderBottomWidth: 1, borderBottomColor: Colors.border,
+  },
+  tab: {
+    flex: 1, paddingVertical: 12, alignItems: 'center',
+  },
+  tabInner: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  tabBadge: {
+    backgroundColor: Colors.danger, borderRadius: 10,
+    minWidth: 18, height: 18, paddingHorizontal: 4,
+    justifyContent: 'center', alignItems: 'center',
+  },
+  tabBadgeText: { fontSize: 10, fontWeight: FontWeight.black, color: '#fff' },
+  tabActive: {
+    borderBottomWidth: 2, borderBottomColor: Colors.primary,
+  },
+  tabText: {
+    fontSize: FontSize.sm, color: Colors.textMuted, fontWeight: FontWeight.medium,
+  },
+  tabTextActive: {
+    color: Colors.primary, fontWeight: FontWeight.semibold,
+  },
+  // Available jobs
+  availJobCard: {
+    backgroundColor: Colors.surface, borderRadius: Radius.lg,
+    padding: Spacing.md, marginBottom: Spacing.sm,
+    ...Shadow.card,
+  },
+  availJobHeader: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6,
+  },
+  availServiceBadge: {
+    backgroundColor: Colors.primary + '18', borderRadius: Radius.sm,
+    paddingHorizontal: 10, paddingVertical: 3,
+  },
+  availServiceText: {
+    fontSize: FontSize.xs, color: Colors.primary, fontWeight: FontWeight.semibold,
+  },
+  urgentBadge: {
+    backgroundColor: Colors.danger + '18', borderRadius: Radius.sm,
+    paddingHorizontal: 8, paddingVertical: 3,
+  },
+  urgentText: {
+    fontSize: FontSize.xs, color: Colors.danger, fontWeight: FontWeight.semibold,
+  },
+  availLocation: {
+    fontSize: FontSize.sm, color: Colors.textSecondary, marginBottom: 2,
+  },
+  availPrice: {
+    fontSize: FontSize.md, color: Colors.success, fontWeight: FontWeight.bold, marginBottom: 4,
+  },
+  availBidCount: {
+    fontSize: FontSize.xs, color: Colors.textMuted, marginBottom: Spacing.sm,
+  },
+  availJobActions: { flexDirection: 'row', gap: 8, marginTop: 4 },
+  acceptJobBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 6, backgroundColor: Colors.success,
+    borderRadius: Radius.md, paddingVertical: 10,
+  },
+  acceptJobBtnText: { fontSize: FontSize.sm, color: '#fff', fontWeight: FontWeight.bold },
+  bidBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 6, backgroundColor: Colors.primaryLight,
+    borderRadius: Radius.md, paddingVertical: 10,
+    borderWidth: 1.5, borderColor: Colors.primaryDim,
+  },
+  bidBtnText: {
+    fontSize: FontSize.sm, color: Colors.primary, fontWeight: FontWeight.semibold,
+  },
+  // Bid modal overlay
+  bidModal: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    justifyContent: 'flex-end',
+    zIndex: 99,
+  },
+  bidModalCard: {
+    backgroundColor: Colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20,
+    padding: Spacing.lg, paddingBottom: 36,
+  },
+  bidModalTitle: {
+    fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: Colors.textPrimary, marginBottom: 4,
+  },
+  bidModalSub: {
+    fontSize: FontSize.sm, color: Colors.textMuted, marginBottom: Spacing.md,
+  },
+  bidModalLabel: {
+    fontSize: FontSize.sm, color: Colors.textMuted, marginBottom: 4, marginTop: Spacing.sm,
+  },
+  bidInput: {
+    borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md,
+    paddingHorizontal: 14, paddingVertical: 10,
+    fontSize: FontSize.md, color: Colors.textPrimary, backgroundColor: Colors.inputBg,
+  },
+  bidModalBtns: {
+    flexDirection: 'row', gap: 10, marginTop: Spacing.lg,
+  },
+  bidCancelBtn: {
+    flex: 1, borderWidth: 1, borderColor: Colors.border,
+    borderRadius: Radius.md, paddingVertical: 12, alignItems: 'center',
+  },
+  bidCancelText: {
+    fontSize: FontSize.sm, color: Colors.textMuted, fontWeight: FontWeight.medium,
+  },
+  bidSubmitBtn: {
+    flex: 2, backgroundColor: Colors.primary,
+    borderRadius: Radius.md, paddingVertical: 12, alignItems: 'center',
+  },
+  bidSubmitText: {
+    fontSize: FontSize.sm, color: '#fff', fontWeight: FontWeight.semibold,
   },
 });

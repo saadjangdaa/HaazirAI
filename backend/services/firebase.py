@@ -185,19 +185,12 @@ class FirebaseService:
         except ImportError:
             cfg_path = ""
 
-        if credentials_path:
-            path = credentials_path
-        elif env_path:
-            path = env_path
-        elif cfg_path:
-            path = cfg_path
-        else:
-            path = "firebase-key.json"
-
-        if not os.path.isabs(path):
-            path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", path))
-
-        self._resolved_credentials_path = path
+        path = self._resolve_valid_credentials_path(
+            credentials_path,
+            env_path,
+            cfg_path,
+        )
+        self._resolved_credentials_path = path or ""
 
         # In-memory mock stores (collection -> doc_id -> dict)
         self._mock_store: Dict[str, Dict[str, Any]] = {
@@ -208,14 +201,17 @@ class FirebaseService:
             COL_DISPUTES: {},
             COL_REVIEWS: {},
             COL_WAITLIST: {},
+            "job_requests": {},
+            "bids": {},
         }
         # Slot locks for claim_slot_atomic in mock mode: "provider_id/slug" -> booking_id
         self._mock_slot_claims: Dict[str, str] = {}
 
-        if not os.path.isfile(path):
+        if not path or not os.path.isfile(path):
             logger.warning(
-                "❌ Firebase: credentials file not found at %s — using in-memory mock Firestore",
-                path,
+                "❌ Firebase: no valid service account JSON — using in-memory mock Firestore. "
+                "Mobile data is on Render/Firestore; replace backend/firebase-key.json with "
+                "Firebase Console → Project haazir-ai → Service accounts → Generate key.",
             )
             return
 
@@ -233,6 +229,54 @@ class FirebaseService:
             logger.error("❌ Firebase init failed: %s — mock mode enabled", e)
             self._mock = True
             self._db = None
+
+    @staticmethod
+    def _valid_service_account_file(candidate: str) -> Optional[str]:
+        """Return normalized path if JSON looks like a real service account."""
+        import json
+
+        if not candidate or not os.path.isfile(candidate):
+            return None
+        try:
+            with open(candidate, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return None
+        pk = str(data.get("private_key") or "")
+        if not pk or "REPLACE" in pk:
+            return None
+        pid = str(data.get("project_id") or "")
+        if not pid or pid == "your-project-id":
+            return None
+        if not data.get("client_email"):
+            return None
+        return os.path.normpath(candidate)
+
+    def _resolve_valid_credentials_path(
+        self,
+        explicit: Optional[str],
+        env_path: str,
+        cfg_path: str,
+    ) -> Optional[str]:
+        backend_root = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
+        candidates: list[str] = []
+        for raw in (explicit, env_path, cfg_path, os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")):
+            if not raw:
+                continue
+            p = raw if os.path.isabs(raw) else os.path.normpath(os.path.join(backend_root, raw))
+            candidates.append(p)
+        for name in ("firebase-key.json", "firebase-credentials.json"):
+            candidates.append(os.path.join(backend_root, name))
+
+        seen: set[str] = set()
+        for candidate in candidates:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            valid = self._valid_service_account_file(candidate)
+            if valid:
+                return valid
+        return None
 
     @property
     def is_mock(self) -> bool:
@@ -867,6 +911,8 @@ class FirebaseService:
 _mock_db: Dict[str, Dict[str, Any]] = {name: {} for name in ACTIVE_COLLECTIONS}
 _mock_db["reviews"] = {}
 _mock_db["waitlist"] = {}
+_mock_db.setdefault("job_requests", {})
+_mock_db.setdefault("bids", {})
 
 
 def _now_iso() -> str:
@@ -1177,13 +1223,36 @@ async def list_bookings(
     status: Optional[str] = None,
 ) -> List[dict]:
     svc = get_firebase_service()
+
     if provider_id:
         rows = await asyncio.to_thread(svc.get_provider_bookings, provider_id)
+        if user_id:
+            rows = [b for b in rows if b.get("user_id") == user_id]
+    elif user_id:
+        # Query all bookings and filter by user_id (no provider filter)
+        def _query_user_bookings():
+            if svc.is_mock or MOCK_MODE:
+                return [
+                    b for b in _mock_bucket("bookings").values()
+                    if b.get("user_id") == user_id
+                ]
+            db = svc.db
+            if db is None:
+                return [
+                    b for b in _mock_bucket("bookings").values()
+                    if b.get("user_id") == user_id
+                ]
+            return [
+                {**(snap.to_dict() or {}), "booking_id": snap.id, "id": snap.id}
+                for snap in db.collection("bookings")
+                .where("user_id", "==", user_id)
+                .limit(50)
+                .stream()
+            ]
+        rows = await asyncio.to_thread(_query_user_bookings)
     else:
         rows = []
 
-    if user_id:
-        rows = [b for b in rows if b.get("user_id") == user_id]
     if status:
         want = normalize_booking_status(status)
         rows = [b for b in rows if normalize_booking_status(b.get("status")) == want]
@@ -1335,6 +1404,7 @@ async def list_providers(
     city: Optional[str] = None, service: Optional[str] = None
 ) -> List[dict]:
     from services.providers_integrity import format_provider_record
+    from services.investigation_service import is_provider_eligible_for_assignment
 
     rows = []
     for doc_id, data in await list_provider_entries():
@@ -1352,7 +1422,7 @@ async def list_providers(
                 for s in (p.get("specialization") or [])
             )
         ]
-    return rows
+    return [p for p in rows if is_provider_eligible_for_assignment(p)]
 
 
 async def update_provider(provider_id: str, data: dict) -> bool:
@@ -1483,7 +1553,12 @@ async def verify_users_integrity() -> Dict[str, Any]:
 
 async def update_user(user_id: str, data: dict) -> bool:
     require_firebase_uid(user_id)
-    patch = normalize_user({**data}, user_id)
+    existing = await get_user(user_id) or {}
+    merged = {
+        **existing,
+        **{k: v for k, v in (data or {}).items() if v is not None and v != ""},
+    }
+    patch = normalize_user(merged, user_id)
     return _doc_update("users", user_id, {**patch, "updated_at": _now_iso()})
 
 
@@ -1719,6 +1794,74 @@ async def update_dispute(dispute_id: str, data: dict) -> bool:
 
 async def delete_dispute(dispute_id: str) -> bool:
     return _doc_delete("disputes", dispute_id)
+
+
+async def list_complaint_entries() -> List[tuple]:
+    """Return (document_id, data) for every complaints/{complaint_id} doc."""
+    if get_firebase_service().is_mock:
+        return list(_mock_bucket("complaints").items())
+    db = _get_db()
+    if db is None:
+        return []
+    return [
+        (snap.id, snap.to_dict() or {})
+        for snap in db.collection("complaints").stream()
+    ]
+
+
+async def create_complaint(data: dict) -> str:
+    complaint_id = (data.get("complaint_id") or str(uuid.uuid4())).strip()
+    payload = {**data, "complaint_id": complaint_id, "created_at": data.get("created_at", _now_iso())}
+    _doc_set("complaints", complaint_id, payload)
+    return complaint_id
+
+
+async def get_complaint(complaint_id: str) -> Optional[dict]:
+    return _doc_get("complaints", complaint_id)
+
+
+async def update_complaint(complaint_id: str, data: dict) -> bool:
+    patch = {k: v for k, v in (data or {}).items() if v is not None}
+    if not patch:
+        return False
+    patch["updated_at"] = _now_iso()
+    return _doc_update("complaints", complaint_id, patch)
+
+
+async def list_investigation_entries() -> List[tuple]:
+    """Return (document_id, data) for every investigations/{investigation_id} doc."""
+    if get_firebase_service().is_mock:
+        return list(_mock_bucket("investigations").items())
+    db = _get_db()
+    if db is None:
+        return []
+    return [
+        (snap.id, snap.to_dict() or {})
+        for snap in db.collection("investigations").stream()
+    ]
+
+
+async def create_investigation(data: dict) -> str:
+    investigation_id = (data.get("investigation_id") or str(uuid.uuid4())).strip()
+    payload = {
+        **data,
+        "investigation_id": investigation_id,
+        "created_at": data.get("created_at", _now_iso()),
+    }
+    _doc_set("investigations", investigation_id, payload)
+    return investigation_id
+
+
+async def get_investigation(investigation_id: str) -> Optional[dict]:
+    return _doc_get("investigations", investigation_id)
+
+
+async def update_investigation(investigation_id: str, data: dict) -> bool:
+    patch = {k: v for k, v in (data or {}).items() if v is not None}
+    if not patch:
+        return False
+    patch["updated_at"] = _now_iso()
+    return _doc_update("investigations", investigation_id, patch)
 
 
 async def verify_disputes_integrity() -> Dict[str, Any]:
@@ -1968,7 +2111,10 @@ async def schedule_booking_reminders(
                 "booking_id": booking_id,
                 "user_id": user_id,
                 "send_at": send_at,
+                "title": "Booking reminder",
                 "message": message_template.format(booking_id=booking_id),
+                "event_type": "reminder",
+                "role": "customer",
                 "sent": False,
             }
         )
@@ -2068,3 +2214,131 @@ async def verify_firestore_structure() -> Dict[str, Any]:
         "extra_root_collections": extra_root,
         "ok": audit["issue_count"] == 0 and not extra_root,
     }
+
+
+# ── Job Requests ──────────────────────────────────────────────────────────────
+
+async def save_job_request(request_id: str, data: dict) -> bool:
+    from services.firestore_schema import normalize_job_request
+    doc = normalize_job_request(data, request_id)
+    await asyncio.to_thread(_doc_set, "job_requests", request_id, doc)
+    return True
+
+
+async def get_job_request(request_id: str) -> Optional[dict]:
+    return await asyncio.to_thread(_doc_get, "job_requests", request_id)
+
+
+async def update_job_request(request_id: str, data: dict) -> bool:
+    return await asyncio.to_thread(_doc_update, "job_requests", request_id, data)
+
+
+def _svc_match(job_service: str, filter_service: str) -> bool:
+    """Flexible service match: AC technician ↔ AC Repair both share 'ac' → match."""
+    if not filter_service:
+        return True
+    j = (job_service or "").lower().strip()
+    f = filter_service.lower().strip()
+    if not j:
+        return False
+    # Direct substring check in both directions
+    if f in j or j in f:
+        return True
+    # Word-overlap: {"ac","technician"} ∩ {"ac","repair"} = {"ac"} → match
+    return bool(set(j.split()) & set(f.split()))
+
+
+async def list_open_job_requests(service: str = "", city: str = "") -> List[dict]:
+    """Return open job_requests optionally filtered by service/city (flexible match)."""
+    svc = get_firebase_service()
+
+    def _query():
+        if svc.is_mock or MOCK_MODE:
+            bucket = _mock_bucket("job_requests")
+            docs = list(bucket.values())
+        else:
+            db = svc.db
+            if db is None:
+                bucket = _mock_bucket("job_requests")
+                docs = list(bucket.values())
+            else:
+                q = db.collection("job_requests").where("status", "in", ["open", "bidding"])
+                docs = [dict(s.to_dict() or {}) | {"request_id": s.id} for s in q.stream()]
+        out = []
+        for d in docs:
+            if d.get("status") not in ("open", "bidding"):
+                continue
+            if city and (d.get("city") or "").lower() != city.lower():
+                continue
+            if not _svc_match(d.get("service", ""), service):
+                continue
+            out.append(d)
+        out.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        return out
+
+    return await asyncio.to_thread(_query)
+
+
+# ── Bids ──────────────────────────────────────────────────────────────────────
+
+async def save_bid(bid_id: str, data: dict) -> bool:
+    from services.firestore_schema import normalize_bid
+    doc = normalize_bid(data, bid_id)
+    await asyncio.to_thread(_doc_set, "bids", bid_id, doc)
+    return True
+
+
+async def get_bid(bid_id: str) -> Optional[dict]:
+    return await asyncio.to_thread(_doc_get, "bids", bid_id)
+
+
+async def update_bid(bid_id: str, data: dict) -> bool:
+    return await asyncio.to_thread(_doc_update, "bids", bid_id, data)
+
+
+async def list_bids_for_job(job_request_id: str) -> List[dict]:
+    """All bids for a given job_request_id, sorted newest first."""
+    svc = get_firebase_service()
+
+    def _query():
+        if svc.is_mock or MOCK_MODE:
+            bucket = _mock_bucket("bids")
+            docs = [v for v in bucket.values()
+                    if v.get("job_request_id") == job_request_id]
+        else:
+            db = svc.db
+            if db is None:
+                bucket = _mock_bucket("bids")
+                docs = [v for v in bucket.values()
+                        if v.get("job_request_id") == job_request_id]
+            else:
+                docs = [
+                    dict(s.to_dict() or {}) | {"bid_id": s.id}
+                    for s in db.collection("bids")
+                    .where("job_request_id", "==", job_request_id)
+                    .stream()
+                ]
+        docs.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        return docs
+
+    return await asyncio.to_thread(_query)
+
+
+async def list_bids_by_worker(worker_id: str) -> List[dict]:
+    """All bids submitted by a worker."""
+    svc = get_firebase_service()
+
+    def _query():
+        if svc.is_mock or MOCK_MODE:
+            bucket = _mock_bucket("bids")
+            return [v for v in bucket.values() if v.get("worker_id") == worker_id]
+        db = svc.db
+        if db is None:
+            bucket = _mock_bucket("bids")
+            return [v for v in bucket.values() if v.get("worker_id") == worker_id]
+        return [
+            dict(s.to_dict() or {}) | {"bid_id": s.id}
+            for s in db.collection("bids").where("worker_id", "==", worker_id).stream()
+        ]
+
+    return await asyncio.to_thread(_query)

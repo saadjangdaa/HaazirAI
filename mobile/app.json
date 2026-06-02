@@ -9,18 +9,25 @@
       "**/*"
     ],
     "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#1A6FFF"
+    },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#1A6FFF"
       },
       "package": "com.haazir.ai",
+      "googleServicesFile": "./google-services.json",
       "config": {
         "googleMaps": {
-          "apiKey": "AIzaSyDOLSRc5zgnQhS6bSc4zBO0K0edQSkdIqM"
+          "apiKey": "AIzaSyBrk1qwmRpVbhH_URNwS_d0P8iVuRCFzoM"
         }
       },
       "permissions": [
+        "android.permission.POST_NOTIFICATIONS",
         "android.permission.RECORD_AUDIO",
         "android.permission.MODIFY_AUDIO_SETTINGS",
         "android.permission.FOREGROUND_SERVICE",
@@ -36,7 +43,7 @@
       "supportsTablet": false,
       "bundleIdentifier": "com.haazir.ai",
       "config": {
-        "googleMapsApiKey": "AIzaSyDOLSRc5zgnQhS6bSc4zBO0K0edQSkdIqM"
+        "googleMapsApiKey": "AIzaSyBrk1qwmRpVbhH_URNwS_d0P8iVuRCFzoM"
       },
       "infoPlist": {
         "NSMicrophoneUsageDescription": "Haazir AI ko awaz sun'ne ke liye microphone chahiye",
@@ -60,7 +67,7 @@
       [
         "react-native-maps",
         {
-          "googleMapsApiKey": "AIzaSyDOLSRc5zgnQhS6bSc4zBO0K0edQSkdIqM"
+          "googleMapsApiKey": "AIzaSyBrk1qwmRpVbhH_URNwS_d0P8iVuRCFzoM"
         }
       ],
       [
@@ -84,7 +91,16 @@
           "microphonePermission": "Haazir AI ko awaz sun'ne ke liye microphone chahiye"
         }
       ],
-      "expo-notifications"
+      "expo-notifications",
+      "expo-asset",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/icon.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#1A6FFF"
+        }
+      ]
     ],
     "scheme": "haazir",
     "extra": {

@@ -66,6 +66,7 @@ class ConversationRequest(BaseModel):
     user_text: str
     user_id: str = "user_001"
     user_name: Optional[str] = None
+    user_city: Optional[str] = None   # user's registered city (Karachi, Lahore, etc.)
     providers: Optional[List[dict]] = None
     history: Optional[List[dict]] = None  # [{role: user|assistant, content: str}]
     voice_id: Optional[str] = None  # language-specific Uplift AI voice agent ID
@@ -143,3 +144,30 @@ class BookingStatusUpdate(BaseModel):
         from services.firestore_schema import normalize_booking_status
 
         return normalize_booking_status(str(v))
+
+
+class JobRequestCreate(BaseModel):
+    user_id: str
+    service: str
+    location: str
+    city: str = "Islamabad"
+    urgency: str = "medium"
+    description: str = ""
+    estimated_price: int = 0
+    # passed from client so DHUNDHO can use the already-ranked provider list
+    providers: Optional[List[dict]] = None
+
+
+class WorkerBidCreate(BaseModel):
+    worker_id: str
+    provider_id: str
+    provider_name: str
+    price: int
+    eta_minutes: int = 30
+    message: str = ""
+    rating: float = 0.0
+
+
+class AcceptBidRequest(BaseModel):
+    customer_id: str
+    payment_method: str = "cash"

@@ -9,6 +9,7 @@ import AuthSplash from '../components/AuthSplash';
 import { auth } from '../services/firebase';
 import { LanguageProvider } from '../context/LanguageContext';
 import { MockDataProvider } from '../context/MockDataContext';
+import NotificationBootstrap from '../components/NotificationBootstrap';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -26,6 +27,10 @@ function isAuthPath(pathname: string): boolean {
 
 function isWorkerSignupPath(pathname: string): boolean {
   return pathname === '/worker-signup';
+}
+
+function isWorkerPendingPath(pathname: string): boolean {
+  return pathname === '/worker-pending';
 }
 
 function isLangSelectPath(pathname: string): boolean {
@@ -83,9 +88,18 @@ function AuthNavigationGuard() {
       if (!isWorkerSignupPath(pathname)) {
         target = '/worker-signup';
       }
+    } else if (user.role === 'worker' && user.workerApprovalStatus !== 'active') {
+      if (!isWorkerPendingPath(pathname)) {
+        target = '/worker-pending';
+      }
     } else if (user.role === 'worker') {
       const home = homeRoute(user);
-      if (isAuthPath(pathname) || isLangSelectPath(pathname)) {
+      if (
+        isAuthPath(pathname) ||
+        isLangSelectPath(pathname) ||
+        isWorkerSignupPath(pathname) ||
+        isWorkerPendingPath(pathname)
+      ) {
         target = home;
       }
     } else {
@@ -153,6 +167,7 @@ function RootLayoutNav() {
         <Stack.Screen name="login" options={{ headerShown: false, animation: 'fade' }} />
         <Stack.Screen name="signup" options={{ title: 'Account Banayein', headerBackVisible: false }} />
         <Stack.Screen name="worker-signup" options={{ title: 'Worker Registration', headerBackVisible: false }} />
+        <Stack.Screen name="worker-pending" options={{ title: 'Approval Pending', headerBackVisible: false }} />
         <Stack.Screen name="language-select" options={{ headerShown: false }} />
         <Stack.Screen name="(customer)" options={{ headerShown: false }} />
         <Stack.Screen name="(worker)" options={{ headerShown: false }} />
@@ -166,6 +181,7 @@ function RootLayoutNav() {
         <Stack.Screen name="voice-conversation" options={{ headerShown: false }} />
       </Stack>
       <AuthNavigationGuard />
+      <NotificationBootstrap />
     </>
   );
 }

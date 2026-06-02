@@ -70,6 +70,7 @@ async def run_conversation(
     user_name: str = None,
     history: list = None,
     language: str = 'roman_urdu',
+    user_city: str = None,
 ) -> dict:
     session_lost = session_id not in _sessions
     if session_lost:
@@ -95,16 +96,20 @@ async def run_conversation(
             "phase": "intake",
             "user_name": user_name or "",
             "language": language,
+            "user_city": user_city or "",
         }
 
     session = _sessions[session_id]
-    # Always refresh user_name / language in case they were empty on first init
+    # Always refresh user_name / language / city in case they were empty on first init
     if user_name and not session.get("user_name"):
         session["user_name"] = user_name
+    if user_city and not session.get("user_city"):
+        session["user_city"] = user_city
     if language and language != 'roman_urdu':
         session["language"] = language  # persist so all turns use the same language
     stored_name = session.get("user_name", "")
     first_name = stored_name.split()[0] if stored_name else ""
+    stored_city = session.get("user_city", "") or user_city or ""
     # Use session-stored language as fallback (handles cases where later turns omit it)
     language = session.get("language", language)
 
@@ -125,20 +130,39 @@ async def run_conversation(
         results_injection = f" [RESULTS: {' | '.join(summary_parts)}]"
         session["phase"] = "confirming"
 
-    system_prompt = SYSTEM_PROMPTS.get(language, SYSTEM_PROMPTS['roman_urdu'])
+    base_prompt = SYSTEM_PROMPTS.get(language, SYSTEM_PROMPTS['roman_urdu'])
+    if stored_city:
+        city_hint = f"\nUser ka registered city: {stored_city}. Agar user apna exact area bataye (e.g. 'DHA', 'Gulshan'), tab bhi city {stored_city} hi use karna. Location poochne ki zaroorat nahi agar user ne area bata diya — seedha [SEARCH: ...] likho with location={stored_city} or the area they mentioned."
+        system_prompt = base_prompt + city_hint
+    else:
+        system_prompt = base_prompt
+
+    # Language-aware init hints — tells model the user's name and what to do,
+    # written in the target language so the greeting matches from the first token.
+    _INIT_WITH_NAME = {
+        'roman_urdu': lambda n: f"(User ka naam: {n}. Naam le kar warmly greet karo, phir poocho kya service chahiye.)",
+        'urdu':       lambda n: f"(صارف کا نام: {n}۔ نام لے کر گرمجوشی سے ملیں، پھر پوچھیں کیا سروس چاہیے۔)",
+        'sindhi':     lambda n: f"(يوزر جو نالو: {n}. نالي سان گرمجوشيءَ سان ملو، پوءِ پڇو ڪهڙي خدمت گهرجي.)",
+        'pashto':     lambda n: f"(د کارن نوم: {n}. د نوم سره ګرمه هرکلې وکړئ، بیا پوښتنه وکړئ کومه خدمت پکار ده.)",
+        'balochi':    lambda n: f"(یوزر ءِ نام: {n}۔ نام گپتاں گرمیءَ سرا سلام کنیں، پشت کمی خدمت لازم ءُ۔)",
+    }
+    _INIT_NO_NAME = {
+        'roman_urdu': "(Warmly greet karo, phir seedha poocho kya service chahiye — naam mat poocho.)",
+        'urdu':       "(گرمجوشی سے سلام کریں، پھر پوچھیں کیا سروس چاہیے — نام مت پوچھیں۔)",
+        'sindhi':     "(گرمجوشيءَ سان سلام ڪريو، پوءِ سڌو پڇو ڪهڙي خدمت گهرجي — نالو نه پڇجو.)",
+        'pashto':     "(ګرمه هرکلې وکړئ، بیا مستقیم وپوښتئ کومه خدمت پکار ده — نوم مه پوښتئ.)",
+        'balochi':    "(گرمیءَ سرا سلام کنیں، پشت سدا پرسیں کمی خدمت لازم ءُ — نام مه پرسیں۔)",
+    }
 
     # Build text-completion prompt ending with "Fatima:" — forces model to complete
     # Fatima's next line rather than echoing the user. Proven reliable on all Gemini models.
     if user_message == "__init__":
+        hint_fn = _INIT_WITH_NAME.get(language, _INIT_WITH_NAME['roman_urdu'])
+        hint_no = _INIT_NO_NAME.get(language, _INIT_NO_NAME['roman_urdu'])
         if first_name:
-            prompt = (
-                f"(User ka naam: {first_name}. Naam le kar warmly greet karo, "
-                f"phir poocho kya service chahiye.)\nFatima:"
-            )
+            prompt = f"{hint_fn(first_name)}\nFatima:"
         else:
-            prompt = (
-                "(Warmly greet karo, phir seedha poocho kya service chahiye — naam mat poocho.)\nFatima:"
-            )
+            prompt = f"{hint_no}\nFatima:"
     else:
         history_lines = []
         for m in session["history"][-12:]:  # last 12 turns keeps context tight
@@ -208,7 +232,7 @@ async def run_conversation(
         elif 'islamabad' in _u or 'rawalpindi' in _u or 'g-' in _u or 'f-' in _u or 'i-' in _u:
             _loc = 'Islamabad'
         else:
-            _loc = 'Islamabad'
+            _loc = stored_city or 'Islamabad'
         _confirm = {
             'roman_urdu': 'Theek hai, main abhi providers dhundh rahi hun!',
             'urdu': 'ٹھیک ہے، میں ابھی فراہم کنندگان تلاش کر رہی ہوں!',

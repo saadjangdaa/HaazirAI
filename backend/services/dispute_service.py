@@ -84,6 +84,19 @@ async def _file_dispute_open(
     evidence_url: Optional[str],
 ) -> Dict[str, Any]:
     worker_id = (booking.get("provider_id") or "").strip()
+    try:
+        from services.investigation_service import create_complaint_record
+
+        await create_complaint_record(
+            booking_id=booking_id,
+            user_id=owner_uid,
+            provider_id=worker_id,
+            customer_statement=description,
+            severity="medium",
+            evidence_url=evidence_url,
+        )
+    except Exception:
+        pass
     dispute_id = await create_dispute(
         _build_open_dispute_doc(
             booking_id=booking_id,
@@ -135,6 +148,19 @@ async def _file_dispute_instant(
     dispute_status = "escalated" if escalated else "resolved"
     resolved_at = datetime.now().isoformat()
     worker_id = (booking.get("provider_id") or "").strip()
+    try:
+        from services.investigation_service import create_complaint_record
+
+        await create_complaint_record(
+            booking_id=booking_id,
+            user_id=owner_uid,
+            provider_id=worker_id,
+            customer_statement=description,
+            severity="high",
+            evidence_url=evidence_url,
+        )
+    except Exception:
+        pass
     msg = description.strip()
 
     dispute_id = await create_dispute(

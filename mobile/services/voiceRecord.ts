@@ -51,9 +51,13 @@ export async function stopAndTranscribe(): Promise<{ text: string; language: str
     encoding: FileSystem.EncodingType.Base64,
   });
 
+  // Guard: very short base64 = near-empty audio file (< ~1 KB), not worth sending
+  if (!base64 || base64.length < 1000) {
+    return { text: '', language: 'roman_urdu' };
+  }
+
   try {
     const data = await transcribeVoiceAudio(base64, 'audio/m4a');
-    // Return empty text so caller can show a gentle retry hint instead of crashing
     return { text: (data.text || '').trim(), language: data.detected_language || 'roman_urdu' };
   } catch (err) {
     throw new Error(formatApiError(err));

@@ -4,7 +4,7 @@ import {
   ActivityIndicator, Animated, Easing, Alert, TextInput, KeyboardAvoidingView, Platform, Linking,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, Shadow } from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
 import { requestMicPermission, startRecording, stopAndTranscribe, cleanupRecording } from '../services/voiceRecord';
@@ -19,6 +19,7 @@ import BiddingPanel from '../components/BiddingPanel';
 import { useMockData } from '../context/MockDataContext';
 import { MOCK_BIDS, makeMockBookingResult } from '../data/mockData';
 import { useLang } from '../context/LanguageContext';
+import { saveVoiceSession, getVoiceSession, saveJobRequestToFirestore } from '../services/chatService';
 
 const DEFAULT_VOICE_ID = 'v_meklc281';
 const VOICE_IDS: Record<string, string> = {
@@ -59,6 +60,7 @@ const PHASE_LABEL: Record<ConversationPhase, string> = {
 
 export default function VoiceConversationScreen() {
   const router = useRouter();
+  const { resumeSessionId } = useLocalSearchParams<{ resumeSessionId?: string }>();
   const { user } = useAuth();
   const { isMockMode } = useMockData();
   const { language, langReady } = useLang();
@@ -66,12 +68,15 @@ export default function VoiceConversationScreen() {
   const voiceId = VOICE_IDS[language] ?? DEFAULT_VOICE_ID;
   const scrollRef = useRef<ScrollView>(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
-  const sessionId = useRef(generateSessionId());
+  const sessionId = useRef(resumeSessionId || generateSessionId());
   const userName = user?.username || (user as any)?.name || '';
+  const jobPostedRef = useRef(false);
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isResumingRef = useRef(!!resumeSessionId);
 
   const [chat, setChat] = useState<ChatItem[]>([]);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
-  const [uiState, setUiState] = useState<UIState>('greeting');
+  const [uiState, setUiState] = useState<UIState>(resumeSessionId ? 'idle' : 'greeting');
   const [phase, setPhase] = useState<ConversationPhase>('intake');
   const [providers, setProviders] = useState<any[]>([]);
   const [requestId, setRequestId] = useState<string | null>(null);
@@ -107,6 +112,28 @@ export default function VoiceConversationScreen() {
       setProviders(turn.providers);
       additions.push(mk({ kind: 'providers', items: turn.providers }));
       additions.push(mk({ kind: 'actions' }));
+
+      // Create open job_request in Firestore so notified workers see it
+      if (!jobPostedRef.current && !isMockMode && user?.id) {
+        jobPostedRef.current = true;
+        const jobId = turn.request_id || `JR-${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
+        const notifiedIds = turn.providers
+          .map((p: any) => p.id || p.provider_id)
+          .filter(Boolean) as string[];
+        saveJobRequestToFirestore({
+          job_request_id: jobId,
+          customer_id: user.id,
+          customer_name: userName || 'Customer',
+          service: turn.search_trigger?.service || turn.providers[0]?.service || 'Service',
+          location: turn.search_trigger?.location || user?.city || '',
+          city: turn.providers[0]?.city || user?.city || '',
+          urgency: turn.search_trigger?.urgency || 'medium',
+          description: '',
+          estimated_price: turn.providers[0]?.base_rate || 0,
+          expires_at: new Date(Date.now() + 20 * 60 * 1000).toISOString(),
+          notified_provider_ids: notifiedIds,
+        }).catch(() => {});
+      }
     }
     if (turn.request_id) setRequestId(turn.request_id);
     if (turn.booking_result) setBookingResult(turn.booking_result);
@@ -125,29 +152,100 @@ export default function VoiceConversationScreen() {
     }
   }, [startPulse, stopPulse]);
 
-  // ── Cleanup recording on unmount (prevents leaked recorder on next session) ──
+  // ── Cleanup recording on unmount ──────────────────────────────────────────
   useEffect(() => {
     return () => {
       stopSpeaking();
       cleanupRecording();
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
   }, []);
 
-  // ── Initial greeting — wait for langReady so language is loaded from storage ──
+  // ── Resume old session from Firestore ─────────────────────────────────────
   useEffect(() => {
-    if (!langReady) return;
-    let cancelled = false;
+    if (!resumeSessionId || !user?.id) return;
     (async () => {
       try {
-        const turn = await startConversation(sessionId.current, user?.id || 'user_001', userName, voiceId, language);
+        const saved = await getVoiceSession(resumeSessionId);
+        if (!saved) {
+          setChat([mk({ kind: 'text', role: 'agent', text: 'Chat nahi mili — naya session shuru ho raha hai.' })]);
+          setUiState('idle');
+          return;
+        }
+        sessionId.current = saved.session_id;
+        setHistory(saved.history);
+        setPhase(saved.phase as ConversationPhase);
+        const recentHistory = saved.history.slice(-6);
+        const resumeItems: ChatItem[] = [
+          mk({ kind: 'text', role: 'agent', text: `📂 Puranic baat cheet resume ho rahi hai${saved.service_type ? ` — ${saved.service_type}` : ''}...` }),
+          ...recentHistory.map((h) => mk({ kind: 'text', role: h.role === 'user' ? 'user' : 'agent', text: h.content })),
+          mk({ kind: 'text', role: 'agent', text: 'Aap jahan chodh ke gaye the, wahan se dobara shuru karein. Kya chahiye?' }),
+        ];
+        setChat(resumeItems);
+        setUiState('idle');
+      } catch {
+        setChat([mk({ kind: 'text', role: 'agent', text: 'Chat resume nahi ho saki. Naya session shuru karein.' })]);
+        setUiState('idle');
+      }
+    })();
+  }, [resumeSessionId, user?.id]);
+
+  // ── Auto-save session to Firestore on history change ──────────────────────
+  useEffect(() => {
+    if (!user?.id || history.length === 0 || isMockMode) return;
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(async () => {
+      const lastUserMsg = [...history].reverse().find((h) => h.role === 'user')?.content || '';
+      const serviceType = providers[0]?.service || '';
+      const title = serviceType
+        ? `${serviceType} — ${new Date().toLocaleDateString('en-PK', { day: 'numeric', month: 'short' })}`
+        : lastUserMsg.slice(0, 40) || 'Voice Chat';
+      await saveVoiceSession({
+        session_id: sessionId.current,
+        user_id: user.id,
+        title,
+        last_message: lastUserMsg.slice(0, 100),
+        phase,
+        service_type: serviceType,
+        status: phase === 'done' ? 'completed' : 'active',
+        history,
+        created_at: '',
+        updated_at: '',
+      }).catch(() => {});
+    }, 1500);
+  }, [history]);
+
+  // ── Initial greeting — skip if resuming ───────────────────────────────────
+  useEffect(() => {
+    if (!langReady || isResumingRef.current) return;
+    let cancelled = false;
+    const startTime = Date.now();
+    const MAX_WAIT_MS = 60000;
+    const RETRY_MS = 5000;
+
+    const tryGreeting = async () => {
+      try {
+        const turn = await startConversation(
+          sessionId.current, user?.id || 'user_001', userName, voiceId, language, user?.city || '',
+        );
         if (!cancelled) playAgentTurn(turn);
       } catch {
-        if (!cancelled) {
-          setChat([mk({ kind: 'text', role: 'agent', text: 'Haazir AI mein khush amdeed! Kya chahiye?' })]);
+        if (cancelled) return;
+        if (Date.now() - startTime < MAX_WAIT_MS) {
+          // Keep spinner, retry silently
+          setTimeout(tryGreeting, RETRY_MS);
+        } else {
+          const name = userName.split(' ')[0] || userName;
+          const greeting = name
+            ? `Assalam-o-Alaikum ${name}! Main Fatima hun — Haazir AI ki assistant. Aaj kya chahiye?`
+            : 'Assalam-o-Alaikum! Main Fatima hun — Haazir AI ki assistant. Aaj kya chahiye?';
+          setChat([mk({ kind: 'text', role: 'agent', text: greeting })]);
           setUiState('idle');
         }
       }
-    })();
+    };
+
+    tryGreeting();
     return () => { cancelled = true; };
   }, [langReady]);
 
@@ -161,21 +259,42 @@ export default function VoiceConversationScreen() {
     if (uiState === 'recording') {
       setUiState('processing');
       stopPulse();
+
+      // Show placeholder immediately so user sees their action was registered
+      const placeholderId = `ph-${Date.now()}`;
+      setChat((prev) => [...prev, { id: placeholderId, kind: 'text' as const, role: 'user' as const, text: '🎙 ...' }]);
+
       try {
         const { text } = await stopAndTranscribe();
+
         if (!text) {
+          // Replace placeholder with retry hint
+          setChat((prev) => prev.map((item) =>
+            item.id === placeholderId
+              ? mk({ kind: 'text', role: 'agent', text: '🎙 Awaaz clear nahi aayi — dobara bolein ya neeche type karein' })
+              : item
+          ));
           setUiState('idle');
-          setChat((prev) => [...prev, mk({ kind: 'text', role: 'agent', text: 'Awaaz sunai nahi di — thodi der ruk ke dobara bolein 🎙' })]);
           return;
         }
-        setChat((prev) => [...prev, mk({ kind: 'text', role: 'user', text })]);
+
+        // Replace placeholder with actual transcribed text
+        setChat((prev) => prev.map((item) =>
+          item.id === placeholderId ? { ...item, text } : item
+        ));
         setHistory((prev) => [...prev, { role: 'user', content: text }]);
         setUiState('searching');
-        // Send history BEFORE current message — backend appends it itself (avoid duplication on session restore)
-        const turn = await sendMessage(sessionId.current, text, user?.id || 'anonymous', userName, history, voiceId, language);
+        const turn = await sendMessage(sessionId.current, text, user?.id || 'anonymous', userName, history, voiceId, language, user?.city || '');
         playAgentTurn(turn);
       } catch (e: any) {
-        Alert.alert('Error', e?.message || 'Masla hua — dobara try karein');
+        const msg = e?.code === 'ECONNABORTED' || e?.message?.includes('timeout')
+          ? 'Server slow hai — thodi der baad dobara try karein'
+          : 'Masla hua — type karke bhi bhej sakte hain';
+        setChat((prev) => prev.map((item) =>
+          item.id === placeholderId
+            ? mk({ kind: 'text', role: 'agent', text: `⚠️ ${msg}` })
+            : item
+        ));
         setUiState('idle');
       }
     } else if (uiState === 'idle') {
@@ -206,7 +325,7 @@ export default function VoiceConversationScreen() {
     setUiState('searching');
     try {
       // Send history BEFORE current message — backend appends it itself (avoid duplication on session restore)
-      const turn = await sendMessage(sessionId.current, text, user?.id || 'anonymous', userName, history);
+      const turn = await sendMessage(sessionId.current, text, user?.id || 'anonymous', userName, history, voiceId, language, user?.city || '');
       playAgentTurn(turn);
     } catch (e: any) {
       Alert.alert('Error', e?.message || 'Masla hua — dobara try karein');
@@ -563,7 +682,7 @@ export default function VoiceConversationScreen() {
         {uiState === 'processing' && (
           <View style={styles.searchingCard}>
             <ActivityIndicator color={Colors.primary} size="small" />
-            <Text style={styles.searchingText}>Samajh raha hun...</Text>
+            <Text style={styles.searchingText}>Samajh rahi hun...</Text>
           </View>
         )}
       </ScrollView>
