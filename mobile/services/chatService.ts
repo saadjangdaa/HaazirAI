@@ -244,6 +244,38 @@ export async function getChat(jobRequestId: string): Promise<ChatDoc | null> {
   return snap.exists() ? (snap.data() as ChatDoc) : null;
 }
 
+/** Worker cancels / declines the job */
+export async function cancelJob(jobRequestId: string, workerName: string): Promise<void> {
+  const ref = doc(db, 'chats', jobRequestId);
+  await updateDoc(ref, {
+    status: 'cancelled',
+    updated_at: nowIso(),
+    messages: arrayUnion(sysMsg(`${workerName} ne yeh job decline kar di.`)),
+  });
+}
+
+/** Worker sends a bid offer into the chat */
+export async function sendBidOffer(
+  jobRequestId: string,
+  workerName: string,
+  price: number,
+  etaMinutes: number,
+  extraMessage: string,
+): Promise<void> {
+  const ref = doc(db, 'chats', jobRequestId);
+  const text = `Mera rate: Rs ${price.toLocaleString()}. ETA: ${etaMinutes} min.${extraMessage ? ' ' + extraMessage : ''}`;
+  await updateDoc(ref, {
+    updated_at: nowIso(),
+    messages: arrayUnion({
+      id: mkId(),
+      sender_role: 'worker',
+      sender_name: workerName,
+      text,
+      ts: nowIso(),
+    }),
+  });
+}
+
 /**
  * Write job_request directly to Firestore from mobile.
  * This is the source of truth for the worker's real-time Available Jobs listener,

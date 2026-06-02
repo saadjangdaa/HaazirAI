@@ -512,6 +512,21 @@ export async function getDisputeEligibility(bookingId: string): Promise<DisputeE
   return data;
 }
 
+export interface RecentLogsEntry {
+  request_id: string;
+  user_input: string;
+  timestamp: string;
+  user_id: string;
+  log_count: number;
+  logs: AgentLog[];
+}
+
+export interface RecentLogsResponse {
+  requests: RecentLogsEntry[];
+  count: number;
+  source: string;
+}
+
 export interface AgentLogsResponse {
   request_id: string;
   user_input?: string;
@@ -526,6 +541,11 @@ export interface AgentLogsResponse {
 export async function getAgentLogs(requestId: string): Promise<AgentLog[]> {
   const data = await getAgentLogsDetail(requestId);
   return data.logs || [];
+}
+
+export async function getRecentAgentLogs(limit = 20): Promise<RecentLogsResponse> {
+  const { data } = await client.get('/api/logs/recent', { params: { limit } });
+  return data;
 }
 
 export async function getAgentLogsDetail(requestId: string): Promise<AgentLogsResponse> {

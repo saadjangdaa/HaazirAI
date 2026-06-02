@@ -10,6 +10,7 @@ import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '../consta
 import { useAuth } from '../context/AuthContext';
 import {
   subscribeToChat, sendChatMessage, workerUpdateStatus,
+  workerAcceptJob, cancelJob,
   ChatDoc, ChatMessage, ChatStatus,
 } from '../services/chatService';
 import { updateBookingStatus } from '../services/api';
@@ -143,8 +144,48 @@ export default function WorkerChatScreen() {
         </View>
       </View>
 
-      {/* Status action button — only for worker */}
-      {senderRole === 'worker' && nextAction && status !== 'completed' && status !== 'cancelled' && (
+      {/* Waiting state: Accept + Cancel buttons for worker */}
+      {senderRole === 'worker' && status === 'waiting' && (
+        <View style={styles.waitingActions}>
+          <TouchableOpacity
+            style={[styles.acceptBtn, updatingStatus && { opacity: 0.6 }]}
+            disabled={updatingStatus}
+            activeOpacity={0.85}
+            onPress={async () => {
+              if (!jobRequestId || !user?.id) return;
+              setUpdatingStatus(true);
+              try {
+                const workerName = chat?.worker_name || user.username?.split('_')[0] || 'Worker';
+                await workerAcceptJob(jobRequestId, user.id, workerName);
+              } catch (e) { console.warn('[WorkerChat] accept failed:', e); }
+              finally { setUpdatingStatus(false); }
+            }}
+          >
+            {updatingStatus
+              ? <ActivityIndicator size="small" color="#fff" />
+              : <Ionicons name="checkmark-circle-outline" size={18} color="#fff" />}
+            <Text style={styles.acceptBtnText}>Job Accept Karein</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.cancelBtn}
+            activeOpacity={0.85}
+            onPress={async () => {
+              if (!jobRequestId) return;
+              try {
+                const workerName = chat?.worker_name || user?.username?.split('_')[0] || 'Worker';
+                await cancelJob(jobRequestId, workerName);
+                router.back();
+              } catch (e) { console.warn('[WorkerChat] cancel failed:', e); }
+            }}
+          >
+            <Ionicons name="close-circle-outline" size={18} color={Colors.danger} />
+            <Text style={styles.cancelBtnText}>Cancel Karein</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Status action button — only for worker when job is active */}
+      {senderRole === 'worker' && status !== 'waiting' && nextAction && status !== 'completed' && status !== 'cancelled' && (
         <TouchableOpacity
           style={[styles.statusActionBtn, { backgroundColor: nextAction.color }, updatingStatus && { opacity: 0.6 }]}
           onPress={() => handleStatusUpdate(nextAction.status)}
@@ -249,6 +290,25 @@ const styles = StyleSheet.create({
   customerAvatarText: { fontSize: FontSize.md, fontWeight: FontWeight.black, color: '#fff' },
   headerName: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: '#fff' },
   headerService: { fontSize: FontSize.xs, color: 'rgba(255,255,255,0.75)' },
+
+  waitingActions: {
+    flexDirection: 'row', gap: Spacing.sm,
+    paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm,
+    borderBottomWidth: 1, borderBottomColor: Colors.border,
+    backgroundColor: Colors.surface,
+  },
+  acceptBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    backgroundColor: Colors.success, borderRadius: Radius.lg, paddingVertical: 12,
+  },
+  acceptBtnText: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: '#fff' },
+  cancelBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    borderRadius: Radius.lg, paddingVertical: 12,
+    borderWidth: 1.5, borderColor: Colors.danger,
+    backgroundColor: Colors.dangerDim,
+  },
+  cancelBtnText: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: Colors.danger },
 
   statusActionBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,

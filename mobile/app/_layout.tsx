@@ -174,6 +174,7 @@ function RootLayoutNav() {
         <Stack.Screen name="feedback" options={{ title: 'Feedback Dein' }} />
         <Stack.Screen name="dispute" options={{ title: 'Complaint / Dispute' }} />
         <Stack.Screen name="logs" options={{ title: 'Agent Logs (Judges View)' }} />
+        <Stack.Screen name="agent-traces" options={{ headerShown: false }} />
         <Stack.Screen name="voice-conversation" options={{ headerShown: false }} />
       </Stack>
       <AuthNavigationGuard />

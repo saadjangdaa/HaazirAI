@@ -31,7 +31,7 @@ import {
 } from '../../services/api';
 import { formatWorkerPrice, formatWorkerTime, isActiveWorkerStatus, isOfferStatus, isTerminalStatus, WORKER_STATUS_LABEL } from '../../utils/workerBookings';
 import { MOCK_WORKER_BOOKINGS } from '../../data/mockData';
-import { workerAcceptJob, workerCancelJob } from '../../services/chatService';
+import { workerAcceptJob, workerCancelJob, sendBidOffer } from '../../services/chatService';
 import { db } from '../../services/firebase';
 import { collection, query, where, onSnapshot, limit } from 'firebase/firestore';
 
@@ -372,25 +372,27 @@ export default function WorkerJobsScreen() {
       return;
     }
     setSubmittingBid(true);
+    const job = bidModalJob;
     try {
-      const uid = requireUserId(user);
-      await submitWorkerBid(bidModalJob.request_id, {
-        worker_id: uid,
-        provider_id: user.workerData?.providerId || uid,
-        provider_name: user.username || 'Worker',
-        price,
-        eta_minutes: parseInt(bidEta, 10) || 30,
-        message: bidMessage || `Rs ${price.toLocaleString()} mein ${parseInt(bidEta,10)||30} minute mein pahunch sakta hoon.`,
-        rating: user.workerData?.rating || 4.0,
-      });
-      Alert.alert('Bid Submit Ho Gayi! 🎉', 'Customer ke jawaab ka intezaar karein.');
+      const workerName = displayName;
+      const eta = parseInt(bidEta, 10) || 30;
+      // Send bid as a message in the existing chat
+      await sendBidOffer(job.request_id, workerName, price, eta, bidMessage);
       setBidModalJob(null);
       setBidPrice('');
       setBidEta('30');
       setBidMessage('');
-      // Firestore listener auto-updates availableJobs
+      // Open chat so worker can discuss and accept/cancel
+      router.push({
+        pathname: '/worker-chat',
+        params: {
+          jobRequestId: job.request_id,
+          customerName: job.customer_name || 'Customer',
+          service: job.service,
+        },
+      });
     } catch (e) {
-      Alert.alert('Bid Failed', formatApiError(e));
+      Alert.alert('Error', formatApiError(e));
     } finally {
       setSubmittingBid(false);
     }

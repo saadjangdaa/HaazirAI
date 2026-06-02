@@ -98,6 +98,7 @@ from services.firebase import (
     verify_providers_integrity,
     get_provider,
     get_job_request,
+    list_agent_log_entries,
 )
 from services.users_integrity import normalize_role
 from services.worker_service import get_worker_bookings, resolve_worker_provider_id, summarize_worker_earnings
@@ -957,6 +958,32 @@ async def get_agent_logs(request_id: str):
         "logs": [],
         "log_count": 0,
         "message": "Logs not found — run /api/request first",
+    }
+
+
+@app.get("/api/logs/recent")
+async def get_recent_agent_logs(limit: int = 20):
+    """Return the most recent N orchestration requests with their agent logs."""
+    entries = await list_agent_log_entries()
+    sorted_entries = sorted(
+        entries,
+        key=lambda x: x[1].get("timestamp", ""),
+        reverse=True,
+    )[:limit]
+    requests = []
+    for request_id, data in sorted_entries:
+        requests.append({
+            "request_id": request_id,
+            "user_input": data.get("user_input", ""),
+            "timestamp": data.get("timestamp", ""),
+            "user_id": data.get("user_id", ""),
+            "log_count": len(data.get("logs") or []),
+            "logs": data.get("logs") or [],
+        })
+    return {
+        "requests": requests,
+        "count": len(requests),
+        "source": "mock" if is_mock_mode() else "firestore",
     }
 
 
