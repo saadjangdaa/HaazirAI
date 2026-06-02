@@ -13,6 +13,9 @@ import { useMockData } from '../../context/MockDataContext';
 import { useLang } from '../../context/LanguageContext';
 import { MOCK_CUSTOMER_BOOKINGS } from '../../data/mockData';
 import CustomerSidebar from '../../components/CustomerSidebar';
+import { db } from '../../services/firebase';
+import { collection, query, where, onSnapshot } from 'firebase/firestore';
+import { useEffect, useRef } from 'react';
 
 const STATUS_LABEL: Record<string, string> = {
   pending: 'Pending',
@@ -52,6 +55,7 @@ export default function BookingsScreen() {
   const { isMockMode } = useMockData();
   const { tr } = useLang();
   const [bookings, setBookings] = useState<UserBooking[]>([]);
+  const [chatBookings, setChatBookings] = useState<UserBooking[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -88,8 +92,56 @@ export default function BookingsScreen() {
     }, [load])
   );
 
-  const activeCount = bookings.filter((b) => isActive(b.status)).length;
-  const totalSpent = bookings.reduce((sum, b) => sum + (Number(b.price) || 0), 0);
+  // Real-time: also read accepted chats from Firestore (backend may be in mock mode)
+  useEffect(() => {
+    if (isMockMode || !user?.id) return;
+
+    const CHAT_STATUS_MAP: Record<string, string> = {
+      accepted:    'confirmed',
+      on_the_way:  'on_the_way',
+      arrived:     'arrived',
+      in_progress: 'in_progress',
+      completed:   'completed',
+      cancelled:   'cancelled',
+    };
+
+    const q = query(
+      collection(db, 'chats'),
+      where('customer_id', '==', user.id),
+    );
+
+    const unsub = onSnapshot(q, (snap) => {
+      const jobs: UserBooking[] = snap.docs
+        .map((d) => d.data() as any)
+        .filter((c) => c.status && c.status !== 'waiting')
+        .map((c) => ({
+          booking_id: `HAZ-${(c.job_request_id || '').slice(-8).toUpperCase()}`,
+          user_id: c.customer_id,
+          service: c.service,
+          provider_id: c.worker_id,
+          provider_name: c.worker_name,
+          scheduled_time: c.created_at,
+          price: c.estimated_price || 0,
+          status: CHAT_STATUS_MAP[c.status] || c.status,
+          created_at: c.created_at,
+          tracking_steps: [],
+          _chat_id: c.job_request_id,
+        } as UserBooking & { _chat_id: string }));
+      setChatBookings(jobs);
+    }, (err) => console.warn('[CustomerBookings] chat listener error:', err));
+
+    return () => unsub();
+  }, [user?.id, isMockMode]);
+
+  // Merge backend bookings + chat-based bookings (dedup by booking_id)
+  const allBookings = React.useMemo(() => {
+    const seen = new Set(bookings.map((b) => b.booking_id));
+    const extras = chatBookings.filter((c) => !seen.has(c.booking_id));
+    return [...bookings, ...extras];
+  }, [bookings, chatBookings]);
+
+  const activeCount = allBookings.filter((b) => isActive(b.status)).length;
+  const totalSpent = allBookings.reduce((sum, b) => sum + (Number(b.price) || 0), 0);
 
   if (loading && bookings.length === 0) {
     return (
@@ -131,7 +183,7 @@ export default function BookingsScreen() {
 
       <View style={styles.summaryRow}>
         <View style={styles.summaryItem}>
-          <Text style={[styles.summaryVal, { color: Colors.primary }]}>{bookings.length}</Text>
+          <Text style={[styles.summaryVal, { color: Colors.primary }]}>{allBookings.length}</Text>
           <Text style={styles.summaryLabel}>Total</Text>
         </View>
         <View style={styles.summaryItem}>
@@ -151,13 +203,13 @@ export default function BookingsScreen() {
         </TouchableOpacity>
       )}
 
-      {!error && bookings.length === 0 && (
+      {!error && allBookings.length === 0 && (
         <View style={styles.emptyCard}>
           <Text style={styles.emptyText}>{tr.noBookings} — {tr.noBookingsSub}</Text>
         </View>
       )}
 
-      {bookings.map((b) => {
+      {allBookings.map((b) => {
         const sc = statusColors(b.status);
         const active = isActive(b.status);
         const label = STATUS_LABEL[b.status] || b.status;

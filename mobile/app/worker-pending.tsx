@@ -42,7 +42,7 @@ export default function WorkerPendingScreen() {
           <Ionicons
             name={rejected ? 'close-circle' : 'hourglass-outline'}
             size={48}
-            color={rejected ? Colors.error : Colors.workerAccent}
+            color={rejected ? Colors.danger : Colors.workerAccent}
           />
         </View>
 

@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   View, Text, TouchableOpacity, ScrollView, StyleSheet, Switch,
   ActivityIndicator, Alert, RefreshControl, StatusBar,
-  Animated, Dimensions, TextInput,
+  Animated, Dimensions, TextInput, Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -213,43 +213,46 @@ export default function WorkerJobsScreen() {
 
   const [cancellingId, setCancellingId] = useState<string | null>(null);
 
+  const doCancel = async (booking: UserBooking) => {
+    if (!booking.booking_id) return;
+    if (isMockMode) {
+      setBookings(prev => prev.map(b =>
+        b.booking_id === booking.booking_id ? { ...b, status: 'cancelled' } : b
+      ));
+      setChatBookings(prev => prev.filter(b => b.booking_id !== booking.booking_id));
+      return;
+    }
+    setCancellingId(booking.booking_id);
+    try {
+      // Update Firestore chat if this is a chat-based job (primary)
+      const chatId = (booking as any)._chat_id || booking.booking_id;
+      if (chatId) {
+        await workerCancelJob(chatId, user?.username?.split('_')[0] || 'Worker');
+      }
+      // Also try backend (ignore if fails)
+      updateBookingStatus(booking.booking_id, 'cancelled').catch(() => {});
+    } catch (e) {
+      console.warn('[Cancel] failed:', e);
+    } finally {
+      setCancellingId(null);
+    }
+  };
+
   const handleCancelJob = (booking: UserBooking) => {
     const st = (booking.status || '').toLowerCase();
-    // Only allow cancel before worker has arrived
-    if (!['confirmed', 'on_the_way'].includes(st)) return;
+    if (!['confirmed', 'on_the_way', 'accepted'].includes(st)) return;
 
+    // Web: Alert callbacks don't fire — cancel directly
+    if (Platform.OS === 'web') {
+      doCancel(booking);
+      return;
+    }
     Alert.alert(
       'Job Cancel Karein?',
-      `Kya aap "${booking.service || 'yeh kaam'}" cancel karna chahte hain? Customer ko notify kar diya jayega.`,
+      `Kya aap "${booking.service || 'yeh kaam'}" cancel karna chahte hain?`,
       [
         { text: 'Nahi', style: 'cancel' },
-        {
-          text: 'Haan, Cancel Karein',
-          style: 'destructive',
-          onPress: async () => {
-            if (!booking.booking_id) return;
-            if (isMockMode) {
-              setBookings(prev => prev.map(b =>
-                b.booking_id === booking.booking_id ? { ...b, status: 'cancelled' } : b
-              ));
-              return;
-            }
-            setCancellingId(booking.booking_id);
-            try {
-              await updateBookingStatus(booking.booking_id, 'cancelled');
-              // Also update Firestore chat doc if this is a chat-based job
-              const chatId = (booking as any)._chat_id;
-              if (chatId) {
-                await workerCancelJob(chatId, user?.username || 'Worker');
-              }
-              await load();
-            } catch (e) {
-              Alert.alert('Cancel failed', formatApiError(e));
-            } finally {
-              setCancellingId(null);
-            }
-          },
-        },
+        { text: 'Haan, Cancel', style: 'destructive', onPress: () => doCancel(booking) },
       ],
     );
   };
@@ -716,7 +719,9 @@ export default function WorkerJobsScreen() {
             const nextStep = STATUS_NEXT[st];
             const isAdvancing = advancingId === job.booking_id;
             const isCancelling = cancellingId === job.booking_id;
-            const canCancel = ['confirmed', 'on_the_way'].includes(st);
+            const canCancel = ['confirmed', 'on_the_way', 'accepted'].includes(st);
+            const chatId = (job as any)._chat_id || job.booking_id;
+            const customerName = (job as any)._customer_name || 'Customer';
             return (
               <View key={job.booking_id} style={[styles.jobCard, Shadow.sm]}>
                 <View style={styles.jobRow}>
@@ -737,24 +742,43 @@ export default function WorkerJobsScreen() {
                     <Text style={styles.jobPrice}>{formatWorkerPrice(job.price)}</Text>
                   </View>
                 </View>
-                {nextStep && (
+
+                {/* Chat + Advance buttons row */}
+                <View style={styles.jobActionsRow}>
+                  {/* Open chat button */}
                   <TouchableOpacity
-                    style={styles.advanceBtn}
-                    onPress={() => handleStatusAdvance(job)}
-                    disabled={isAdvancing || isCancelling}
+                    style={styles.chatOpenBtn}
                     activeOpacity={0.8}
+                    onPress={() => router.push({
+                      pathname: '/worker-chat',
+                      params: { jobRequestId: chatId, customerName, service: job.service || '' },
+                    })}
                   >
-                    {isAdvancing ? (
-                      <ActivityIndicator size="small" color={Colors.primary} />
-                    ) : (
-                      <>
-                        <Ionicons name={nextStep.icon as any} size={14} color={Colors.primary} />
-                        <Text style={styles.advanceBtnText}>{nextStep.label}</Text>
-                        <Ionicons name="chevron-forward" size={14} color={Colors.primary} />
-                      </>
-                    )}
+                    <Ionicons name="chatbubble-outline" size={14} color={Colors.primary} />
+                    <Text style={styles.chatOpenBtnText}>Chat Kholein</Text>
                   </TouchableOpacity>
-                )}
+
+                  {/* Status advance button */}
+                  {nextStep && (
+                    <TouchableOpacity
+                      style={styles.advanceBtn}
+                      onPress={() => handleStatusAdvance(job)}
+                      disabled={isAdvancing || isCancelling}
+                      activeOpacity={0.8}
+                    >
+                      {isAdvancing ? (
+                        <ActivityIndicator size="small" color={Colors.primary} />
+                      ) : (
+                        <>
+                          <Ionicons name={nextStep.icon as any} size={14} color={Colors.primary} />
+                          <Text style={styles.advanceBtnText}>{nextStep.label}</Text>
+                        </>
+                      )}
+                    </TouchableOpacity>
+                  )}
+                </View>
+
+                {/* Cancel button */}
                 {canCancel && (
                   <TouchableOpacity
                     style={styles.cancelJobBtn}
@@ -1092,6 +1116,18 @@ const styles = StyleSheet.create({
   emptyText: { fontSize: FontSize.sm, color: Colors.textMuted, textAlign: 'center' },
   emptySubText: { fontSize: FontSize.sm, color: Colors.textMuted, textAlign: 'center' },
 
+  jobActionsRow: {
+    flexDirection: 'row', gap: 8, marginTop: Spacing.sm,
+    paddingTop: Spacing.sm, borderTopWidth: 1, borderTopColor: Colors.border,
+  },
+  chatOpenBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    backgroundColor: Colors.primaryDim, borderRadius: Radius.md,
+    paddingHorizontal: 10, paddingVertical: 7,
+    borderWidth: 1, borderColor: Colors.primary + '40',
+  },
+  chatOpenBtnText: { fontSize: FontSize.xs, color: Colors.primary, fontWeight: FontWeight.semibold },
+
   detailsBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
     marginTop: Spacing.sm, paddingTop: Spacing.sm,
@@ -1118,12 +1154,13 @@ const styles = StyleSheet.create({
   jobPrice: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: Colors.textSecondary },
 
   advanceBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    marginTop: Spacing.sm, paddingTop: Spacing.sm,
-    borderTopWidth: 1, borderTopColor: Colors.border,
+    flex: 1,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    backgroundColor: Colors.primaryLight,
+    borderRadius: Radius.md, paddingVertical: 9,
+    borderWidth: 1, borderColor: Colors.primaryDim,
   },
   advanceBtnText: {
-    flex: 1,
     fontSize: FontSize.sm, fontWeight: FontWeight.semibold,
     color: Colors.primary,
   },
