@@ -19,6 +19,8 @@ ACTIVE_COLLECTIONS = frozenset(
         "bookings",
         "users",
         "disputes",
+        "complaints",
+        "investigations",
         "agent_logs",
         "notifications",
         "job_requests",
@@ -124,6 +126,13 @@ def normalize_provider(data: Dict[str, Any], provider_id: str) -> Dict[str, Any]
         "rating": float(data.get("rating", 0) or 0),
         "available": bool(data.get("available", True)),
         "trust_score": float(data.get("trust_score", 0) or 0),
+        "complaint_count": int(data.get("complaint_count") or 0),
+        "verified_complaint_count": int(data.get("verified_complaint_count") or 0),
+        "risk_score": float(data.get("risk_score") or 0),
+        "late_arrival_count": int(data.get("late_arrival_count") or 0),
+        "investigation_status": data.get("investigation_status", "none"),
+        "recommended_action": data.get("recommended_action", "keep_active"),
+        "admin_status": data.get("admin_status", data.get("status", "active")),
     }
     for key, value in data.items():
         if key not in out and value is not None:

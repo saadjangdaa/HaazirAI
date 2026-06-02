@@ -5,4 +5,4 @@ export type AdminRole =
   | 'analytics_manager'
   | 'viewer'
 
-export type ProviderStatus = 'pending' | 'active' | 'inactive' | 'suspended' | 'rejected'
+export type ProviderStatus = 'pending' | 'active' | 'inactive' | 'suspended' | 'rejected' | 'disabled'

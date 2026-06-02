@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from services.firebase import (
     get_job_request,
+    get_provider,
     get_user,
     list_bids_for_job,
     list_open_job_requests,
@@ -25,6 +26,7 @@ from services.firebase import (
     update_job_request,
 )
 from services.fcm import send_push
+from services.investigation_service import is_provider_eligible_for_assignment
 
 _JOB_TTL_MINUTES = 20  # job expires after 20 min if no one accepts
 
@@ -99,6 +101,8 @@ async def notify_matching_workers(
 
     notified: List[str] = []
     for provider in providers:
+        if not is_provider_eligible_for_assignment(provider):
+            continue
         provider_id = provider.get("id") or provider.get("provider_id") or ""
         if not provider_id:
             continue
@@ -181,6 +185,8 @@ async def notify_all_workers_by_service(job_request: Dict[str, Any]) -> List[str
         approval = (u.get("approval_status") or "").strip().lower()
         if approval and approval != "active":
             continue
+        if (u.get("investigation_status") or "").strip().lower() in ("suspended", "disabled"):
+            continue
         if not approval and uid:
             from services.worker_registration import get_worker_approval_status
 
@@ -241,6 +247,9 @@ async def submit_bid(
     from services.worker_registration import require_approved_worker
 
     await require_approved_worker(worker_id)
+    provider = await get_provider(provider_id)
+    if provider and not is_provider_eligible_for_assignment(provider):
+        raise ValueError("Provider is not eligible for new assignments")
 
     job = await get_job_request(job_request_id)
     if not job:
