@@ -13,11 +13,14 @@ except ImportError:
     GEMINI_API_KEY = os.getenv("GOOGLE_GEMINI_API_KEY", "") or os.getenv("GEMINI_API_KEY", "")
     _GEMINI_MODEL = "gemini-2.0-flash"
 
-# ── Collect up to 15 API keys ─────────────────────────────────────────────────
+# ── Collect up to 15 API keys — MAIN (paid) key goes first ───────────────────
 _ALL_KEYS: list[str] = []
+_main_key = os.getenv("GOOGLE_GEMINI_API_KEY_MAIN", "").strip()
+if _main_key and _main_key != "your_gemini_api_key":
+    _ALL_KEYS.append(_main_key)
 for _suffix in ["", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15"]:
     _k = os.getenv(f"GOOGLE_GEMINI_API_KEY{_suffix}", "").strip()
-    if _k and _k not in ("your_gemini_api_key", ""):
+    if _k and _k not in ("your_gemini_api_key", "") and _k != _main_key:
         _ALL_KEYS.append(_k)
 
 MOCK_MODE = len(_ALL_KEYS) == 0
