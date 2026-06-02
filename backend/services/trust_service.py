@@ -146,6 +146,8 @@ async def run_hifazat_dispute_evaluation(dispute_id: str) -> Dict[str, Any]:
             "Aap ke profile par ek warning darj hui hai — agli bookings par asar ho sakta hai."
         )
 
+    hifazat_log = evaluation.pop("_log", None)
+
     snapshot = {
         **{k: v for k, v in evaluation.items() if not k.startswith("_")},
         "evaluated_at": datetime.now(timezone.utc).isoformat(),
@@ -154,7 +156,7 @@ async def run_hifazat_dispute_evaluation(dispute_id: str) -> Dict[str, Any]:
 
     await update_dispute(dispute_id, {"hifazat_evaluation": snapshot})
 
-    return {"ok": True, "dispute_id": dispute_id, "hifazat_evaluation": snapshot}
+    return {"ok": True, "dispute_id": dispute_id, "hifazat_evaluation": snapshot, "agent_log": hifazat_log}
 
 
 async def on_booking_completed(booking: dict) -> None:

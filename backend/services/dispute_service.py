@@ -537,6 +537,8 @@ async def finalize_dispute(*, user_id: str, dispute_id: str) -> Dict[str, Any]:
     if status in ("resolved", "escalated"):
         return _finalize_response_from_doc(dispute, dispute_id)
 
+    agent_logs: List[dict] = []
+
     if status == "open":
         wr = dispute.get("worker_response")
         if not (isinstance(wr, dict) and (wr.get("message") or "").strip()):
@@ -546,7 +548,9 @@ async def finalize_dispute(*, user_id: str, dispute_id: str) -> Dict[str, Any]:
             )
         from services.trust_service import run_hifazat_dispute_evaluation
 
-        await run_hifazat_dispute_evaluation(dispute_id)
+        hif_res = await run_hifazat_dispute_evaluation(dispute_id)
+        if hif_res.get("agent_log"):
+            agent_logs.append(hif_res["agent_log"])
         await update_dispute(dispute_id, {"status": "under_review"})
         dispute = await get_dispute(dispute_id) or dispute
         status = (dispute.get("status") or "under_review").lower()
@@ -561,7 +565,9 @@ async def finalize_dispute(*, user_id: str, dispute_id: str) -> Dict[str, Any]:
         try:
             from services.trust_service import run_hifazat_dispute_evaluation
 
-            await run_hifazat_dispute_evaluation(dispute_id)
+            hif_res = await run_hifazat_dispute_evaluation(dispute_id)
+            if hif_res.get("agent_log"):
+                agent_logs.append(hif_res["agent_log"])
             dispute = await get_dispute(dispute_id) or dispute
         except Exception as exc:
             print(f"[HIFAZAT] pre-finalize eval failed: {exc}")
@@ -581,6 +587,9 @@ async def finalize_dispute(*, user_id: str, dispute_id: str) -> Dict[str, Any]:
         description=description,
         evidence_url=evidence_url,
     )
+    jhagra_log = jhagra_result.get("agent_log")
+    if jhagra_log:
+        agent_logs.append(jhagra_log)
     jhagra_result = _apply_hifazat_to_jhagra(
         jhagra_result, dispute=dispute, booking=booking, hifazat=hifazat
     )
@@ -628,7 +637,9 @@ async def finalize_dispute(*, user_id: str, dispute_id: str) -> Dict[str, Any]:
         )
 
     updated = await get_dispute(dispute_id) or dispute
-    return _finalize_response_from_doc(updated, dispute_id, jhagra_extra=jhagra_result)
+    response = _finalize_response_from_doc(updated, dispute_id, jhagra_extra=jhagra_result)
+    response["_agent_logs"] = agent_logs
+    return response
 
 
 def _finalize_response_from_doc(
