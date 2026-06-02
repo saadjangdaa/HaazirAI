@@ -12,6 +12,7 @@ import {
   subscribeToChat, sendChatMessage, workerUpdateStatus,
   ChatDoc, ChatMessage, ChatStatus,
 } from '../services/chatService';
+import { updateBookingStatus } from '../services/api';
 
 const WORKER_STATUS_ACTIONS: { status: ChatStatus; label: string; icon: string; color: string }[] = [
   { status: 'on_the_way',  label: 'Rawaana Ho Gaya',  icon: 'car-outline',              color: Colors.primary },
@@ -34,11 +35,13 @@ export default function WorkerChatScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
-  const { jobRequestId, customerName, service } = useLocalSearchParams<{
+  const { jobRequestId, customerName, service, role } = useLocalSearchParams<{
     jobRequestId: string;
     customerName: string;
     service: string;
+    role?: string;  // 'customer' or 'worker' (default)
   }>();
+  const senderRole = (role === 'customer' ? 'customer' : 'worker') as 'customer' | 'worker';
 
   const [chat, setChat] = useState<ChatDoc | null>(null);
   const [loading, setLoading] = useState(true);
@@ -68,8 +71,10 @@ export default function WorkerChatScreen() {
     setSending(true);
     setMsgText('');
     try {
-      const name = chat?.worker_name || user.username?.split('_')[0] || 'Worker';
-      await sendChatMessage(jobRequestId, 'worker', name, text);
+      const name = senderRole === 'customer'
+        ? (chat?.customer_name || user.username || 'Customer')
+        : (chat?.worker_name || user.username?.split('_')[0] || 'Worker');
+      await sendChatMessage(jobRequestId, senderRole, name, text);
     } catch {
       setMsgText(text);
     } finally {
@@ -82,7 +87,13 @@ export default function WorkerChatScreen() {
     setUpdatingStatus(true);
     try {
       const workerName = chat?.worker_name || user?.username?.split('_')[0] || 'Worker';
-      await workerUpdateStatus(jobRequestId, workerName, newStatus);
+      const bookingId = (chat as any)?.booking_id as string | undefined;
+      // Update Firestore chat (real-time for customer) + store booking_id link
+      await workerUpdateStatus(jobRequestId, workerName, newStatus, bookingId);
+      // Also update backend bookings collection
+      if (bookingId) {
+        updateBookingStatus(bookingId, newStatus).catch(() => {});
+      }
     } catch (e) {
       console.warn('[WorkerChat] status update failed:', e);
     } finally {
@@ -132,8 +143,8 @@ export default function WorkerChatScreen() {
         </View>
       </View>
 
-      {/* Status action button */}
-      {nextAction && status !== 'completed' && status !== 'cancelled' && (
+      {/* Status action button — only for worker */}
+      {senderRole === 'worker' && nextAction && status !== 'completed' && status !== 'cancelled' && (
         <TouchableOpacity
           style={[styles.statusActionBtn, { backgroundColor: nextAction.color }, updatingStatus && { opacity: 0.6 }]}
           onPress={() => handleStatusUpdate(nextAction.status)}

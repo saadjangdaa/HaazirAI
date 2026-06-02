@@ -88,10 +88,6 @@ function AuthNavigationGuard() {
       if (!isWorkerSignupPath(pathname)) {
         target = '/worker-signup';
       }
-    } else if (user.role === 'worker' && user.workerApprovalStatus !== 'active') {
-      if (!isWorkerPendingPath(pathname)) {
-        target = '/worker-pending';
-      }
     } else if (user.role === 'worker') {
       const home = homeRoute(user);
       if (

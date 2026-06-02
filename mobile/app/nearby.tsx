@@ -10,6 +10,7 @@ import { Colors, FontSize, FontWeight, Radius, Shadow, Spacing } from '../consta
 import { useAuth } from '../context/AuthContext';
 import { useMockData } from '../context/MockDataContext';
 import { createJobRequest, formatApiError, requireUserId, getAllProviders, Provider } from '../services/api';
+import { createChat } from '../services/chatService';
 import { createChat, saveJobRequestToFirestore } from '../services/chatService';
 import { MOCK_NEARBY_WORKERS, NearbyWorker } from '../data/mockData';
 

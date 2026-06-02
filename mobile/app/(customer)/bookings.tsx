@@ -190,7 +190,10 @@ export default function BookingsScreen() {
               <TouchableOpacity
                 style={styles.trackBtn}
                 onPress={() =>
-                  router.push({ pathname: '/tracking', params: { bookingId: b.booking_id } })
+                  router.push({ pathname: '/tracking', params: {
+                    bookingId: b.booking_id,
+                    jobRequestId: (b as any).job_request_id || b.booking_id,
+                  }})
                 }
               >
                 <Text style={styles.trackBtnText}>Track karein →</Text>

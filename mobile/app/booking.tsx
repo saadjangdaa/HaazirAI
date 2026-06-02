@@ -24,8 +24,9 @@ export default function BookingScreen() {
   const { user } = useAuth();
   const { isMockMode } = useMockData();
   const router = useRouter();
-  const { providerData, priceData, requestId, confirmedData } = useLocalSearchParams<{
+  const { providerData, priceData, requestId, confirmedData, bookingId: paramBookingId, jobRequestId } = useLocalSearchParams<{
     providerData: string; priceData: string; requestId: string; confirmedData: string;
+    bookingId?: string; jobRequestId?: string;
   }>();
 
   const provider = providerData ? JSON.parse(providerData) : null;
@@ -101,7 +102,10 @@ export default function BookingScreen() {
         />
         <TouchableOpacity
           style={[styles.trackBtn, Shadow.primary]}
-          onPress={() => router.push({ pathname: '/tracking', params: { bookingId: confirmed.booking_id } })}
+          onPress={() => router.push({ pathname: '/tracking', params: {
+            bookingId: confirmed.booking_id || paramBookingId,
+            jobRequestId: jobRequestId || confirmed.booking_id,
+          }})}
           activeOpacity={0.85}
         >
           <Ionicons name="navigate-outline" size={18} color={Colors.textInverse} />
