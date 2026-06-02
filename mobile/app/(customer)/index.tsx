@@ -313,19 +313,13 @@ const CustomerHomeScreen = () => {
   };
 
   const handleQuickService = (label: string, danger?: boolean) => {
-    const area = location.trim() || user?.city || 'G-13, Islamabad';
     if (danger) {
+      const area = location.trim() || user?.city || 'G-13, Islamabad';
       setInput('EMERGENCY! Gas leak ho rahi hai, foran koi bhejein');
       router.push('/voice-conversation');
       return;
     }
-    if (!isMockMode) {
-      handleRealJobRequest(label, area);
-      return;
-    }
-    setInput(`Mujhe ${label} chahiye — ${area}`);
-    if (!location.trim()) setLocation(area);
-    router.push('/voice-conversation');
+    router.push({ pathname: '/nearby', params: { service: label } });
   };
 
   // ── Derived ───────────────────────────────────────────────────────────────

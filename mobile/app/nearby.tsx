@@ -5,7 +5,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Colors, FontSize, FontWeight, Radius, Shadow, Spacing } from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
 import { useMockData } from '../context/MockDataContext';
@@ -146,9 +146,10 @@ export default function NearbyScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const { isMockMode } = useMockData();
+  const { service: serviceParam } = useLocalSearchParams<{ service?: string }>();
 
   const [search, setSearch] = useState('');
-  const [selectedService, setSelectedService] = useState('All');
+  const [selectedService, setSelectedService] = useState(serviceParam || 'All');
   const [sortBy, setSortBy] = useState<SortKey>('Distance');
   const [availableOnly, setAvailableOnly] = useState(false);
 
