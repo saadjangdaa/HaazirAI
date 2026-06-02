@@ -171,3 +171,17 @@ class WorkerBidCreate(BaseModel):
 class AcceptBidRequest(BaseModel):
     customer_id: str
     payment_method: str = "cash"
+
+
+class RebookRequest(BaseModel):
+    cancelled_by: str = "provider"
+    reason: str = "Worker ne cancel kar diya"
+
+
+class WaitlistRequest(BaseModel):
+    user_id: str
+    service: str
+    location: str
+    city: str = "Islamabad"
+    requested_time: str = "flexible"
+    intent: Optional[dict] = None

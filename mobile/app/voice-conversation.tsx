@@ -36,7 +36,20 @@ type ChatItem =
   | { id: string; kind: 'actions' }
   | { id: string; kind: 'negotiated'; bid: NegotiatedBid }
   | { id: string; kind: 'bidding'; result: BiddingResponse }
-  | { id: string; kind: 'livebidding'; bids: Bid[]; complete: boolean; recommendedId?: string };
+  | { id: string; kind: 'livebidding'; bids: Bid[]; complete: boolean; recommendedId?: string }
+  | { id: string; kind: 'waitlist_prompt'; service: string; location: string; city: string; intent: any }
+  | { id: string; kind: 'emergency_112'; message: string }
+  | { id: string; kind: 'clarification'; question: string };
+
+const EMERGENCY_KEYWORDS_VOICE = [
+  'short circuit', 'gas leak', 'bijli ka jhatka', 'aag lagi', 'aag lag', 'flood',
+  'electric shock', 'current lag', 'gas lick', 'bijli ka short', 'short circut',
+];
+
+function detectEmergencyVoice(text: string): boolean {
+  const lower = text.toLowerCase();
+  return EMERGENCY_KEYWORDS_VOICE.some((kw) => lower.includes(kw));
+}
 
 let _idCtr = 0;
 function mk<T extends Omit<ChatItem, 'id'>>(item: T): ChatItem {
@@ -82,6 +95,10 @@ export default function VoiceConversationScreen() {
   const [requestId, setRequestId] = useState<string | null>(null);
   const [bookingResult, setBookingResult] = useState<BookingResult | null>(null);
   const [textInput, setTextInput] = useState('');
+  const [isEmergency, setIsEmergency] = useState(false);
+  const [waitlistLoading, setWaitlistLoading] = useState(false);
+  const [waitlistDone, setWaitlistDone] = useState(false);
+  const lastIntentRef = useRef<any>(null);
 
   // ── Pulse animation ────────────────────────────────────────────────────────
   const startPulse = useCallback(() => {
@@ -108,8 +125,19 @@ export default function VoiceConversationScreen() {
 
     const additions: ChatItem[] = [mk({ kind: 'text', role: 'agent', text: agentText })];
 
+    // Case 4: Emergency fast-track banner
+    if ((turn as any).emergency) {
+      setIsEmergency(true);
+    }
+
+    // Case 2: Clarification question detected
+    if ((turn as any).clarification_needed && (turn as any).clarification_question) {
+      additions.push(mk({ kind: 'clarification', question: (turn as any).clarification_question }));
+    }
+
     if (turn.providers?.length) {
       setProviders(turn.providers);
+      lastIntentRef.current = (turn as any).extracted_intent || null;
       additions.push(mk({ kind: 'providers', items: turn.providers }));
       additions.push(mk({ kind: 'actions' }));
 
@@ -135,6 +163,23 @@ export default function VoiceConversationScreen() {
         }).catch(() => {});
       }
     }
+    // Case 1 & 4: No providers found — show waitlist or 112
+    const searchPhase = turn.phase === 'searching' || turn.phase === 'confirming';
+    if (searchPhase && turn.providers !== undefined && turn.providers.length === 0) {
+      if ((turn as any).emergency || isEmergency) {
+        additions.push(mk({ kind: 'emergency_112', message: 'Haazir AI ke paas abhi emergency provider nahi. 112 call karein.' }));
+      } else {
+        const intent = (turn as any).extracted_intent || lastIntentRef.current || {};
+        additions.push(mk({
+          kind: 'waitlist_prompt',
+          service: intent.service_type || 'Service',
+          location: intent.location || '',
+          city: intent.city || 'Islamabad',
+          intent,
+        }));
+      }
+    }
+
     if (turn.request_id) setRequestId(turn.request_id);
     if (turn.booking_result) setBookingResult(turn.booking_result);
 
@@ -283,6 +328,7 @@ export default function VoiceConversationScreen() {
           item.id === placeholderId ? { ...item, text } : item
         ));
         setHistory((prev) => [...prev, { role: 'user', content: text }]);
+        if (detectEmergencyVoice(text)) setIsEmergency(true);
         setUiState('searching');
         const turn = await sendMessage(sessionId.current, text, user?.id || 'anonymous', userName, history, voiceId, language, user?.city || '');
         playAgentTurn(turn);
@@ -315,11 +361,28 @@ export default function VoiceConversationScreen() {
     }
   };
 
+  // ── Waitlist join handler (voice agent) ──────────────────────────────────
+  const handleVoiceWaitlist = async (service: string, location: string, city: string, intent: any) => {
+    if (!user?.id || waitlistLoading || waitlistDone) return;
+    setWaitlistLoading(true);
+    try {
+      const { joinWaitlist } = await import('../services/api');
+      await joinWaitlist({ userId: user.id, service, location, city, intent });
+      setWaitlistDone(true);
+      setChat((prev) => [...prev, mk({ kind: 'text', role: 'agent', text: `✅ Waitlist mein shamil ho gaye! Jaisay hi koi ${service} provider available ho ga, hum notify karein ge.` })]);
+    } catch {
+      setChat((prev) => [...prev, mk({ kind: 'text', role: 'agent', text: 'Waitlist mein shamil nahi ho saka — dobara try karein.' })]);
+    } finally {
+      setWaitlistLoading(false);
+    }
+  };
+
   // ── Text send ─────────────────────────────────────────────────────────────
   const handleSendText = async () => {
     const text = textInput.trim();
     if (!text || uiState === 'done') return;
     setTextInput('');
+    if (detectEmergencyVoice(text)) setIsEmergency(true);
     setChat((prev) => [...prev, mk({ kind: 'text', role: 'user', text })]);
     setHistory((prev) => [...prev, { role: 'user', content: text }]);
     setUiState('searching');
@@ -627,6 +690,58 @@ export default function VoiceConversationScreen() {
               onPress={() => handleDirectBook(item.bid.provider_id, item.bid.bid_price)}
             >
               <Text style={styles.confirmBookBtnText}>✅ Confirm Booking Karein →</Text>
+            </TouchableOpacity>
+          </View>
+        );
+
+      // Case 2: Clarification highlighted card
+      case 'clarification':
+        return (
+          <View key={item.id} style={styles.clarificationCard}>
+            <Text style={styles.clarificationLabel}>💬 Thodi aur detail</Text>
+            <Text style={styles.clarificationQuestion}>{item.question}</Text>
+            <Text style={styles.clarificationHint}>Neeche type karein ya mic se jawab dein</Text>
+          </View>
+        );
+
+      // Case 1: No provider — waitlist prompt
+      case 'waitlist_prompt':
+        return (
+          <View key={item.id} style={styles.waitlistCard}>
+            <Text style={styles.waitlistTitle}>😔 Abhi koi {item.service} available nahi</Text>
+            <Text style={styles.waitlistSub}>{item.location ? `— ${item.location}` : ''}</Text>
+            {waitlistDone ? (
+              <View style={styles.waitlistDoneBadge}>
+                <Text style={styles.waitlistDoneText}>✅ Waitlist mein shamil ho gaye!</Text>
+              </View>
+            ) : (
+              <TouchableOpacity
+                style={[styles.waitlistBtn, waitlistLoading && { opacity: 0.6 }]}
+                onPress={() => handleVoiceWaitlist(item.service, item.location, item.city, item.intent)}
+                disabled={waitlistLoading}
+                activeOpacity={0.85}
+              >
+                {waitlistLoading
+                  ? <ActivityIndicator size="small" color="#fff" />
+                  : <Text style={styles.waitlistBtnText}>🕐 Waitlist mein Shamil Ho</Text>
+                }
+              </TouchableOpacity>
+            )}
+          </View>
+        );
+
+      // Case 4: Emergency — no provider at all → 112 call button
+      case 'emergency_112':
+        return (
+          <View key={item.id} style={styles.emergency112Card}>
+            <Text style={styles.emergency112Title}>🚨 EMERGENCY</Text>
+            <Text style={styles.emergency112Text}>{item.message}</Text>
+            <TouchableOpacity
+              style={styles.call112Btn}
+              onPress={() => Linking.openURL('tel:112')}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.call112Text}>📞 112 Call Karein — Abhi!</Text>
             </TouchableOpacity>
           </View>
         );
@@ -952,4 +1067,46 @@ const styles = StyleSheet.create({
   micBtn: { width: 80, height: 80, borderRadius: 40, justifyContent: 'center', alignItems: 'center', ...Shadow.primary },
   micInner: { justifyContent: 'center', alignItems: 'center' },
   micIcon: { fontSize: 30, color: '#fff' },
+
+  // Case 2: Clarification card
+  clarificationCard: {
+    backgroundColor: Colors.primaryLight, borderRadius: Radius.lg,
+    padding: Spacing.md, marginTop: Spacing.xs, marginBottom: Spacing.xs,
+    borderWidth: 1, borderColor: Colors.primary,
+  },
+  clarificationLabel: { fontSize: FontSize.xs, fontWeight: '700', color: Colors.primary, marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.5 },
+  clarificationQuestion: { fontSize: FontSize.sm, color: Colors.textPrimary, fontWeight: '600', marginBottom: 4 },
+  clarificationHint: { fontSize: FontSize.xs, color: Colors.textMuted },
+
+  // Case 1: Waitlist prompt
+  waitlistCard: {
+    backgroundColor: Colors.surface, borderRadius: Radius.lg,
+    padding: Spacing.md, marginTop: Spacing.xs, marginBottom: Spacing.xs,
+    borderWidth: 1, borderColor: Colors.border, alignItems: 'center',
+    ...Shadow.sm,
+  },
+  waitlistTitle: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.textPrimary, textAlign: 'center', marginBottom: 2 },
+  waitlistSub: { fontSize: FontSize.xs, color: Colors.textMuted, marginBottom: Spacing.sm },
+  waitlistBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    backgroundColor: Colors.primary, borderRadius: Radius.md,
+    paddingVertical: 10, paddingHorizontal: 20, minWidth: 200,
+  },
+  waitlistBtnText: { color: '#fff', fontSize: FontSize.sm, fontWeight: '700' },
+  waitlistDoneBadge: { backgroundColor: Colors.successDim, borderRadius: Radius.md, paddingVertical: 8, paddingHorizontal: 16 },
+  waitlistDoneText: { color: Colors.success, fontWeight: '700', fontSize: FontSize.sm },
+
+  // Case 4: Emergency 112
+  emergency112Card: {
+    backgroundColor: Colors.dangerDim, borderRadius: Radius.lg,
+    padding: Spacing.md, marginTop: Spacing.xs, marginBottom: Spacing.xs,
+    borderWidth: 2, borderColor: Colors.danger, alignItems: 'center',
+  },
+  emergency112Title: { fontSize: FontSize.lg, fontWeight: '900', color: Colors.danger, marginBottom: 4 },
+  emergency112Text: { fontSize: FontSize.sm, color: Colors.textSecondary, textAlign: 'center', marginBottom: Spacing.md },
+  call112Btn: {
+    backgroundColor: Colors.danger, borderRadius: Radius.md,
+    paddingVertical: 12, paddingHorizontal: 24,
+  },
+  call112Text: { color: '#fff', fontSize: FontSize.md, fontWeight: '900' },
 });

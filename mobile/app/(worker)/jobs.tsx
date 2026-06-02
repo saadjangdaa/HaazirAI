@@ -27,7 +27,7 @@ const WORKER_SIDEBAR_NAV: WorkerSidebarItem[] = [
 ];
 import {
   formatApiError, getWorkerBookings, requireUserId, updateBookingStatus, UserBooking,
-  submitWorkerBid, AvailableJob, WorkerBid,
+  submitWorkerBid, AvailableJob, WorkerBid, rebookAfterCancellation,
 } from '../../services/api';
 import { formatWorkerPrice, formatWorkerTime, isActiveWorkerStatus, isOfferStatus, isTerminalStatus, WORKER_STATUS_LABEL } from '../../utils/workerBookings';
 import { MOCK_WORKER_BOOKINGS } from '../../data/mockData';
@@ -220,6 +220,12 @@ export default function WorkerJobsScreen() {
         b.booking_id === booking.booking_id ? { ...b, status: 'cancelled' } : b
       ));
       setChatBookings(prev => prev.filter(b => b.booking_id !== booking.booking_id));
+      // Mock: show rebook notification
+      Alert.alert(
+        'Booking Cancel Ho Gayi',
+        'Customer ke liye naya worker dhundha ja raha hai... (Demo mode)',
+        [{ text: 'OK' }]
+      );
       return;
     }
     setCancellingId(booking.booking_id);
@@ -229,12 +235,20 @@ export default function WorkerJobsScreen() {
       if (chatId) {
         await workerCancelJob(chatId, user?.username?.split('_')[0] || 'Worker');
       }
-      // Also try backend (ignore if fails)
+      // Cancel on backend + trigger PAKKA auto-rebook for customer
       updateBookingStatus(booking.booking_id, 'cancelled').catch(() => {});
+      rebookAfterCancellation(booking.booking_id, 'provider', 'Worker ne cancel kar diya')
+        .then((res) => {
+          if (res.replacement_status === 'replacement_found') {
+            // Rebook succeeded — customer will see new booking in their tracking
+          }
+        })
+        .catch(() => {});
     } catch (e) {
       console.warn('[Cancel] failed:', e);
     } finally {
       setCancellingId(null);
+      await load();
     }
   };
 

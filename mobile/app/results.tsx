@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, StatusBar,
+  TextInput, Linking,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { speakText, stopSpeaking, getIsSpeaking } from '../services/voiceSpeech';
@@ -9,7 +10,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '../constants/theme';
 import {
   FullOrchestrationResponse, Provider, triggerBidding, formatApiError, requireUserId,
-  getJobBids, acceptBid, WorkerBid,
+  getJobBids, acceptBid, WorkerBid, joinWaitlist,
 } from '../services/api';
 import { workerAcceptJob } from '../services/chatService';
 import { useAuth } from '../context/AuthContext';
@@ -34,6 +35,14 @@ const ResultsScreen = () => {
   const [biddingResult, setBiddingResult] = useState<any>(null);
   const [showLogs, setShowLogs] = useState(false);
   const [speaking, setSpeaking] = useState(false);
+
+  // Case 1: Waitlist
+  const [waitlistLoading, setWaitlistLoading] = useState(false);
+  const [waitlistDone, setWaitlistDone] = useState<{ id: string; message: string } | null>(null);
+
+  // Case 2: Inline clarification reply
+  const [clarificationReply, setClarificationReply] = useState('');
+  const [clarificationLoading, setClarificationLoading] = useState(false);
 
   // Real marketplace bid polling
   const [realBids, setRealBids] = useState<WorkerBid[]>([]);
@@ -121,6 +130,45 @@ const ResultsScreen = () => {
     }
   };
 
+  // Case 1: Join waitlist
+  const handleJoinWaitlist = async () => {
+    if (!user?.id || !intent) return;
+    setWaitlistLoading(true);
+    try {
+      const res = await joinWaitlist({
+        userId: user.id,
+        service: intent.service_type || 'Service',
+        location: intent.location || '',
+        city: intent.city || 'Islamabad',
+        requestedTime: intent.time_preference || 'flexible',
+        intent: intent as any,
+      });
+      setWaitlistDone({ id: res.waitlist_id, message: res.message });
+    } catch (e) {
+      Alert.alert('Error', formatApiError(e));
+    } finally {
+      setWaitlistLoading(false);
+    }
+  };
+
+  // Case 2: Re-submit with clarification appended
+  const handleClarificationSubmit = async () => {
+    if (!clarificationReply.trim()) return;
+    const originalInput = intent?.service_type
+      ? `${intent.service_type} ${intent.location || ''} ${clarificationReply}`.trim()
+      : clarificationReply.trim();
+    setClarificationLoading(true);
+    try {
+      const { submitRequest } = await import('../services/api');
+      const res = await submitRequest(originalInput, intent?.location || '', user?.id || 'anonymous');
+      setClarificationLoading(false);
+      router.replace({ pathname: '/results', params: { data: JSON.stringify(res) } });
+    } catch (e) {
+      setClarificationLoading(false);
+      Alert.alert('Error', formatApiError(e));
+    }
+  };
+
   const handleSelectProvider = (provider: Provider) => {
     router.push({
       pathname: '/booking',
@@ -178,20 +226,49 @@ const ResultsScreen = () => {
           </View>
         </View>
 
+        {/* Case 2: Clarification card with inline reply */}
         {result.clarification_needed && result.clarification_question && (
           <View style={styles.clarificationCard}>
             <Text style={styles.clarificationTitle}>Ek aur detail</Text>
             <Text style={styles.clarificationText}>{result.clarification_question}</Text>
-            <Text style={styles.clarificationSub}>
-              Neeche technicians phir bhi dikhaye gaye hain — koi card tap karke booking shuru karein.
-            </Text>
+            <TextInput
+              style={styles.clarificationInput}
+              value={clarificationReply}
+              onChangeText={setClarificationReply}
+              placeholder="Yahan jawab likhein..."
+              placeholderTextColor={Colors.textMuted}
+              returnKeyType="send"
+              onSubmitEditing={handleClarificationSubmit}
+            />
+            <TouchableOpacity
+              style={[styles.clarificationSendBtn, (!clarificationReply.trim() || clarificationLoading) && { opacity: 0.5 }]}
+              onPress={handleClarificationSubmit}
+              disabled={!clarificationReply.trim() || clarificationLoading}
+              activeOpacity={0.85}
+            >
+              {clarificationLoading
+                ? <ActivityIndicator size="small" color="#fff" />
+                : <><Ionicons name="send" size={14} color="#fff" /><Text style={styles.clarificationSendText}>Dobara Dhundho</Text></>
+              }
+            </TouchableOpacity>
           </View>
         )}
 
+        {/* Case 4: Emergency banner with 112 fallback */}
         {result.emergency && (
           <View style={styles.emergencyBanner}>
             <Ionicons name="warning" size={18} color={Colors.danger} />
             <Text style={styles.emergencyText}>EMERGENCY MODE — Fast Track Activated</Text>
+            {(result.providers_ranked?.length === 0) && (
+              <TouchableOpacity
+                style={styles.call112Btn}
+                onPress={() => Linking.openURL('tel:112')}
+                activeOpacity={0.85}
+              >
+                <Ionicons name="call" size={15} color="#fff" />
+                <Text style={styles.call112Text}>112 Call Karein</Text>
+              </TouchableOpacity>
+            )}
           </View>
         )}
 
@@ -315,11 +392,34 @@ const ResultsScreen = () => {
         </View>
 
         {providerCount === 0 ? (
-          <View style={styles.emptyProviders}>
-            <Text style={styles.emptyProvidersText}>
-              Abhi koi technician nahi mila. Location ya service type badal kar dubara Haazir Karo try karein.
-            </Text>
-          </View>
+          /* Case 1: No provider — waitlist card */
+          waitlistDone ? (
+            <View style={styles.waitlistSuccess}>
+              <Ionicons name="checkmark-circle" size={32} color={Colors.success} />
+              <Text style={styles.waitlistSuccessTitle}>Waitlist mein shamil ho gaye!</Text>
+              <Text style={styles.waitlistSuccessId}>Ref: {waitlistDone.id}</Text>
+              <Text style={styles.waitlistSuccessMsg}>{waitlistDone.message}</Text>
+            </View>
+          ) : (
+            <View style={styles.emptyProviders}>
+              <Ionicons name="search-outline" size={36} color={Colors.textMuted} style={{ marginBottom: 8 }} />
+              <Text style={styles.emptyProvidersText}>
+                Abhi koi {intent?.service_type || 'provider'} available nahi {intent?.location ? `— ${intent.location}` : ''}.
+              </Text>
+              <TouchableOpacity
+                style={[styles.waitlistBtn, waitlistLoading && { opacity: 0.6 }]}
+                onPress={handleJoinWaitlist}
+                disabled={waitlistLoading}
+                activeOpacity={0.85}
+              >
+                {waitlistLoading
+                  ? <ActivityIndicator size="small" color="#fff" />
+                  : <><Ionicons name="time-outline" size={15} color="#fff" /><Text style={styles.waitlistBtnText}>Waitlist mein Shamil Ho</Text></>
+                }
+              </TouchableOpacity>
+              <Text style={styles.waitlistHint}>Jaisay hi koi provider available ho ga, hum notify karein ge</Text>
+            </View>
+          )
         ) : (
           result.providers_ranked?.map((p, i) => (
             <ProviderCard
@@ -393,16 +493,33 @@ const styles = StyleSheet.create({
     borderColor: Colors.primary,
   },
   clarificationTitle: { color: Colors.primary, fontWeight: FontWeight.bold, fontSize: FontSize.md, marginBottom: 4 },
-  clarificationText: { color: Colors.textPrimary, fontSize: FontSize.sm, marginBottom: 6 },
-  clarificationSub: { color: Colors.textMuted, fontSize: FontSize.xs },
+  clarificationText: { color: Colors.textPrimary, fontSize: FontSize.sm, marginBottom: 10 },
+  clarificationInput: {
+    borderWidth: 1, borderColor: Colors.primaryDim, borderRadius: Radius.md,
+    paddingHorizontal: 12, paddingVertical: 9,
+    fontSize: FontSize.sm, color: Colors.textPrimary, backgroundColor: Colors.inputBg,
+    marginBottom: 8,
+  },
+  clarificationSendBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    backgroundColor: Colors.primary, borderRadius: Radius.md,
+    paddingVertical: 10,
+  },
+  clarificationSendText: { color: '#fff', fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
 
   emergencyBanner: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: Spacing.sm,
     backgroundColor: Colors.dangerDim, borderRadius: Radius.lg,
     padding: Spacing.md, marginBottom: Spacing.md,
     borderWidth: 1, borderColor: Colors.danger,
   },
   emergencyText: { color: Colors.danger, fontWeight: FontWeight.bold, fontSize: FontSize.md, flex: 1 },
+  call112Btn: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    backgroundColor: Colors.danger, borderRadius: Radius.md,
+    paddingHorizontal: 12, paddingVertical: 8, marginTop: 4,
+  },
+  call112Text: { color: '#fff', fontSize: FontSize.sm, fontWeight: FontWeight.bold },
 
   intentCard: {
     backgroundColor: Colors.surface, borderRadius: Radius.xl,
@@ -433,12 +550,29 @@ const styles = StyleSheet.create({
   emptyProviders: {
     backgroundColor: Colors.surface,
     borderRadius: Radius.lg,
-    padding: Spacing.md,
+    padding: Spacing.lg,
     marginBottom: Spacing.md,
     borderWidth: 1,
     borderColor: Colors.border,
+    alignItems: 'center',
   },
-  emptyProvidersText: { color: Colors.textSecondary, fontSize: FontSize.sm, textAlign: 'center' },
+  emptyProvidersText: { color: Colors.textSecondary, fontSize: FontSize.sm, textAlign: 'center', marginBottom: Spacing.md },
+  waitlistBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7,
+    backgroundColor: Colors.primary, borderRadius: Radius.lg,
+    paddingVertical: 12, paddingHorizontal: 24, marginBottom: 8,
+  },
+  waitlistBtnText: { color: '#fff', fontSize: FontSize.sm, fontWeight: FontWeight.bold },
+  waitlistHint: { color: Colors.textMuted, fontSize: FontSize.xs, textAlign: 'center' },
+  waitlistSuccess: {
+    backgroundColor: Colors.successDim, borderRadius: Radius.lg,
+    padding: Spacing.lg, marginBottom: Spacing.md,
+    borderWidth: 1, borderColor: Colors.success,
+    alignItems: 'center', gap: 6,
+  },
+  waitlistSuccessTitle: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: Colors.success },
+  waitlistSuccessId: { fontSize: FontSize.xs, color: Colors.textMuted, fontFamily: 'monospace' },
+  waitlistSuccessMsg: { fontSize: FontSize.sm, color: Colors.textSecondary, textAlign: 'center' },
 
   fallbackCard: {
     flexDirection: 'row', alignItems: 'flex-start', gap: 8,

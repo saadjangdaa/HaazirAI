@@ -841,3 +841,49 @@ export async function submitWorkerBid(
   const { data } = await client.post(`/api/job-requests/${job_request_id}/bid`, bid);
   return data;
 }
+
+export async function rebookAfterCancellation(
+  bookingId: string,
+  cancelledBy: 'provider' | 'customer' = 'provider',
+  reason = 'Worker ne cancel kar diya'
+): Promise<{
+  ok: boolean;
+  cancellation_id: string;
+  replacement_status: string;
+  replacement_message: string;
+  replacement_booking?: Record<string, unknown>;
+  customer_message: string;
+  penalty_applied: boolean;
+  penalty_points: number;
+}> {
+  const { data } = await client.post(`/api/booking/${bookingId}/rebook`, {
+    cancelled_by: cancelledBy,
+    reason,
+  });
+  return data;
+}
+
+export async function joinWaitlist(params: {
+  userId: string;
+  service: string;
+  location: string;
+  city?: string;
+  requestedTime?: string;
+  intent?: Record<string, unknown>;
+}): Promise<{
+  ok: boolean;
+  waitlist_id: string;
+  message: string;
+  position: number;
+  estimated_callback_minutes: number;
+}> {
+  const { data } = await client.post('/api/waitlist', {
+    user_id: params.userId,
+    service: params.service,
+    location: params.location,
+    city: params.city || 'Islamabad',
+    requested_time: params.requestedTime || 'flexible',
+    intent: params.intent || {},
+  });
+  return data;
+}
