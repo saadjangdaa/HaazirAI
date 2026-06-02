@@ -47,11 +47,29 @@ async def get_worker_approval_status(user_id: str) -> str:
     if not user or user.get("role") != "worker":
         return "none"
 
-    if not is_profile_complete(user):
-        return "none"
-
     pid = (user.get("provider_id") or "").strip() or provider_id_for_worker(user_id)
     provider = await get_provider(pid)
+    if not is_profile_complete(user):
+        # Self-heal common drift: provider approved with phone/cnic but users/{uid}
+        # is missing root identity fields, causing false "none" approval.
+        patch: Dict[str, Any] = {}
+        if provider:
+            if not (user.get("phone") or "").strip() and (provider.get("phone") or "").strip():
+                patch["phone"] = provider.get("phone")
+            if not (user.get("cnic") or "").strip() and (provider.get("cnic") or "").strip():
+                patch["cnic"] = provider.get("cnic")
+            if not (user.get("city") or "").strip() and (provider.get("city") or "").strip():
+                patch["city"] = provider.get("city")
+            if not (user.get("skills") or []) and (provider.get("specialization") or []):
+                patch["skills"] = list(provider.get("specialization") or [])
+            if not (user.get("areas") or []) and (provider.get("area") or "").strip():
+                patch["areas"] = [provider.get("area")]
+        if patch:
+            await sync_user_profile(user_id, patch)
+            user = await get_user(user_id) or user
+        if not is_profile_complete(user):
+            return "none"
+
     if not provider:
         return "pending"
 

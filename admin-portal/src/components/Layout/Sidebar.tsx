@@ -5,6 +5,7 @@ const links = [
   { to: '/', label: 'Dashboard', end: true },
   { to: '/providers', label: 'Providers' },
   { to: '/disputes', label: 'Disputes' },
+  { to: '/investigations', label: 'Investigations' },
   { to: '/analytics', label: 'Analytics' },
   { to: '/admin-users', label: 'Admin Users', role: 'super_admin' },
   { to: '/audit-log', label: 'Audit Log' },

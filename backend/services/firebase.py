@@ -1404,6 +1404,7 @@ async def list_providers(
     city: Optional[str] = None, service: Optional[str] = None
 ) -> List[dict]:
     from services.providers_integrity import format_provider_record
+    from services.investigation_service import is_provider_eligible_for_assignment
 
     rows = []
     for doc_id, data in await list_provider_entries():
@@ -1421,7 +1422,7 @@ async def list_providers(
                 for s in (p.get("specialization") or [])
             )
         ]
-    return rows
+    return [p for p in rows if is_provider_eligible_for_assignment(p)]
 
 
 async def update_provider(provider_id: str, data: dict) -> bool:
@@ -1552,7 +1553,12 @@ async def verify_users_integrity() -> Dict[str, Any]:
 
 async def update_user(user_id: str, data: dict) -> bool:
     require_firebase_uid(user_id)
-    patch = normalize_user({**data}, user_id)
+    existing = await get_user(user_id) or {}
+    merged = {
+        **existing,
+        **{k: v for k, v in (data or {}).items() if v is not None and v != ""},
+    }
+    patch = normalize_user(merged, user_id)
     return _doc_update("users", user_id, {**patch, "updated_at": _now_iso()})
 
 
@@ -1788,6 +1794,74 @@ async def update_dispute(dispute_id: str, data: dict) -> bool:
 
 async def delete_dispute(dispute_id: str) -> bool:
     return _doc_delete("disputes", dispute_id)
+
+
+async def list_complaint_entries() -> List[tuple]:
+    """Return (document_id, data) for every complaints/{complaint_id} doc."""
+    if get_firebase_service().is_mock:
+        return list(_mock_bucket("complaints").items())
+    db = _get_db()
+    if db is None:
+        return []
+    return [
+        (snap.id, snap.to_dict() or {})
+        for snap in db.collection("complaints").stream()
+    ]
+
+
+async def create_complaint(data: dict) -> str:
+    complaint_id = (data.get("complaint_id") or str(uuid.uuid4())).strip()
+    payload = {**data, "complaint_id": complaint_id, "created_at": data.get("created_at", _now_iso())}
+    _doc_set("complaints", complaint_id, payload)
+    return complaint_id
+
+
+async def get_complaint(complaint_id: str) -> Optional[dict]:
+    return _doc_get("complaints", complaint_id)
+
+
+async def update_complaint(complaint_id: str, data: dict) -> bool:
+    patch = {k: v for k, v in (data or {}).items() if v is not None}
+    if not patch:
+        return False
+    patch["updated_at"] = _now_iso()
+    return _doc_update("complaints", complaint_id, patch)
+
+
+async def list_investigation_entries() -> List[tuple]:
+    """Return (document_id, data) for every investigations/{investigation_id} doc."""
+    if get_firebase_service().is_mock:
+        return list(_mock_bucket("investigations").items())
+    db = _get_db()
+    if db is None:
+        return []
+    return [
+        (snap.id, snap.to_dict() or {})
+        for snap in db.collection("investigations").stream()
+    ]
+
+
+async def create_investigation(data: dict) -> str:
+    investigation_id = (data.get("investigation_id") or str(uuid.uuid4())).strip()
+    payload = {
+        **data,
+        "investigation_id": investigation_id,
+        "created_at": data.get("created_at", _now_iso()),
+    }
+    _doc_set("investigations", investigation_id, payload)
+    return investigation_id
+
+
+async def get_investigation(investigation_id: str) -> Optional[dict]:
+    return _doc_get("investigations", investigation_id)
+
+
+async def update_investigation(investigation_id: str, data: dict) -> bool:
+    patch = {k: v for k, v in (data or {}).items() if v is not None}
+    if not patch:
+        return False
+    patch["updated_at"] = _now_iso()
+    return _doc_update("investigations", investigation_id, patch)
 
 
 async def verify_disputes_integrity() -> Dict[str, Any]:

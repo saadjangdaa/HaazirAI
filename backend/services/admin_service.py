@@ -150,7 +150,7 @@ def _provider_admin_status(data: dict) -> str:
     if data.get("deleted"):
         return "inactive"
     status = (data.get("admin_status") or data.get("status") or "").strip().lower()
-    if status in ("pending", "active", "inactive", "suspended", "rejected"):
+    if status in ("pending", "active", "inactive", "suspended", "rejected", "disabled"):
         return status
     if data.get("suspended_until"):
         return "suspended"
@@ -184,6 +184,12 @@ def _format_provider_admin(doc_id: str, data: dict) -> dict:
         "suspended_until": (data or {}).get("suspended_until"),
         "suspend_reason": (data or {}).get("suspend_reason"),
         "reject_reason": (data or {}).get("reject_reason"),
+        "complaint_count": int((data or {}).get("complaint_count") or 0),
+        "verified_complaint_count": int((data or {}).get("verified_complaint_count") or 0),
+        "risk_score": float((data or {}).get("risk_score") or 0),
+        "late_arrival_count": int((data or {}).get("late_arrival_count") or 0),
+        "investigation_status": (data or {}).get("investigation_status") or "none",
+        "recommended_action": (data or {}).get("recommended_action") or "keep_active",
         "background_check": (data or {}).get(
             "background_check",
             {"status": "clear", "details": "No criminal record", "verified": True},

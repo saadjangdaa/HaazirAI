@@ -58,6 +58,7 @@ from models.request import (
     WorkerBidCreate,
     AcceptBidRequest,
 )
+from models.investigation import ComplaintCreateBody, WorkerDefenseBody
 from agents.orchestrator import run_full_orchestration
 from agents.hisaab import HisaabAgent
 from agents.moltol import MoltolAgent
@@ -107,6 +108,12 @@ from services.dispute_service import (
     finalize_dispute,
     list_worker_disputes,
     respond_to_dispute,
+)
+from services.investigation_service import (
+    create_complaint_record,
+    maybe_open_investigation_for_provider,
+    submit_worker_defense,
+    verify_and_update_complaint,
 )
 from services.dispute_eligibility import NO_SHOW_GRACE_HOURS, assess_dispute_eligibility
 from services.push_notify import (
@@ -667,6 +674,50 @@ async def finalize_dispute_route(dispute_id: str, body: DisputeFinalizeRequest):
     """Phase E — JHAGRA final resolution after HIFAZAT review (under_review)."""
     uid = _require_firebase_uid(body.user_id)
     return await finalize_dispute(user_id=uid, dispute_id=dispute_id)
+
+
+@app.post("/api/complaints")
+async def file_complaint(body: ComplaintCreateBody):
+    uid = _require_firebase_uid(body.user_id)
+    if uid != body.user_id:
+        body.user_id = uid
+    return await create_complaint_record(
+        booking_id=body.booking_id,
+        user_id=uid,
+        provider_id=body.provider_id,
+        customer_statement=body.customer_statement,
+        severity=body.severity,
+        evidence_url=body.evidence_url,
+    )
+
+
+@app.patch("/api/complaints/{complaint_id}/verify")
+async def verify_complaint_route(complaint_id: str, verified: bool = True):
+    return await verify_and_update_complaint(complaint_id, verified)
+
+
+@app.post("/api/investigations/{investigation_id}/defense")
+async def submit_worker_defense_route(investigation_id: str, body: WorkerDefenseBody):
+    worker_uid = _require_firebase_uid(body.worker_uid)
+    return await submit_worker_defense(
+        investigation_id=investigation_id,
+        worker_uid=worker_uid,
+        statement=body.statement,
+    )
+
+
+@app.post("/api/providers/{provider_id}/pakka/late-arrival")
+async def pakka_late_arrival(provider_id: str, minutes_late: int):
+    if minutes_late <= 20:
+        return {"ok": True, "provider_id": provider_id, "minutes_late": minutes_late, "triggered": False}
+    opened = await maybe_open_investigation_for_provider(provider_id, trigger="pakka_late_arrival")
+    return {
+        "ok": True,
+        "provider_id": provider_id,
+        "minutes_late": minutes_late,
+        "triggered": bool(opened),
+        "investigation": opened,
+    }
 
 
 @app.get("/api/booking/{booking_id}")
