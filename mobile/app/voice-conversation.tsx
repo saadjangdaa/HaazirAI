@@ -39,7 +39,8 @@ type ChatItem =
   | { id: string; kind: 'livebidding'; bids: Bid[]; complete: boolean; recommendedId?: string }
   | { id: string; kind: 'waitlist_prompt'; service: string; location: string; city: string; intent: any }
   | { id: string; kind: 'emergency_112'; message: string }
-  | { id: string; kind: 'clarification'; question: string };
+  | { id: string; kind: 'clarification'; question: string }
+  | { id: string; kind: 'judge_note' };
 
 const EMERGENCY_KEYWORDS_VOICE = [
   'short circuit', 'gas leak', 'bijli ka jhatka', 'aag lagi', 'aag lag', 'flood',
@@ -50,6 +51,32 @@ function detectEmergencyVoice(text: string): boolean {
   const lower = text.toLowerCase();
   return EMERGENCY_KEYWORDS_VOICE.some((kw) => lower.includes(kw));
 }
+
+const JUDGE_KEYWORDS = [
+  'judges', 'judge ko', 'jury', 'hackathon', 'ai seekho', 'haazir hai', 'hamare baare',
+  'app ke baare', 'team ko', 'fatima judges', 'demo', 'presentation',
+];
+
+function detectJudgeQuery(text: string): boolean {
+  const lower = text.toLowerCase();
+  return JUDGE_KEYWORDS.some((kw) => lower.includes(kw));
+}
+
+const JUDGE_PITCH_TEXT = `Assalam-o-Alaikum, honorable judges of AI Seekho Hackathon 2026!
+
+Main Fatima hun — Haazir AI ki agentic voice assistant.
+
+Pakistan mein 40 million se zyada informal workers hain — plumbers, electricians, AC technicians, tutors, beauticians — lekin inhe dhundhna aaj bhi WhatsApp groups aur referrals pe depend karta hai. Missed calls, no trust, no pricing, no follow-up.
+
+Haazir AI ne yeh sab badal diya.
+
+Hamare 9 specialized AI agents ek saath kaam karte hain — SAMAJH multilingual intent samajhta hai, DHUNDHO providers dhundhta hai, CHUNNO 6 factors pe rank karta hai, HIFAZAT trust check karta hai, HISAAB dynamic pricing karta hai, PAKKA smart booking confirm karta hai, MOLTOL InDrive-style negotiate karta hai, JHAGRA disputes resolve karta hai, aur REPORT providers ko analytics deta hai.
+
+Yeh sab Google Antigravity se orchestrated hai, Gemini 3.5 Flash se powered — real-time, multilingual, fully agentic.
+
+2026 mein Pakistan ki gig economy ke liye yeh sirf ek app nahi — yeh ek infrastructure hai.
+
+Shukriya honorable judges — aur jo bhi chahiye, bhai Haazir hai! 🙏`;
 
 let _idCtr = 0;
 function mk<T extends Omit<ChatItem, 'id'>>(item: T): ChatItem {
@@ -327,6 +354,12 @@ export default function VoiceConversationScreen() {
         setChat((prev) => prev.map((item) =>
           item.id === placeholderId ? { ...item, text } : item
         ));
+        // Judge easter egg — intercept before API
+        if (detectJudgeQuery(text)) {
+          setChat((prev) => [...prev, mk({ kind: 'text', role: 'agent', text: 'Zaroor! Haazir AI ke baare mein judges ko batati hun... 🎤' })]);
+          handleJudgeNote();
+          return;
+        }
         setHistory((prev) => [...prev, { role: 'user', content: text }]);
         if (detectEmergencyVoice(text)) setIsEmergency(true);
         setUiState('searching');
@@ -361,6 +394,29 @@ export default function VoiceConversationScreen() {
     }
   };
 
+  // ── Judge easter egg handler ──────────────────────────────────────────────
+  const handleJudgeNote = useCallback(() => {
+    setUiState('searching');
+    // Brief "soch rahi hun..." moment for drama
+    setTimeout(() => {
+      setChat((prev) => [...prev, mk({ kind: 'judge_note' })]);
+      setUiState('idle');
+      // Speak the pitch via TTS if available
+      const { playBase64Audio } = require('../services/voicePlayback');
+      import('../services/api').then(({ client: _c, getApiBaseUrl }) => {
+        const base = getApiBaseUrl();
+        fetch(`${base}/api/tts`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: JUDGE_PITCH_TEXT, voice_id: voiceId, translate: false }),
+        })
+          .then((r) => r.json())
+          .then((d) => { if (d.audio_base64) playBase64Audio(d.audio_base64, () => {}); })
+          .catch(() => {});
+      });
+    }, 900);
+  }, [voiceId]);
+
   // ── Waitlist join handler (voice agent) ──────────────────────────────────
   const handleVoiceWaitlist = async (service: string, location: string, city: string, intent: any) => {
     if (!user?.id || waitlistLoading || waitlistDone) return;
@@ -382,12 +438,17 @@ export default function VoiceConversationScreen() {
     const text = textInput.trim();
     if (!text || uiState === 'done') return;
     setTextInput('');
-    if (detectEmergencyVoice(text)) setIsEmergency(true);
     setChat((prev) => [...prev, mk({ kind: 'text', role: 'user', text })]);
+    // Judge easter egg — intercept before API
+    if (detectJudgeQuery(text)) {
+      setChat((prev) => [...prev, mk({ kind: 'text', role: 'agent', text: 'Zaroor! Haazir AI ke baare mein judges ko batati hun... 🎤' })]);
+      handleJudgeNote();
+      return;
+    }
+    if (detectEmergencyVoice(text)) setIsEmergency(true);
     setHistory((prev) => [...prev, { role: 'user', content: text }]);
     setUiState('searching');
     try {
-      // Send history BEFORE current message — backend appends it itself (avoid duplication on session restore)
       const turn = await sendMessage(sessionId.current, text, user?.id || 'anonymous', userName, history, voiceId, language, user?.city || '');
       playAgentTurn(turn);
     } catch (e: any) {
@@ -727,6 +788,44 @@ export default function VoiceConversationScreen() {
                 }
               </TouchableOpacity>
             )}
+          </View>
+        );
+
+      // Judge easter egg — closing note card
+      case 'judge_note':
+        return (
+          <View key={item.id} style={styles.judgeCard}>
+            <View style={styles.judgeHeader}>
+              <Text style={styles.judgeTrophy}>🏆</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.judgeHeaderTitle}>AI Seekho Hackathon 2026</Text>
+                <Text style={styles.judgeHeaderSub}>Haazir AI — Judge Presentation</Text>
+              </View>
+            </View>
+
+            <Text style={styles.judgePitch}>{JUDGE_PITCH_TEXT}</Text>
+
+            <View style={styles.judgeAgentsRow}>
+              {['SAMAJH','DHUNDHO','CHUNNO','HIFAZAT','HISAAB','PAKKA','MOLTOL','JHAGRA','REPORT'].map((a) => (
+                <View key={a} style={styles.judgeAgentBadge}>
+                  <Text style={styles.judgeAgentText}>{a}</Text>
+                </View>
+              ))}
+            </View>
+
+            <View style={styles.judgeTechRow}>
+              <View style={styles.judgeTechBadge}>
+                <Text style={styles.judgeTechText}>Google Antigravity</Text>
+              </View>
+              <View style={styles.judgeTechBadge}>
+                <Text style={styles.judgeTechText}>Gemini 3.5 Flash</Text>
+              </View>
+              <View style={styles.judgeTechBadge}>
+                <Text style={styles.judgeTechText}>React Native</Text>
+              </View>
+            </View>
+
+            <Text style={styles.judgeFooter}>Made with ❤️ by Team Haazir AI · AI Seekho 2026</Text>
           </View>
         );
 
@@ -1095,6 +1194,54 @@ const styles = StyleSheet.create({
   waitlistBtnText: { color: '#fff', fontSize: FontSize.sm, fontWeight: '700' },
   waitlistDoneBadge: { backgroundColor: Colors.successDim, borderRadius: Radius.md, paddingVertical: 8, paddingHorizontal: 16 },
   waitlistDoneText: { color: Colors.success, fontWeight: '700', fontSize: FontSize.sm },
+
+  // Judge easter egg card
+  judgeCard: {
+    marginTop: Spacing.sm, marginBottom: Spacing.xs,
+    borderRadius: Radius.xl,
+    borderWidth: 2, borderColor: Colors.primary,
+    overflow: 'hidden',
+    ...Shadow.card,
+  },
+  judgeHeader: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: Colors.primary,
+    paddingHorizontal: Spacing.md, paddingVertical: 12,
+  },
+  judgeTrophy: { fontSize: 28 },
+  judgeHeaderTitle: { fontSize: FontSize.md, fontWeight: '900', color: '#fff' },
+  judgeHeaderSub: { fontSize: FontSize.xs, color: 'rgba(255,255,255,0.8)', marginTop: 1 },
+  judgePitch: {
+    fontSize: FontSize.sm, color: Colors.textPrimary, lineHeight: 21,
+    padding: Spacing.md, backgroundColor: Colors.surface,
+  },
+  judgeAgentsRow: {
+    flexDirection: 'row', flexWrap: 'wrap', gap: 5,
+    paddingHorizontal: Spacing.md, paddingBottom: Spacing.sm,
+    backgroundColor: Colors.surface,
+  },
+  judgeAgentBadge: {
+    backgroundColor: Colors.primaryLight,
+    borderRadius: Radius.full,
+    paddingHorizontal: 9, paddingVertical: 3,
+    borderWidth: 1, borderColor: Colors.primaryDim,
+  },
+  judgeAgentText: { fontSize: 10, fontWeight: '800', color: Colors.primary, letterSpacing: 0.3 },
+  judgeTechRow: {
+    flexDirection: 'row', flexWrap: 'wrap', gap: 6,
+    paddingHorizontal: Spacing.md, paddingBottom: Spacing.sm,
+    backgroundColor: Colors.surface,
+  },
+  judgeTechBadge: {
+    backgroundColor: '#1a1a2e', borderRadius: Radius.md,
+    paddingHorizontal: 10, paddingVertical: 4,
+  },
+  judgeTechText: { fontSize: FontSize.xs, color: '#7DF9FF', fontWeight: '700' },
+  judgeFooter: {
+    textAlign: 'center', fontSize: FontSize.xs, color: Colors.textMuted,
+    paddingVertical: 10, backgroundColor: Colors.surfaceElevated,
+    borderTopWidth: 1, borderTopColor: Colors.border,
+  },
 
   // Case 4: Emergency 112
   emergency112Card: {
