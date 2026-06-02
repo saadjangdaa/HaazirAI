@@ -81,33 +81,29 @@ def _call_generate(prompt: str, system_prompt: str = "") -> str:
 
 
 async def _try_generate(prompt: str, system_prompt: str = "") -> str | None:
-    """Try all keys in sequence with timeout. Returns None → mock fallback."""
+    """Try all keys in sequence. Returns None → mock fallback."""
     global _current_key_idx
 
     tried = 0
     while tried < len(_ALL_KEYS):
         try:
             loop = asyncio.get_event_loop()
-            result = await asyncio.wait_for(
-                loop.run_in_executor(None, lambda: _call_generate(prompt, system_prompt)),
-                timeout=_GEMINI_TIMEOUT,
+            result = await loop.run_in_executor(
+                None, lambda: _call_generate(prompt, system_prompt)
             )
             if result:
                 return result
             raise ValueError("empty response")
-        except asyncio.TimeoutError:
-            print(f"[gemini] key #{_current_key_idx + 1} timed out after {_GEMINI_TIMEOUT}s")
         except Exception as e:
             print(f"[gemini] key #{_current_key_idx + 1} error: {e}")
-
-        next_idx = _current_key_idx + 1
-        if next_idx < len(_ALL_KEYS):
-            print(f"[gemini] rotating to key #{next_idx + 1} of {len(_ALL_KEYS)}")
-            _init_client(next_idx)
-            tried += 1
-        else:
-            print(f"[gemini] all {len(_ALL_KEYS)} keys exhausted — falling back to mock")
-            return None
+            next_idx = _current_key_idx + 1
+            if next_idx < len(_ALL_KEYS):
+                print(f"[gemini] rotating to key #{next_idx + 1} of {len(_ALL_KEYS)}")
+                _init_client(next_idx)
+                tried += 1
+            else:
+                print(f"[gemini] all {len(_ALL_KEYS)} keys exhausted — falling back to mock")
+                return None
 
     return None
 
@@ -136,14 +132,9 @@ async def generate_with_parts(parts: list) -> str:
                     return response.text or ""
                 return ""
 
-            result = await asyncio.wait_for(
-                loop.run_in_executor(None, _do_multimodal),
-                timeout=_GEMINI_TIMEOUT,
-            )
+            result = await loop.run_in_executor(None, _do_multimodal)
             if result:
                 return result
-        except asyncio.TimeoutError:
-            print(f"[gemini] STT key #{_current_key_idx + 1} timed out")
         except Exception as e:
             print(f"[gemini] STT key #{_current_key_idx + 1} error: {e}")
 
