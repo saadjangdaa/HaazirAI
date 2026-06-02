@@ -2,38 +2,54 @@ import os
 import re
 import json
 import asyncio
-import google.generativeai as genai
 
 try:
-    from config import config
-
-    GEMINI_API_KEY = (config.GEMINI_API_KEY or "").strip()
-    _GEMINI_MODEL = getattr(config, "GEMINI_MODEL", None) or "gemini-2.0-flash"
+    from google import genai as _google_genai
+    from google.genai import types as _genai_types
+    _NEW_SDK = True
 except ImportError:
-    GEMINI_API_KEY = os.getenv("GOOGLE_GEMINI_API_KEY", "") or os.getenv("GEMINI_API_KEY", "")
-    _GEMINI_MODEL = "gemini-2.0-flash"
+    _NEW_SDK = False
 
-# ── Collect up to 5 API keys ──────────────────────────────────────────────────
+# Fallback to old SDK if new one not installed
+if not _NEW_SDK:
+    try:
+        import google.generativeai as _old_genai
+        _OLD_SDK = True
+    except ImportError:
+        _OLD_SDK = False
+else:
+    _OLD_SDK = False
+
+# ── Collect up to 15 API keys — MAIN (paid) key goes first ───────────────────
 _ALL_KEYS: list[str] = []
-for _suffix in ["", "2", "3", "4", "5"]:
+_main_key = os.getenv("GOOGLE_GEMINI_API_KEY_MAIN", "").strip()
+if _main_key and _main_key != "your_gemini_api_key":
+    _ALL_KEYS.append(_main_key)
+for _suffix in ["", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15"]:
     _k = os.getenv(f"GOOGLE_GEMINI_API_KEY{_suffix}", "").strip()
-    if _k and _k != "your_gemini_api_key":
+    if _k and _k not in ("your_gemini_api_key", "") and _k != _main_key:
         _ALL_KEYS.append(_k)
 
 MOCK_MODE = len(_ALL_KEYS) == 0
 _MODEL_NAME = "gemini-3.5-flash"
+_GEMINI_TIMEOUT = 10.0
 
 _current_key_idx = 0
-_model: genai.GenerativeModel | None = None
+_client = None  # google-genai Client
 
 
-def _init_model(idx: int) -> bool:
-    global _model, _current_key_idx
+def _init_client(idx: int) -> bool:
+    global _client, _current_key_idx
     if idx >= len(_ALL_KEYS):
         return False
     try:
-        genai.configure(api_key=_ALL_KEYS[idx])
-        _model = genai.GenerativeModel(_MODEL_NAME)
+        if _NEW_SDK:
+            _client = _google_genai.Client(
+                api_key=_ALL_KEYS[idx],
+                http_options={"api_version": "v1"},
+            )
+        else:
+            _old_genai.configure(api_key=_ALL_KEYS[idx])
         _current_key_idx = idx
         print(f"[gemini] using key #{idx + 1} of {len(_ALL_KEYS)}")
         return True
@@ -43,62 +59,47 @@ def _init_model(idx: int) -> bool:
 
 
 if not MOCK_MODE:
-    if not _init_model(0):
+    if not _init_client(0):
         MOCK_MODE = True
 
 
-def _should_rotate(error: Exception) -> bool:
-    """Rotate to next key on rate-limits AND access/permission errors."""
-    s = str(error)
-    return (
-        "429" in s
-        or "403" in s
-        or "quota" in s.lower()
-        or "rate" in s.lower()
-        or "denied" in s.lower()
-        or "permission" in s.lower()
-        or "access" in s.lower()
-    )
+def _call_generate(prompt: str, system_prompt: str = "") -> str:
+    """Synchronous Gemini call — runs in executor."""
+    full_content = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
+    if _NEW_SDK and _client:
+        response = _client.models.generate_content(
+            model=_MODEL_NAME,
+            contents=full_content,
+        )
+        return response.text or ""
+    elif _OLD_SDK:
+        import google.generativeai as _og
+        model = _og.GenerativeModel(_MODEL_NAME)
+        response = model.generate_content(full_content)
+        return response.text or ""
+    return ""
 
 
-def _is_rate_limit(error: Exception) -> bool:
-    s = str(error)
-    return "429" in s or "quota" in s.lower() or "rate" in s.lower()
-
-
-def _extract_response_text(response) -> str:
-    """Extract only non-thought text from Gemini response.
-    Gemini 2.5 Flash (thinking model) includes thought parts in response.candidates;
-    response.text concatenates ALL parts including thinking — we want only the final answer."""
-    try:
-        text = ""
-        for part in response.candidates[0].content.parts:
-            if not getattr(part, "thought", False):
-                text += getattr(part, "text", "")
-        return text.strip() if text.strip() else response.text
-    except Exception:
-        return response.text
-
-
-async def _try_generate(content) -> str:
-    """Try all keys in sequence, rotating on any error. Falls back to mock if all exhausted."""
-    global _current_key_idx, MOCK_MODE
+async def _try_generate(prompt: str, system_prompt: str = "") -> str | None:
+    """Try all keys in sequence. Returns None → mock fallback."""
+    global _current_key_idx
 
     tried = 0
-
     while tried < len(_ALL_KEYS):
         try:
             loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None, lambda: _model.generate_content(content)
+            result = await loop.run_in_executor(
+                None, lambda: _call_generate(prompt, system_prompt)
             )
-            return _extract_response_text(response)
+            if result:
+                return result
+            raise ValueError("empty response")
         except Exception as e:
             print(f"[gemini] key #{_current_key_idx + 1} error: {e}")
             next_idx = _current_key_idx + 1
             if next_idx < len(_ALL_KEYS):
                 print(f"[gemini] rotating to key #{next_idx + 1} of {len(_ALL_KEYS)}")
-                _init_model(next_idx)
+                _init_client(next_idx)
                 tried += 1
             else:
                 print(f"[gemini] all {len(_ALL_KEYS)} keys exhausted — falling back to mock")
@@ -108,22 +109,48 @@ async def _try_generate(content) -> str:
 
 
 async def generate_with_parts(parts: list) -> str:
-    """Multimodal generation — used for audio STT.
-    Uses _try_generate (gemini-2.5-flash) with key rotation + thought filtering.
-    This was the original working implementation."""
+    """Multimodal generation for audio STT."""
     if MOCK_MODE:
         return '{"text": "AC bilkul kaam nahi kar raha, kal subah repair chahiye", "detected_language": "roman_urdu", "confidence": 0.95}'
-    result = await _try_generate(parts)
-    if result is None:
-        return '{"text": "", "detected_language": "unknown", "confidence": 0.0}'
-    return result
+
+    tried = 0
+    while tried < len(_ALL_KEYS):
+        try:
+            loop = asyncio.get_event_loop()
+
+            def _do_multimodal():
+                if _NEW_SDK and _client:
+                    response = _client.models.generate_content(
+                        model=_MODEL_NAME,
+                        contents=parts,
+                    )
+                    return response.text or ""
+                elif _OLD_SDK:
+                    import google.generativeai as _og
+                    model = _og.GenerativeModel(_MODEL_NAME)
+                    response = model.generate_content(parts)
+                    return response.text or ""
+                return ""
+
+            result = await loop.run_in_executor(None, _do_multimodal)
+            if result:
+                return result
+        except Exception as e:
+            print(f"[gemini] STT key #{_current_key_idx + 1} error: {e}")
+
+        next_idx = _current_key_idx + 1
+        if next_idx < len(_ALL_KEYS):
+            _init_client(next_idx)
+            tried += 1
+        else:
+            return '{"text": "", "detected_language": "unknown", "confidence": 0.0}'
+    return '{"text": "", "detected_language": "unknown", "confidence": 0.0}'
 
 
 async def generate(prompt: str, system_prompt: str = "") -> str:
     if MOCK_MODE:
         return _mock_gemini_response(prompt, system_prompt)
-    full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
-    result = await _try_generate(full_prompt)
+    result = await _try_generate(prompt, system_prompt)
     if result is None:
         return _mock_gemini_response(prompt, system_prompt)
     return result
@@ -134,68 +161,20 @@ async def generate_chat(
     system_prompt: str = "",
     init_hint: str = "",
 ) -> str:
-    """Proper Gemini chat format — prevents history echo on gemini-2.5-flash thinking model.
-
-    history: list of {"role": "user"|"assistant", "content": "..."} dicts.
-    init_hint: Roman Urdu instruction when history is empty (__init__ turn).
-    """
     if MOCK_MODE:
         mock_prompt = init_hint or (history[-1]["content"] if history else "")
         return _mock_gemini_response(mock_prompt, system_prompt)
 
-    async def _do_generate() -> str | None:
-        global _current_key_idx
-        tried = 0
-        while tried < len(_ALL_KEYS):
-            try:
-                # Build Content list: interleave user/model turns
-                contents = []
-                for entry in history:
-                    role = "user" if entry["role"] == "user" else "model"
-                    contents.append({"role": role, "parts": [{"text": entry["content"]}]})
+    # Build conversation prompt from history
+    lines = []
+    for entry in history:
+        role = "User" if entry["role"] == "user" else "Assistant"
+        lines.append(f"{role}: {entry['content']}")
+    if init_hint:
+        lines.append(f"User: {init_hint}")
+    prompt = "\n".join(lines)
 
-                # If no history yet (__init__), use init_hint as user message
-                if not contents and init_hint:
-                    contents = [{"role": "user", "parts": [{"text": init_hint}]}]
-                elif init_hint and contents[-1]["role"] != "user":
-                    # Add init_hint as extra context after last model turn (shouldn't normally happen)
-                    contents.append({"role": "user", "parts": [{"text": init_hint}]})
-
-                loop = asyncio.get_event_loop()
-                if system_prompt:
-                    model_instance = genai.GenerativeModel(
-                        _MODEL_NAME,
-                        system_instruction=system_prompt,
-                    )
-                else:
-                    model_instance = _model
-
-                response = await loop.run_in_executor(
-                    None, lambda m=model_instance, c=contents: m.generate_content(c)
-                )
-                # Extract only non-thought parts (gemini-2.5-flash thinking model)
-                text = ""
-                try:
-                    for part in response.candidates[0].content.parts:
-                        if not getattr(part, "thought", False):
-                            text += getattr(part, "text", "")
-                except Exception:
-                    text = response.text  # fallback for older SDK versions
-                return text.strip() or None
-            except Exception as e:
-                print(f"[gemini] key #{_current_key_idx + 1} error: {e}")
-                next_idx = _current_key_idx + 1
-                if next_idx < len(_ALL_KEYS):
-                    print(f"[gemini] rotating to key #{next_idx + 1} of {len(_ALL_KEYS)}")
-                    _init_model(next_idx)
-                    tried += 1
-                else:
-                    print(f"[gemini] all {len(_ALL_KEYS)} keys exhausted — falling back to mock")
-                    return None
-            tried += 1
-        return None
-
-    result = await _do_generate()
+    result = await _try_generate(prompt, system_prompt)
     if not result:
         mock_prompt = init_hint or (history[-1]["content"] if history else "")
         return _mock_gemini_response(mock_prompt, system_prompt)
@@ -208,17 +187,14 @@ def _mock_gemini_response(prompt: str, system_prompt: str = "") -> str:
     sp_lower = system_prompt.lower()
 
     # Translation call — return input text unchanged so Uplift TTS still gets usable text.
-    # Only apply when system_prompt clearly identifies a translation task, NOT a conversation.
     is_translation = (
         "translator" in sp_lower
         or "nastaliq" in sp_lower
         or (not system_prompt and "translate" in prompt.lower())
     )
-    # "urdu script" check only if NOT a conversation agent (avoid false positives)
     if not is_translation and "urdu script" in sp_lower and "fatima" not in sp_lower and "[search:" not in sp_lower:
         is_translation = True
     if is_translation:
-        # Return only plain text — strip any prompt wrapper lines like "Fatima: ..."
         lines = [l for l in prompt.strip().splitlines() if not l.strip().lower().startswith(("fatima:", "user:"))]
         return " ".join(lines).strip() or prompt.strip()
 
@@ -236,11 +212,14 @@ def _mock_gemini_response(prompt: str, system_prompt: str = "") -> str:
         elif "carpent" in p_lower or "furniture" in p_lower:
             service = "carpenter"
         city = "Islamabad"
-        if "karachi" in p_lower: city = "Karachi"
-        elif "lahore" in p_lower: city = "Lahore"
+        _karachi_kw = ["karachi", "clifton", "gulshan", "nazimabad", "korangi", "dha khi",
+                       "defence", "saddar", "malir", "north karachi", "surjani", "lyari"]
+        _lahore_kw = ["lahore", "gulberg", "johar town", "model town", "dha lahore", "bahria town"]
+        if any(kw in p_lower for kw in _karachi_kw): city = "Karachi"
+        elif any(kw in p_lower for kw in _lahore_kw): city = "Lahore"
         is_emergency = any(kw in p_lower for kw in ["gas leak", "aag", "fire", "emergency"])
         return json.dumps({
-            "service_type": service, "location": "G-13", "city": city,
+            "service_type": service, "location": city, "city": city,
             "time_preference": "tomorrow_morning",
             "urgency": "critical" if is_emergency else "high",
             "budget_sensitivity": "high", "job_complexity": "intermediate",
@@ -263,8 +242,6 @@ def _mock_gemini_response(prompt: str, system_prompt: str = "") -> str:
             "notes": "Standard rate applies.",
         })
 
-    # Conversation agent mock (Fatima persona)
-    # Detection: _BASE_LOGIC is always English, so "[search:" appears in all language system prompts
     is_conversation = (
         "[search:" in sp_lower
         or "never ask for the user" in sp_lower
@@ -273,7 +250,6 @@ def _mock_gemini_response(prompt: str, system_prompt: str = "") -> str:
         or "فاطمہ" in system_prompt
     )
     if is_conversation:
-        # Detect language from system prompt prefix (Arabic script not lowercased)
         if "توهان فاطمه" in system_prompt:
             lang = "sindhi"
         elif "آپ فاطمہ" in system_prompt:
@@ -293,11 +269,11 @@ def _mock_gemini_response(prompt: str, system_prompt: str = "") -> str:
             "balochi":    "السلام علیکم! من فاطمه ئن — حاضر AI ءِ مددگار۔ امروز کئی خدمت لازم ءُ؟",
         }
         _ASK_LOCATION = {
-            "roman_urdu": "Achha! Kahan chahiye — area batao (jaise G-13, DHA)?",
-            "urdu":       "اچھا! کہاں چاہیے — علاقہ بتائیں (جیسے G-13، DHA)؟",
-            "sindhi":     "ٺيڪ آهي! ڪٿي گهرجي — علائقو ٻڌايو (جهڙوڪ DHA، Clifton)؟",
-            "pashto":     "ښه! چیرته پکار ده — سیمه ووایاست (لکه DHA، F-7)؟",
-            "balochi":    "خیر! کجا لازم ءُ — ناحیه بگوش (مثال DHA، Clifton)؟",
+            "roman_urdu": "Achha! Kahan chahiye — area batao (jaise Clifton, DHA, G-13)?",
+            "urdu":       "اچھا! کہاں چاہیے — علاقہ بتائیں؟",
+            "sindhi":     "ٺيڪ آهي! ڪٿي گهرجي — علائقو ٻڌايو؟",
+            "pashto":     "ښه! چیرته پکار ده — سیمه ووایاست؟",
+            "balochi":    "خیر! کجا لازم ءُ — ناحیه بگوش؟",
         }
         _SEARCH_CONFIRM = {
             "roman_urdu": "Theek hai, main abhi providers dhundh rahi hun!",
@@ -306,21 +282,6 @@ def _mock_gemini_response(prompt: str, system_prompt: str = "") -> str:
             "pashto":     "ښه، زه اوس چمتو کوونکي لټوم!",
             "balochi":    "خیر، من ایستاک خدمتگار گردانی!",
         }
-
-        p_lower = prompt.lower()
-        # Only return greeting if this is truly the __init__ turn (no prior User: lines)
-        is_init = "user:" not in p_lower and "greet" in p_lower
-        if is_init:
-            return _GREETINGS[lang]
-
-        # Extract only the last User: line so Fatima's own greeting
-        # ("AC, plumber, ya koi aur service?") doesn't poison service detection.
-        user_lines = [
-            line for line in prompt.splitlines()
-            if line.strip().lower().startswith("user:")
-        ]
-        user_text = user_lines[-1].split(":", 1)[-1].lower() if user_lines else p_lower
-
         _ASK_URGENCY = {
             "roman_urdu": "Theek hai! Yeh kaam urgent hai (aaj chahiye) ya baad mein schedule karein?",
             "urdu":       "ٹھیک ہے! یہ کام فوری چاہیے (آج) یا بعد میں شیڈول کریں؟",
@@ -329,12 +290,25 @@ def _mock_gemini_response(prompt: str, system_prompt: str = "") -> str:
             "balochi":    "خیر! ایں کام ژلدی لازم ءُ (امروز) یا بعداً شیڈول کنیں؟",
         }
 
+        p_lower = prompt.lower()
+        is_init = "user:" not in p_lower and "greet" in p_lower
+        if is_init:
+            return _GREETINGS[lang]
+
+        user_lines = [
+            line for line in prompt.splitlines()
+            if line.strip().lower().startswith("user:")
+        ]
+        user_text = user_lines[-1].split(":", 1)[-1].lower() if user_lines else p_lower
+
         has_service = any(svc in user_text for svc in ["ac", "plumb", "electric", "tutor", "carpent",
                                                         "mechanic", "cook", "maid", "garden", "painter",
                                                         "beautician", "beaut"])
-        has_location = any(loc in p_lower for loc in ["g-", "dha", "f-", "islamabad", "karachi",
-                                                       "lahore", "sector", "clifton", "gulshan",
-                                                       "bahria", "gulberg"])
+        _karachi_areas = ["karachi", "clifton", "gulshan", "nazimabad", "korangi", "defence",
+                          "saddar", "malir", "north karachi", "surjani", "lyari", "dha khi"]
+        _lahore_areas = ["lahore", "gulberg", "johar town", "model town", "dha lahore", "bahria town", "cantt"]
+        _isb_areas = ["islamabad", "rawalpindi", "g-", "f-", "i-", "e-7"]
+        has_location = any(kw in p_lower for kw in _karachi_areas + _lahore_areas + _isb_areas + ["sector", "dha", "bahria"])
         has_urgency = any(kw in p_lower for kw in [
             "urgent", "aaj", "abhi", "jaldi", "fori", "emergency",
             "baad", "kal", "schedule", "later", "high", "medium", "low",
@@ -344,7 +318,6 @@ def _mock_gemini_response(prompt: str, system_prompt: str = "") -> str:
             if has_location:
                 if not has_urgency:
                     return _ASK_URGENCY[lang]
-                # All three known — trigger search
                 svc = "AC_repair"
                 if "plumb" in user_text or "nal" in user_text: svc = "plumber"
                 elif "electric" in user_text or "bijli" in user_text: svc = "electrician"
@@ -356,8 +329,8 @@ def _mock_gemini_response(prompt: str, system_prompt: str = "") -> str:
                 elif "paint" in user_text: svc = "painter"
                 elif "beaut" in user_text or "salon" in user_text: svc = "beautician"
                 loc = "Islamabad"
-                if "karachi" in p_lower or "clifton" in p_lower or ("dha" in p_lower and "karachi" in p_lower): loc = "Karachi"
-                elif "lahore" in p_lower or "gulberg" in p_lower: loc = "Lahore"
+                if any(kw in p_lower for kw in _karachi_areas): loc = "Karachi"
+                elif any(kw in p_lower for kw in _lahore_areas): loc = "Lahore"
                 urgency = "high" if any(kw in p_lower for kw in ["urgent", "aaj", "abhi", "jaldi", "fori", "emergency"]) else "medium"
                 return f"[SEARCH: service={svc} location={loc} urgency={urgency}]\n{_SEARCH_CONFIRM[lang]}"
             return _ASK_LOCATION[lang]

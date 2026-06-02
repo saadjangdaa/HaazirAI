@@ -264,6 +264,41 @@ def _fallback_ranked_providers(intent: dict, limit: int = 8) -> list:
     return ranked
 
 
+_KNOWN_CITIES = {"karachi", "lahore", "islamabad", "rawalpindi", "faisalabad", "peshawar", "quetta", "multan"}
+
+_AREA_CITY_MAP: dict[str, str] = {
+    "clifton": "Karachi", "defence": "Karachi", "dha khi": "Karachi",
+    "gulshan": "Karachi", "gulshan-e-iqbal": "Karachi", "gulshan iqbal": "Karachi",
+    "nazimabad": "Karachi", "korangi": "Karachi", "malir": "Karachi",
+    "saddar": "Karachi", "north karachi": "Karachi", "surjani": "Karachi",
+    "lyari": "Karachi", "orangi": "Karachi", "federal b": "Karachi",
+    "gulberg": "Lahore", "johar town": "Lahore", "model town": "Lahore",
+    "dha lahore": "Lahore", "bahria town": "Lahore", "cantt": "Lahore",
+    "g-13": "Islamabad", "g-11": "Islamabad", "g-10": "Islamabad",
+    "f-7": "Islamabad", "f-6": "Islamabad", "f-10": "Islamabad",
+    "i-8": "Islamabad", "i-10": "Islamabad", "e-7": "Islamabad",
+}
+
+
+def _resolve_city(location: str, user_city: str = "") -> str:
+    """Map a location string (area/neighbourhood/city) to a canonical city name."""
+    loc_lower = (location or "").lower().strip()
+    if not loc_lower:
+        return user_city or "Islamabad"
+    # Already a known city
+    if loc_lower in _KNOWN_CITIES:
+        return location.title()
+    # Check area→city map
+    for area, city in _AREA_CITY_MAP.items():
+        if area in loc_lower:
+            return city
+    # "DHA" alone is ambiguous — use user_city
+    if "dha" in loc_lower:
+        return user_city or "Karachi"
+    # Unknown area — fall back to user's registered city
+    return user_city or "Islamabad"
+
+
 def _filter_providers_by_service(providers: list, intent: dict) -> list:
     """Final safeguard: strip providers that don't match the requested service.
     If filtering would leave 0 results, return original (better some than none)."""
@@ -994,16 +1029,19 @@ async def conversation(body: ConversationRequest):
         if result.get("search_trigger"):
             trigger = result["search_trigger"]
             service = _normalize_service(trigger.get("service", "service"))
-            location = trigger.get("location") or body.user_city or "Islamabad"
+            raw_location = trigger.get("location") or body.user_city or "Islamabad"
+            # Map neighbourhood/area to canonical city (e.g. "Clifton" → "Karachi")
+            city = _resolve_city(raw_location, body.user_city or "")
+            location = city  # use resolved city for provider search
             urgency = trigger.get("urgency", "medium")
 
             orch: dict = {}
             try:
                 orch = await asyncio.wait_for(
                     run_samajh_workflow(
-                        user_input=f"Mujhe {service} chahiye, location: {location}, urgency: {urgency}",
+                        user_input=f"Mujhe {service} chahiye, location: {city}, urgency: {urgency}",
                         source="text",
-                        user_location=location,
+                        user_location=city,
                     ),
                     timeout=15.0,
                 )
