@@ -178,6 +178,19 @@ class RebookRequest(BaseModel):
     reason: str = "Worker ne cancel kar diya"
 
 
+class RebookFromChatRequest(BaseModel):
+    """When booking only exists in mobile Firestore — seed backend doc then rebook."""
+    job_request_id: str
+    user_id: str
+    provider_id: str = ""
+    service: str = "Service"
+    location: str = ""
+    city: str = "Islamabad"
+    price: int = 1000
+    cancelled_by: str = "provider"
+    reason: str = "Worker late — customer ne naya worker maanga"
+
+
 class WaitlistRequest(BaseModel):
     user_id: str
     service: str

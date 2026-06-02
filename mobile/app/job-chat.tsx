@@ -12,6 +12,8 @@ import {
   subscribeToChat, sendChatMessage,
   ChatDoc, ChatMessage, ChatStatus,
 } from '../services/chatService';
+import { ArrivalEtaPanel } from '../components/ArrivalEtaPanel';
+import { runCustomerRebook } from '../services/rebookFlow';
 
 const STATUS_CONFIG: Record<ChatStatus, { label: string; color: string; bg: string; icon: string }> = {
   waiting:     { label: 'Worker ka intezaar...',    color: Colors.warning,   bg: Colors.warningDim,   icon: 'time-outline' },
@@ -37,6 +39,7 @@ export default function JobChatScreen() {
   const [loading, setLoading] = useState(true);
   const [msgText, setMsgText] = useState('');
   const [sending, setSending] = useState(false);
+  const [rebooking, setRebooking] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
 
   useEffect(() => {
@@ -47,6 +50,18 @@ export default function JobChatScreen() {
     });
     return unsub;
   }, [jobRequestId]);
+
+  useEffect(() => {
+    if (!chat?.superseded_by || chat.superseded_by === jobRequestId) return;
+    router.replace({
+      pathname: '/job-chat',
+      params: {
+        jobRequestId: chat.superseded_by,
+        workerName: chat.superseded_worker_name || workerName || 'Worker',
+        service: chat.service || service || 'Service',
+      },
+    });
+  }, [chat?.superseded_by, chat?.superseded_worker_name, jobRequestId, router, chat?.service, workerName, service]);
 
   useEffect(() => {
     if (chat?.messages?.length) {
@@ -116,6 +131,66 @@ export default function JobChatScreen() {
           <ActivityIndicator size="small" color={cfg.color} style={{ marginLeft: 'auto' }} />
         )}
       </View>
+
+      {chat && jobRequestId && !chat.superseded_by && (
+        <ArrivalEtaPanel
+          chat={chat}
+          jobRequestId={jobRequestId}
+          role="customer"
+          displayName={user?.username?.split('_')[0] || 'Customer'}
+          onRebookSuccess={(newId, newWorker) => {
+            router.replace({
+              pathname: '/job-chat',
+              params: {
+                jobRequestId: newId,
+                workerName: newWorker,
+                service: chat.service || service || 'Service',
+              },
+            });
+          }}
+        />
+      )}
+
+      {status === 'cancelled' && chat?.customer_wait_decision === 'rebook' && (
+        <View style={styles.rebookRetryBar}>
+          <Text style={styles.rebookRetryText}>
+            Naya worker assign nahi hua? Dobara agents se dhundhein.
+          </Text>
+          <TouchableOpacity
+            style={[styles.rebookRetryBtn, rebooking && { opacity: 0.6 }]}
+            disabled={rebooking}
+            onPress={async () => {
+              if (!chat || !jobRequestId) return;
+              setRebooking(true);
+              try {
+                const result = await runCustomerRebook({
+                  chat,
+                  jobRequestId,
+                  customerName: user?.username?.split('_')[0] || 'Customer',
+                });
+                if (result.ok && result.newJobRequestId) {
+                  router.replace({
+                    pathname: '/job-chat',
+                    params: {
+                      jobRequestId: result.newJobRequestId,
+                      workerName: result.workerName,
+                      service: chat.service || service || 'Service',
+                    },
+                  });
+                }
+              } finally {
+                setRebooking(false);
+              }
+            }}
+          >
+            {rebooking ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Text style={styles.rebookRetryBtnText}>Naya worker dhundhein</Text>
+            )}
+          </TouchableOpacity>
+        </View>
+      )}
 
       {/* Messages */}
       <ScrollView
@@ -313,4 +388,22 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.md, paddingVertical: 8,
   },
   feedbackBtnText: { fontSize: FontSize.sm, color: '#fff', fontWeight: FontWeight.bold },
+
+  rebookRetryBar: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    backgroundColor: Colors.warningDim,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+    gap: 8,
+  },
+  rebookRetryText: { fontSize: FontSize.sm, color: Colors.textSecondary },
+  rebookRetryBtn: {
+    alignSelf: 'flex-start',
+    backgroundColor: Colors.warning,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 8,
+  },
+  rebookRetryBtnText: { color: '#fff', fontWeight: FontWeight.bold, fontSize: FontSize.sm },
 });

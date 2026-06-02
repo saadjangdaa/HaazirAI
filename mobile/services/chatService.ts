@@ -26,6 +26,8 @@ export interface ChatMessage {
   ts: string;
 }
 
+export type CustomerWaitDecision = 'waiting' | 'rebook';
+
 export interface ChatDoc {
   job_request_id: string;
   customer_id: string;
@@ -42,7 +44,28 @@ export interface ChatDoc {
   messages: ChatMessage[];
   created_at: string;
   updated_at: string;
+  booking_id?: string;
+  /** Set when worker taps Rawaana — used for ETA countdown */
+  on_the_way_at?: string;
+  eta_minutes?: number;
+  /** Testing / short ETA — seconds until expected arrival */
+  eta_seconds?: number;
+  /** When late-arrival prompts were injected into chat */
+  late_prompt_at?: string;
+  late_worker_note?: string;
+  customer_wait_decision?: CustomerWaitDecision | null;
+  /** Old worker chat closed — replaced by superseded_by */
+  superseded_by?: string;
+  /** New worker name after rebook (for customer redirect from old chat) */
+  superseded_worker_name?: string;
+  parent_job_request_id?: string;
+  /** Worker UI: only show messages[0..worker_message_cutoff) */
+  worker_message_cutoff?: number;
 }
+
+export const DEFAULT_ETA_MINUTES = 20;
+/** Testing: 30 sec countdown. Production: remove eta_seconds and use eta_minutes only */
+export const DEFAULT_ETA_SECONDS = 30;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -54,6 +77,64 @@ function mkId(): string {
 
 function sysMsg(text: string): ChatMessage {
   return { id: mkId(), sender_role: 'system', sender_name: 'Haazir AI', text, ts: nowIso() };
+}
+
+const WORKER_REBOOK_CLOSE_PATTERNS = [
+  'naya worker maanga',
+  'booking cancel ho gayi',
+  'booking cancel.',
+  'ab koi kaam nahi',
+  'ki booking cancel ho gayi',
+];
+
+/** Active replacement thread — new worker from agent rebook (not the cancelled old job). */
+export function isRebookReplacementChat(chat: ChatDoc | null): boolean {
+  if (!chat) return false;
+  if (chat.parent_job_request_id) return true;
+  return (chat.job_request_id || '').includes('_rb_');
+}
+
+function workerRebookCloseIndex(chat: ChatDoc): number | null {
+  if (isRebookReplacementChat(chat)) return null;
+  if (chat.worker_message_cutoff != null && chat.worker_message_cutoff > 0) {
+    return chat.worker_message_cutoff;
+  }
+  const msgs = chat.messages || [];
+  let last = -1;
+  for (let i = 0; i < msgs.length; i++) {
+    const t = (msgs[i].text || '').toLowerCase();
+    if (WORKER_REBOOK_CLOSE_PATTERNS.some((p) => t.includes(p))) last = i;
+    // Legacy close line from closeChatForReplacedWorker
+    if (t.includes('naya worker choose kiya') && t.includes('ab koi kaam nahi')) last = i;
+  }
+  return last >= 0 ? last + 1 : null;
+}
+
+/** Old worker after rebook — hide customer/new-worker messages. */
+export function messagesForWorkerView(chat: ChatDoc | null): ChatMessage[] {
+  if (!chat?.messages?.length) return [];
+  if (isRebookReplacementChat(chat)) return chat.messages;
+  const cutoff = workerRebookCloseIndex(chat);
+  if (cutoff != null) return chat.messages.slice(0, cutoff);
+  return chat.messages;
+}
+
+export function isWorkerChatClosedAfterRebook(chat: ChatDoc | null): boolean {
+  if (!chat || isRebookReplacementChat(chat)) return false;
+  if (chat.superseded_by) return true;
+  if (chat.customer_wait_decision === 'rebook') return true;
+  if (chat.worker_message_cutoff != null) return true;
+  if (workerRebookCloseIndex(chat) != null) return true;
+  return false;
+}
+
+/** Append a single system line (rebook progress, errors). */
+export async function appendChatSystemMessage(jobRequestId: string, text: string): Promise<void> {
+  const ref = doc(db, 'chats', jobRequestId);
+  await updateDoc(ref, {
+    updated_at: nowIso(),
+    messages: arrayUnion(sysMsg(text)),
+  });
 }
 
 /** Create a new chat when customer sends a job request */
@@ -197,14 +278,26 @@ export async function workerUpdateStatus(
   bookingId?: string,
 ): Promise<void> {
   const STATUS_MSG: Partial<Record<ChatStatus, string>> = {
-    on_the_way:  `${workerName} rawaana ho gaye — thodi der mein pahunch jaenge!`,
+    on_the_way:  `${workerName} rawaana ho gaye — ${DEFAULT_ETA_SECONDS} second mein pahunch jaenge!`,
     arrived:     `${workerName} pahunch gaye! Darwaza khol dein.`,
     in_progress: 'Kaam shuru ho gaya.',
     completed:   'Kaam mukammal ho gaya! Shukriya.',
   };
   const chatRef = doc(db, 'chats', jobRequestId);
-  const updates: Record<string, unknown> = { status, updated_at: nowIso() };
+  const now = nowIso();
+  const updates: Record<string, unknown> = { status, updated_at: now };
   if (bookingId) updates.booking_id = bookingId;
+  if (status === 'on_the_way') {
+    updates.on_the_way_at = now;
+    updates.eta_seconds = DEFAULT_ETA_SECONDS;
+    updates.eta_minutes = null;
+    updates.late_prompt_at = null;
+    updates.late_worker_note = null;
+    updates.customer_wait_decision = null;
+  }
+  if (status === 'arrived' || status === 'completed' || status === 'cancelled') {
+    updates.on_the_way_at = null;
+  }
   const msg = STATUS_MSG[status];
   if (msg) updates.messages = arrayUnion(sysMsg(msg));
   await updateDoc(chatRef, updates);
@@ -240,6 +333,220 @@ export async function workerCancelJob(
     status: 'cancelled',
     updated_at: nowIso(),
     messages: arrayUnion(cancelMsg),
+  });
+}
+
+/** Inject late-arrival prompts once ETA expires (idempotent). */
+export async function triggerLateArrivalPrompts(
+  jobRequestId: string,
+  workerName: string,
+): Promise<void> {
+  const ref = doc(db, 'chats', jobRequestId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return;
+  const data = snap.data() as ChatDoc;
+  if (data.late_prompt_at || data.status !== 'on_the_way') return;
+
+  const now = nowIso();
+  await updateDoc(ref, {
+    late_prompt_at: now,
+    updated_at: now,
+    messages: arrayUnion(
+      sysMsg(`⏰ ${workerName} ko expected time ho chuka hai.`),
+      sysMsg('Worker: der ki wajah ya kitni der aur lagay gi batayein.'),
+      sysMsg('Customer: intezaar karein ya naya worker dhundhein — neeche choose karein.'),
+    ),
+  });
+}
+
+/** Worker explains delay after ETA expired. */
+export async function workerSubmitLateNote(
+  jobRequestId: string,
+  workerName: string,
+  note: string,
+): Promise<void> {
+  const text = note.trim();
+  if (!text) return;
+  const ref = doc(db, 'chats', jobRequestId);
+  await updateDoc(ref, {
+    late_worker_note: text,
+    updated_at: nowIso(),
+    messages: arrayUnion(
+      {
+        id: mkId(),
+        sender_role: 'worker',
+        sender_name: workerName,
+        text: `Der ho gayi — ${text}`,
+        ts: nowIso(),
+      },
+      sysMsg(`${workerName} ne bataya: ${text}`),
+    ),
+  });
+}
+
+/** Customer chooses to wait or request a new worker. */
+export async function customerSetWaitDecision(
+  jobRequestId: string,
+  customerName: string,
+  decision: CustomerWaitDecision,
+): Promise<void> {
+  const ref = doc(db, 'chats', jobRequestId);
+  const now = nowIso();
+
+  if (decision === 'waiting') {
+    await updateDoc(ref, {
+      customer_wait_decision: 'waiting',
+      updated_at: now,
+      messages: arrayUnion(
+        sysMsg(`✅ ${customerName} ne intezaar karne ka faisla kiya — worker ab bhi aa sakta hai.`),
+      ),
+    });
+    return;
+  }
+
+  await updateDoc(ref, {
+    customer_wait_decision: 'rebook',
+    status: 'cancelled',
+    updated_at: now,
+    messages: arrayUnion(
+      sysMsg(`❌ ${customerName} ne naya worker maanga — purani booking cancel ho rahi hai.`),
+      sysMsg('Haazir AI aap ke liye naya worker dhundh raha hai...'),
+    ),
+  });
+
+  const snap = await getDoc(ref);
+  const bookingId = (snap.data() as ChatDoc | undefined)?.booking_id || jobRequestId;
+  updateDoc(doc(db, 'bookings', bookingId), { status: 'cancelled', updated_at: now }).catch(() => {});
+}
+
+/** Close original worker's chat — no new-worker messages on this thread. */
+export async function closeChatForReplacedWorker(
+  jobRequestId: string,
+  customerName: string,
+  oldWorkerName: string,
+): Promise<void> {
+  const ref = doc(db, 'chats', jobRequestId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return;
+  const chat = snap.data() as ChatDoc;
+  const priorCount = (chat.messages || []).length;
+  const now = nowIso();
+  const bookingId = chat.booking_id || jobRequestId;
+
+  await updateDoc(ref, {
+    status: 'cancelled',
+    customer_wait_decision: 'rebook',
+    on_the_way_at: null,
+    eta_seconds: null,
+    eta_minutes: null,
+    late_prompt_at: null,
+    updated_at: now,
+    worker_message_cutoff: priorCount + 1,
+    messages: arrayUnion(
+      sysMsg(
+        `❌ ${customerName} ne naya worker choose kiya. ${oldWorkerName} ki booking cancel ho gayi — ab koi kaam nahi.`,
+      ),
+    ),
+  });
+
+  updateDoc(doc(db, 'bookings', bookingId), { status: 'cancelled', updated_at: now }).catch(() => {});
+}
+
+/** New chat doc for replacement worker — customer waiting screen, fresh thread. */
+export async function createRebookChat(params: {
+  parentChat: ChatDoc;
+  newWorkerId: string;
+  newWorkerName: string;
+  newBookingId?: string;
+}): Promise<string> {
+  const { parentChat, newWorkerId, newWorkerName, newBookingId } = params;
+  const parentId = parentChat.job_request_id;
+  const newJobRequestId = `${parentId}_rb_${mkId().slice(-8)}`;
+  const now = nowIso();
+  const bookingId = newBookingId || newJobRequestId;
+
+  await createChat({
+    job_request_id: newJobRequestId,
+    customer_id: parentChat.customer_id,
+    customer_name: parentChat.customer_name,
+    worker_id: newWorkerId,
+    worker_name: newWorkerName,
+    service: parentChat.service,
+    location: parentChat.location,
+    city: parentChat.city,
+    urgency: parentChat.urgency,
+    estimated_price: parentChat.estimated_price,
+  });
+
+  await updateDoc(doc(db, 'chats', newJobRequestId), {
+    parent_job_request_id: parentId,
+    booking_id: bookingId,
+    updated_at: now,
+  });
+
+  await updateDoc(doc(db, 'chats', parentId), {
+    superseded_by: newJobRequestId,
+    superseded_worker_name: newWorkerName,
+    updated_at: now,
+  });
+
+  await setDoc(
+    doc(db, 'bookings', bookingId),
+    {
+      booking_id: bookingId,
+      job_request_id: newJobRequestId,
+      user_id: parentChat.customer_id,
+      provider_id: newWorkerId,
+      provider_name: newWorkerName,
+      service: parentChat.service,
+      location: parentChat.location,
+      city: parentChat.city,
+      scheduled_time: now,
+      price: parentChat.estimated_price || 0,
+      status: 'assigned',
+      created_at: now,
+      updated_at: now,
+      tracking_steps: [],
+      replaced_from: parentId,
+    },
+    { merge: true },
+  );
+
+  const expires = new Date(Date.now() + 20 * 60 * 1000).toISOString();
+  await saveJobRequestToFirestore({
+    job_request_id: newJobRequestId,
+    customer_id: parentChat.customer_id,
+    customer_name: parentChat.customer_name,
+    service: parentChat.service,
+    location: parentChat.location,
+    city: parentChat.city,
+    urgency: parentChat.urgency || 'medium',
+    description: `Rebook after ${parentId}`,
+    estimated_price: parentChat.estimated_price || 0,
+    expires_at: expires,
+    notified_provider_ids: [newWorkerId],
+  });
+
+  return newJobRequestId;
+}
+
+/** @deprecated Use closeChatForReplacedWorker + createRebookChat */
+export async function applyRebookToChat(params: {
+  jobRequestId: string;
+  customerName: string;
+  oldWorkerName: string;
+  newWorkerId: string;
+  newWorkerName: string;
+  newBookingId?: string;
+}): Promise<string> {
+  await closeChatForReplacedWorker(params.jobRequestId, params.customerName, params.oldWorkerName);
+  const snap = await getDoc(doc(db, 'chats', params.jobRequestId));
+  const parent = snap.data() as ChatDoc;
+  return createRebookChat({
+    parentChat: parent,
+    newWorkerId: params.newWorkerId,
+    newWorkerName: params.newWorkerName,
+    newBookingId: params.newBookingId,
   });
 }
 

@@ -12,8 +12,10 @@ import {
   subscribeToChat, sendChatMessage, workerUpdateStatus,
   workerAcceptJob, cancelJob,
   ChatDoc, ChatMessage, ChatStatus,
+  messagesForWorkerView, isWorkerChatClosedAfterRebook,
 } from '../services/chatService';
 import { updateBookingStatus } from '../services/api';
+import { ArrivalEtaPanel } from '../components/ArrivalEtaPanel';
 
 const WORKER_STATUS_ACTIONS: { status: ChatStatus; label: string; icon: string; color: string }[] = [
   { status: 'on_the_way',  label: 'Rawaana Ho Gaya',  icon: 'car-outline',              color: Colors.primary },
@@ -102,10 +104,12 @@ export default function WorkerChatScreen() {
     }
   };
 
-  const status = chat?.status || 'accepted';
+  const closedAfterRebook = senderRole === 'worker' && isWorkerChatClosedAfterRebook(chat);
+  const status = closedAfterRebook ? 'cancelled' : (chat?.status || 'accepted');
   const displayCustomer = chat?.customer_name || customerName || 'Customer';
   const displayService = chat?.service || service || 'Service';
-  const messages: ChatMessage[] = chat?.messages || [];
+  const messages: ChatMessage[] =
+    senderRole === 'worker' ? messagesForWorkerView(chat) : (chat?.messages || []);
 
   // Find next action based on current status
   const statusOrder: ChatStatus[] = ['accepted', 'on_the_way', 'arrived', 'in_progress', 'completed'];
@@ -144,8 +148,17 @@ export default function WorkerChatScreen() {
         </View>
       </View>
 
+      {closedAfterRebook && (
+        <View style={styles.closedRebookBar}>
+          <Ionicons name="close-circle" size={20} color={Colors.danger} />
+          <Text style={styles.closedRebookText}>
+            Booking cancel — customer ne naya worker choose kiya. Ab koi action nahi.
+          </Text>
+        </View>
+      )}
+
       {/* Waiting state: Accept + Cancel buttons for worker */}
-      {senderRole === 'worker' && status === 'waiting' && (
+      {senderRole === 'worker' && status === 'waiting' && !closedAfterRebook && chat?.customer_wait_decision !== 'rebook' && (
         <View style={styles.waitingActions}>
           <TouchableOpacity
             style={[styles.acceptBtn, updatingStatus && { opacity: 0.6 }]}
@@ -199,6 +212,15 @@ export default function WorkerChatScreen() {
         </TouchableOpacity>
       )}
 
+      {chat && jobRequestId && senderRole === 'worker' && !closedAfterRebook && (
+        <ArrivalEtaPanel
+          chat={chat}
+          jobRequestId={jobRequestId}
+          role="worker"
+          displayName={chat.worker_name || user?.username?.split('_')[0] || 'Worker'}
+        />
+      )}
+
       {/* Messages */}
       <ScrollView
         ref={scrollRef}
@@ -211,8 +233,14 @@ export default function WorkerChatScreen() {
         ))}
       </ScrollView>
 
+      {closedAfterRebook && (
+        <View style={[styles.doneBar, { paddingBottom: insets.bottom + 8 }]}>
+          <Text style={styles.doneText}>Yeh job khatam — wapas jobs list par jayein</Text>
+        </View>
+      )}
+
       {/* Input */}
-      {status !== 'completed' && status !== 'cancelled' && (
+      {!closedAfterRebook && status !== 'completed' && status !== 'cancelled' && (
         <View style={[styles.inputBar, { paddingBottom: insets.bottom + 8 }]}>
           <TextInput
             style={styles.input}
@@ -309,6 +337,28 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.dangerDim,
   },
   cancelBtnText: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: Colors.danger },
+
+  closedRebookBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 12,
+    backgroundColor: Colors.dangerDim,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.danger,
+  },
+  closedRebookText: { flex: 1, fontSize: FontSize.sm, color: Colors.danger, fontWeight: FontWeight.semibold },
+
+  doneBar: {
+    paddingHorizontal: Spacing.md,
+    paddingTop: Spacing.sm,
+    backgroundColor: Colors.surface,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+    alignItems: 'center',
+  },
+  doneText: { fontSize: FontSize.sm, color: Colors.textMuted },
 
   statusActionBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
