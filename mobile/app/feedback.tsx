@@ -102,8 +102,8 @@ export default function FeedbackScreen() {
         <Text style={styles.successSub}>
           Aapka feedback submit ho gaya.{'\n'}Aapki rating se doosron ko faida hoga.
         </Text>
-        <TouchableOpacity style={styles.homeBtn} onPress={() => router.replace('/' as any)}>
-          <Text style={styles.homeBtnText}>Wapas Ghar Jao</Text>
+        <TouchableOpacity style={styles.homeBtn} onPress={() => router.push('/(customer)/' as any)}>
+          <Text style={styles.homeBtnText}>Dashboard Par Jao</Text>
         </TouchableOpacity>
       </View>
     );

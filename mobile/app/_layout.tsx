@@ -162,20 +162,24 @@ function RootLayoutNav() {
         <Stack.Screen name="onboarding" options={{ headerShown: false, animation: 'fade' }} />
         <Stack.Screen name="login" options={{ headerShown: false, animation: 'fade' }} />
         <Stack.Screen name="signup" options={{ title: 'Account Banayein', headerBackVisible: false }} />
-        <Stack.Screen name="worker-signup" options={{ title: 'Worker Registration', headerBackVisible: false }} />
-        <Stack.Screen name="worker-pending" options={{ title: 'Approval Pending', headerBackVisible: false }} />
+        <Stack.Screen name="worker-signup" options={{ headerShown: false }} />
+        <Stack.Screen name="worker-pending" options={{ headerShown: false }} />
         <Stack.Screen name="language-select" options={{ headerShown: false }} />
         <Stack.Screen name="(customer)" options={{ headerShown: false }} />
         <Stack.Screen name="(worker)" options={{ headerShown: false }} />
         <Stack.Screen name="nearby" options={{ headerShown: false }} />
-        <Stack.Screen name="results" options={{ title: 'Providers Mila Diye' }} />
-        <Stack.Screen name="booking" options={{ title: 'Booking Confirm Karein' }} />
-        <Stack.Screen name="tracking" options={{ title: 'Service Progress' }} />
-        <Stack.Screen name="feedback" options={{ title: 'Feedback Dein' }} />
-        <Stack.Screen name="dispute" options={{ title: 'Complaint / Dispute' }} />
+        <Stack.Screen name="results" options={{ headerShown: false }} />
+        <Stack.Screen name="booking" options={{ headerShown: false }} />
+        <Stack.Screen name="tracking" options={{ headerShown: false }} />
+        <Stack.Screen name="feedback" options={{ headerShown: false }} />
+        <Stack.Screen name="dispute" options={{ headerShown: false }} />
         <Stack.Screen name="logs" options={{ title: 'Agent Logs (Judges View)' }} />
         <Stack.Screen name="agent-traces" options={{ headerShown: false }} />
         <Stack.Screen name="voice-conversation" options={{ headerShown: false }} />
+        <Stack.Screen name="worker-chat" options={{ headerShown: false }} />
+        <Stack.Screen name="job-chat" options={{ headerShown: false }} />
+        <Stack.Screen name="job-detail" options={{ headerShown: false }} />
+        <Stack.Screen name="voice-chats" options={{ headerShown: false }} />
       </Stack>
       <AuthNavigationGuard />
       <NotificationBootstrap />

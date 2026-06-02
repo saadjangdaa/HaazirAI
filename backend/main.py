@@ -57,6 +57,8 @@ from models.request import (
     JobRequestCreate,
     WorkerBidCreate,
     AcceptBidRequest,
+    RebookRequest,
+    WaitlistRequest,
 )
 from models.investigation import ComplaintCreateBody, WorkerDefenseBody
 from agents.orchestrator import run_full_orchestration
@@ -441,21 +443,32 @@ _AGENT_URDU = {
 def _judge_logs_to_mobile_agent_logs(logs: list) -> list:
     """Map judge-facing reasoning entries to the legacy shape used by the Expo AgentLogViewer."""
     out = []
-    for entry in logs:
+    for i, entry in enumerate(logs):
         ts = entry.get("timestamp", "")
         agent = entry.get("agent", "Samajh")
+        # Calculate elapsed from consecutive timestamps
+        time_seconds = 0.0
+        if ts and i + 1 < len(logs):
+            next_ts = logs[i + 1].get("timestamp", "")
+            if next_ts:
+                try:
+                    t1 = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    t2 = datetime.fromisoformat(next_ts.replace("Z", "+00:00"))
+                    time_seconds = round(abs((t2 - t1).total_seconds()), 3)
+                except Exception:
+                    pass
         out.append(
             {
                 "agent_name": agent.upper(),
                 "agent_name_urdu": _AGENT_URDU.get(agent, agent),
                 "start_time": ts,
-                "end_time": ts,
+                "end_time": logs[i + 1].get("timestamp", ts) if i + 1 < len(logs) else ts,
                 "input_summary": entry.get("reasoning", ""),
                 "output_summary": entry.get("decision", ""),
                 "decision_made": entry.get("decision", ""),
                 "confidence": float(entry.get("confidence", 0.0)),
                 "fallback_used": entry.get("status") == "failure",
-                "time_seconds": 0.0,
+                "time_seconds": time_seconds,
             }
         )
     return out
@@ -709,7 +722,12 @@ async def respond_to_dispute_route(dispute_id: str, body: DisputeRespondRequest)
 async def finalize_dispute_route(dispute_id: str, body: DisputeFinalizeRequest):
     """Phase E — JHAGRA final resolution after HIFAZAT review (under_review)."""
     uid = _require_firebase_uid(body.user_id)
-    return await finalize_dispute(user_id=uid, dispute_id=dispute_id)
+    result = await finalize_dispute(user_id=uid, dispute_id=dispute_id)
+    agent_logs = result.pop("_agent_logs", None) or []
+    if agent_logs:
+        req_id = f"DISP-{dispute_id[:16]}"
+        await save_agent_logs(req_id, f"Dispute resolution: {dispute_id}", agent_logs, user_id=uid)
+    return result
 
 
 @app.post("/api/complaints")
@@ -782,6 +800,113 @@ async def get_booking_dispute_eligibility(booking_id: str):
         "booking_status": check.booking_status,
         "would_auto_cancel": check.would_auto_cancel,
         "no_show_grace_hours": NO_SHOW_GRACE_HOURS,
+    }
+
+
+@app.post("/api/booking/{booking_id}/rebook")
+async def rebook_after_cancellation(booking_id: str, body: RebookRequest):
+    """Provider ne cancel kiya — PAKKA se naya worker dhundho aur rebook karo."""
+    booking = await get_booking(booking_id)
+    if not booking:
+        raise HTTPException(status_code=404, detail=f"Booking {booking_id} not found")
+
+    cancelled_by = body.cancelled_by
+    reason = body.reason
+    user_id = booking.get("user_id", "user_001")
+    provider_id = booking.get("provider_id", "")
+
+    # Reconstruct minimal intent from booking data
+    intent = {
+        "service_type": booking.get("service", "Service"),
+        "normalized_category": None,
+        "location": booking.get("location", "").split(",")[0].strip() if "," in booking.get("location", "") else booking.get("location", ""),
+        "city": booking.get("city", "Islamabad"),
+        "time_preference": "now",
+        "urgency": "high",
+        "job_complexity": "intermediate",
+        "emergency": False,
+        "budget_sensitivity": "medium",
+    }
+    pricing = {"total": booking.get("price", 1000)}
+
+    # Find fresh providers excluding the cancelled one
+    from agents.dhundho import DhundhoAgent
+    from agents.chunno import ChunnoAgent
+    _dhundho = DhundhoAgent()
+    _chunno = ChunnoAgent()
+
+    dhundho_result = await _dhundho.find_providers(intent)
+    providers_raw = dhundho_result.get("providers", [])
+    alternatives = [p for p in providers_raw if p.get("id") != provider_id]
+
+    if not alternatives:
+        alternatives = providers_raw  # fallback: any provider
+
+    if alternatives:
+        chunno_result = await _chunno.rank_providers(alternatives, intent)
+        alternatives = chunno_result.get("ranked_providers", alternatives)
+
+    _pakka = PakkaAgent()
+    result = await _pakka.handle_cancellation(
+        booking_id=booking_id,
+        provider_id=provider_id,
+        cancelled_by=cancelled_by,
+        reason=reason,
+        original_booking=booking,
+        alternative_providers=alternatives,
+        intent=intent,
+        pricing=pricing,
+        user_id=user_id,
+    )
+
+    # Mark original booking as cancelled in Firestore
+    from services.booking_service import set_booking_status
+    try:
+        await set_booking_status(booking_id, "cancelled")
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "cancellation_id": result.get("cancellation_id"),
+        "replacement_status": result.get("replacement_status"),
+        "replacement_message": result.get("replacement_message"),
+        "replacement_booking": result.get("replacement_booking"),
+        "customer_message": result.get("customer_message"),
+        "penalty_applied": result.get("penalty_applied"),
+        "penalty_points": result.get("penalty_points"),
+    }
+
+
+@app.post("/api/waitlist")
+async def join_waitlist(body: WaitlistRequest):
+    """Koi provider available nahi — customer ko waitlist mein daal do."""
+    from services.firebase import save_booking
+    waitlist_id = f"WL-{datetime.now().strftime('%Y%m%d')}-{str(uuid.uuid4())[:6].upper()}"
+    entry = {
+        "waitlist_id": waitlist_id,
+        "booking_type": "waitlist",
+        "user_id": body.user_id,
+        "service": body.service,
+        "location": body.location,
+        "city": body.city,
+        "requested_time": body.requested_time,
+        "intent": body.intent or {},
+        "added_at": datetime.now().isoformat(),
+        "status": "waitlisted",
+        "notify_on_slot": True,
+        "message": (
+            f"Abhi {body.service} ke liye koi provider {body.location} mein available nahi. "
+            "Jaisay hi koi available ho ga, hum WhatsApp/SMS pe notify karein ge."
+        ),
+    }
+    await save_booking({**entry, "booking_id": waitlist_id})
+    return {
+        "ok": True,
+        "waitlist_id": waitlist_id,
+        "message": entry["message"],
+        "position": 1,
+        "estimated_callback_minutes": 30,
     }
 
 
@@ -1076,6 +1201,18 @@ async def conversation(body: ConversationRequest):
                 logger.warning("[conversation] run_samajh_workflow timed out — using fallback providers")
             except Exception as _se:
                 logger.warning("[conversation] run_samajh_workflow failed: %s", _se)
+
+            # Save agent logs from conversation orchestration
+            if orch:
+                conv_logs = orch.get("logs") or orch.get("agent_logs") or []
+                if conv_logs:
+                    conv_req_id = orch.get("request_id") or f"CONV-{body.session_id[:16]}"
+                    conv_uid = (body.user_id or "").strip() or None
+                    try:
+                        mobile_logs = _judge_logs_to_mobile_agent_logs(conv_logs) if isinstance(conv_logs[0], dict) and "agent" in conv_logs[0] else conv_logs
+                        await save_agent_logs(conv_req_id, body.user_text or "", mobile_logs, user_id=conv_uid)
+                    except Exception as _le:
+                        logger.warning("[conversation] log save failed: %s", _le)
 
             providers = list((orch.get("providers_ranked") or []))[:3]
             if not providers:

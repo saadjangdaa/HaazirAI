@@ -121,6 +121,7 @@ export default function TrackingScreen() {
   const steps = status?.tracking_steps || [];
   const completed = status?.status === 'completed';
   const currentStatus = status?.status?.toLowerCase() || '';
+  const isRebooking = currentStatus === 'cancelled' || currentStatus === 'rebooking';
 
   return (
     <View style={styles.root}>
@@ -148,8 +149,21 @@ export default function TrackingScreen() {
         showsVerticalScrollIndicator={false}
       >
 
+        {/* Case 3: Rebooking / cancellation recovery banner */}
+        {isRebooking && (
+          <View style={styles.rebookingBanner}>
+            <ActivityIndicator size="small" color={Colors.warning} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rebookingTitle}>Provider ne cancel kar diya</Text>
+              <Text style={styles.rebookingText}>
+                Haazir AI aap ke liye naya worker dhundh raha hai...
+              </Text>
+            </View>
+          </View>
+        )}
+
         {/* Provider info */}
-        {status?.provider_name && (
+        {!isRebooking && status?.provider_name && (
           <View style={[styles.providerCard, Shadow.sm]}>
             <View style={styles.providerAvatar}>
               <Ionicons name="person" size={26} color={Colors.primary} />
@@ -159,7 +173,7 @@ export default function TrackingScreen() {
               <Text style={styles.providerService}>{status.service}</Text>
             </View>
             <View style={styles.providerActions}>
-              <TouchableOpacity style={styles.actionCircle}>
+              <TouchableOpacity style={styles.actionCircle} onPress={() => {}}>
                 <Ionicons name="call-outline" size={18} color={Colors.primary} />
               </TouchableOpacity>
               <TouchableOpacity
@@ -312,6 +326,15 @@ const styles = StyleSheet.create({
   stepLabel: { fontSize: FontSize.sm, color: Colors.textMuted, fontWeight: FontWeight.medium },
   stepLabelDone: { color: Colors.textPrimary, fontWeight: FontWeight.bold },
   stepTime: { fontSize: FontSize.xs, color: Colors.primary, marginTop: 2 },
+
+  rebookingBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.md,
+    backgroundColor: Colors.warningDim, borderRadius: Radius.xl,
+    padding: Spacing.md, marginBottom: Spacing.md,
+    borderWidth: 1, borderColor: Colors.warning,
+  },
+  rebookingTitle: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: Colors.warning, marginBottom: 2 },
+  rebookingText: { fontSize: FontSize.sm, color: Colors.textSecondary },
 
   simulateBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,

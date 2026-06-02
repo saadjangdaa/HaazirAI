@@ -92,43 +92,35 @@ export default function BookingsScreen() {
     }, [load])
   );
 
-  // Real-time: also read accepted chats from Firestore (backend may be in mock mode)
+  // Real-time Firestore listener — reads bookings collection directly
+  // Catches both voice agent bookings AND manual nearby-worker bookings
   useEffect(() => {
     if (isMockMode || !user?.id) return;
 
-    const CHAT_STATUS_MAP: Record<string, string> = {
-      accepted:    'confirmed',
-      on_the_way:  'on_the_way',
-      arrived:     'arrived',
-      in_progress: 'in_progress',
-      completed:   'completed',
-      cancelled:   'cancelled',
-    };
-
     const q = query(
-      collection(db, 'chats'),
-      where('customer_id', '==', user.id),
+      collection(db, 'bookings'),
+      where('user_id', '==', user.id),
     );
 
     const unsub = onSnapshot(q, (snap) => {
-      const jobs: UserBooking[] = snap.docs
-        .map((d) => d.data() as any)
-        .filter((c) => c.status && c.status !== 'waiting')
-        .map((c) => ({
-          booking_id: `HAZ-${(c.job_request_id || '').slice(-8).toUpperCase()}`,
-          user_id: c.customer_id,
-          service: c.service,
-          provider_id: c.worker_id,
-          provider_name: c.worker_name,
-          scheduled_time: c.created_at,
-          price: c.estimated_price || 0,
-          status: CHAT_STATUS_MAP[c.status] || c.status,
-          created_at: c.created_at,
-          tracking_steps: [],
-          _chat_id: c.job_request_id,
-        } as UserBooking & { _chat_id: string }));
-      setChatBookings(jobs);
-    }, (err) => console.warn('[CustomerBookings] chat listener error:', err));
+      const rows: UserBooking[] = snap.docs.map((d) => {
+        const data = d.data() as any;
+        return {
+          booking_id: data.booking_id || d.id,
+          user_id: data.user_id,
+          service: data.service,
+          provider_id: data.provider_id,
+          provider_name: data.provider_name,
+          scheduled_time: data.scheduled_time || data.slot_time || data.created_at,
+          price: data.price || 0,
+          status: data.status || 'assigned',
+          created_at: data.created_at,
+          tracking_steps: data.tracking_steps || [],
+          _chat_id: data.job_request_id,
+        } as UserBooking & { _chat_id?: string };
+      });
+      setChatBookings(rows);
+    }, (err) => console.warn('[CustomerBookings] bookings listener error:', err));
 
     return () => unsub();
   }, [user?.id, isMockMode]);

@@ -154,23 +154,38 @@ export async function workerAcceptJob(
     });
   }
 
-  // Create a bookings/{bookingId} document so customer's Meri Bookings shows this job
+  // Update booking status to 'confirmed' when worker accepts.
+  // The booking doc was created (status='assigned') when customer sent the request.
+  // Use job_request_id as the booking_id (consistent with nearby.tsx).
   if (customerId) {
-    const bookingId = `HAZ-${jobRequestId.slice(-8).toUpperCase()}`;
-    await setDoc(doc(db, 'bookings', bookingId), {
-      booking_id: bookingId,
-      job_request_id: jobRequestId,
-      user_id: customerId,
-      provider_id: chatSource?.worker_id || null,
-      provider_name: workerName,
-      service,
-      scheduled_time: now,
-      price: estimatedPrice,
-      status: 'confirmed',
-      created_at: now,
-      updated_at: now,
-      tracking_steps: [],
-    });
+    const bookingRef = doc(db, 'bookings', jobRequestId);
+    const bookingSnap = await getDoc(bookingRef);
+    if (bookingSnap.exists()) {
+      // Update existing booking (created by customer when they sent the request)
+      await updateDoc(bookingRef, {
+        status: 'confirmed',
+        provider_name: workerName,
+        provider_uid: workerId,
+        updated_at: now,
+      });
+    } else {
+      // Fallback: create booking if it doesn't exist yet
+      await setDoc(bookingRef, {
+        booking_id: jobRequestId,
+        job_request_id: jobRequestId,
+        user_id: customerId,
+        provider_id: chatSource?.worker_id || null,
+        provider_uid: workerId,
+        provider_name: workerName,
+        service,
+        scheduled_time: now,
+        price: estimatedPrice,
+        status: 'confirmed',
+        created_at: now,
+        updated_at: now,
+        tracking_steps: [],
+      });
+    }
   }
 }
 
@@ -187,12 +202,26 @@ export async function workerUpdateStatus(
     in_progress: 'Kaam shuru ho gaya.',
     completed:   'Kaam mukammal ho gaya! Shukriya.',
   };
-  const ref = doc(db, 'chats', jobRequestId);
+  const chatRef = doc(db, 'chats', jobRequestId);
   const updates: Record<string, unknown> = { status, updated_at: nowIso() };
   if (bookingId) updates.booking_id = bookingId;
   const msg = STATUS_MSG[status];
   if (msg) updates.messages = arrayUnion(sysMsg(msg));
-  await updateDoc(ref, updates);
+  await updateDoc(chatRef, updates);
+
+  // Sync booking status in Firestore so customer's Meri Bookings stays up to date
+  const BOOKING_STATUS: Partial<Record<ChatStatus, string>> = {
+    on_the_way:  'on_the_way',
+    arrived:     'arrived',
+    in_progress: 'in_progress',
+    completed:   'completed',
+    cancelled:   'cancelled',
+  };
+  const bookingStatus = BOOKING_STATUS[status];
+  if (bookingStatus) {
+    const bRef = doc(db, 'bookings', bookingId || jobRequestId);
+    updateDoc(bRef, { status: bookingStatus, updated_at: nowIso() }).catch(() => {});
+  }
 }
 
 /** Worker cancels an accepted job before arriving at customer */

@@ -5,12 +5,14 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Colors, FontSize, FontWeight, Radius, Shadow, Spacing } from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
 import { useMockData } from '../context/MockDataContext';
 import { createJobRequest, formatApiError, requireUserId, getAllProviders, Provider } from '../services/api';
 import { createChat, saveJobRequestToFirestore } from '../services/chatService';
+import { db } from '../services/firebase';
+import { doc, setDoc } from 'firebase/firestore';
 import { MOCK_NEARBY_WORKERS, NearbyWorker } from '../data/mockData';
 
 // Map backend Provider → NearbyWorker shape used by WorkerCard
@@ -144,9 +146,10 @@ export default function NearbyScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const { isMockMode } = useMockData();
+  const { service: serviceParam } = useLocalSearchParams<{ service?: string }>();
 
   const [search, setSearch] = useState('');
-  const [selectedService, setSelectedService] = useState('All');
+  const [selectedService, setSelectedService] = useState(serviceParam || 'All');
   const [sortBy, setSortBy] = useState<SortKey>('Distance');
   const [availableOnly, setAvailableOnly] = useState(false);
 
@@ -291,8 +294,34 @@ export default function NearbyScreen() {
         console.warn('[Chat] create failed:', chatErr);
       }
 
+      // Save booking to Firestore immediately (status: assigned = waiting for worker to accept)
+      // This makes it visible in customer's Meri Bookings right away, just like voice agent
+      try {
+        const bookingId = job.job_request_id;  // use job_request_id as booking_id
+        const now = new Date().toISOString();
+        await setDoc(doc(db, 'bookings', bookingId), {
+          booking_id: bookingId,
+          job_request_id: bookingId,
+          user_id: uid,
+          provider_id: workerForChat.id,
+          provider_name: workerForChat.name,
+          service: workerForChat.service,
+          scheduled_time: now,
+          price: workerForChat.priceMin,
+          status: 'assigned',
+          created_at: now,
+          updated_at: now,
+          tracking_steps: [],
+          location: workerForChat.area,
+          city,
+          urgency,
+          description,
+        });
+      } catch (e) {
+        console.warn('[Booking] Firestore write failed:', e);
+      }
+
       setModalWorker(null);
-      // Navigate to chat screen instead of Alert
       router.push({
         pathname: '/job-chat',
         params: {
