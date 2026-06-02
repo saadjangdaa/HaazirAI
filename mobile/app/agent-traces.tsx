@@ -1,13 +1,15 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity,
-  StyleSheet, ActivityIndicator, Alert, Share, Platform,
+  StyleSheet, ActivityIndicator, Alert, Share, Platform, Animated,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '../constants/theme';
-import { AgentLog, getAgentLogsDetail } from '../services/api';
+import { AgentLog, getAgentLogsDetail, getRecentAgentLogs, RecentLogsEntry } from '../services/api';
+
+const POLL_INTERVAL_MS = 5000;
 
 // ─── Demo pipeline data ────────────────────────────────────────────────────────
 
@@ -199,6 +201,23 @@ function TraceCard({ log, index }: { log: AgentLog; index: number }) {
 
 const ALL_AGENTS = ['All', ...Object.keys(AGENT_THEME)];
 
+// ─── Live dot ─────────────────────────────────────────────────────────────────
+
+function LiveDot() {
+  const opacity = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(opacity, { toValue: 0.2, duration: 700, useNativeDriver: true }),
+        Animated.timing(opacity, { toValue: 1,   duration: 700, useNativeDriver: true }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [opacity]);
+  return <Animated.View style={[s.liveDot, { opacity }]} />;
+}
+
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function AgentTracesScreen() {
@@ -206,36 +225,98 @@ export default function AgentTracesScreen() {
   const insets = useSafeAreaInsets();
   const { requestId } = useLocalSearchParams<{ requestId?: string }>();
 
-  const [traces, setTraces]     = useState<AgentLog[]>(DEMO_TRACES);
-  const [userInput, setUserInput] = useState<string | null>(null);
-  const [loading, setLoading]   = useState(false);
-  const [source, setSource]     = useState<'demo' | 'api'>('demo');
-  const [filter, setFilter]     = useState('All');
+  const [traces, setTraces]         = useState<AgentLog[]>([]);
+  const [userInput, setUserInput]   = useState<string | null>(null);
+  const [activeReqId, setActiveReqId] = useState<string | null>(null);
+  const [recentList, setRecentList] = useState<RecentLogsEntry[]>([]);
+  const [loading, setLoading]       = useState(true);
+  const [source, setSource]         = useState<'firestore' | 'mock' | 'demo'>('demo');
+  const [filter, setFilter]         = useState('All');
+  const [isLive, setIsLive]         = useState(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // ── Fetch specific request logs ────────────────────────────────────────────
+  const fetchByRequestId = useCallback(async (rid: string) => {
+    try {
+      const doc = await getAgentLogsDetail(rid);
+      if (doc.logs?.length) {
+        setTraces(doc.logs);
+        setUserInput(doc.user_input || null);
+        setActiveReqId(rid);
+        setSource((doc.source as any) || 'firestore');
+      }
+    } catch {}
+  }, []);
+
+  // ── Fetch latest from /api/logs/recent, pick the newest entry ─────────────
+  const fetchRecent = useCallback(async (quiet = false) => {
+    if (!quiet) setLoading(true);
+    try {
+      const res = await getRecentAgentLogs(20);
+      setSource(res.source as any || 'firestore');
+      if (res.requests?.length) {
+        setRecentList(res.requests);
+        const latest = res.requests[0];
+        // Only update if this is a new request ID (avoid re-render on same data)
+        setActiveReqId(prev => {
+          if (prev !== latest.request_id) {
+            setTraces(latest.logs || []);
+            setUserInput(latest.user_input || null);
+          }
+          return latest.request_id;
+        });
+        setIsLive(true);
+      } else {
+        // No real logs yet — fall back to demo
+        setTraces(DEMO_TRACES);
+        setUserInput(null);
+        setActiveReqId(null);
+        setSource('demo');
+        setIsLive(false);
+      }
+    } catch {
+      // API unreachable — show demo
+      if (!quiet) {
+        setTraces(DEMO_TRACES);
+        setUserInput(null);
+        setSource('demo');
+        setIsLive(false);
+      }
+    } finally {
+      if (!quiet) setLoading(false);
+    }
+  }, []);
+
+  // ── Initial load ────────────────────────────────────────────────────────
   useEffect(() => {
     const rid = (requestId || '').trim();
-    if (!rid) return;
-    setLoading(true);
-    getAgentLogsDetail(rid)
-      .then((doc) => {
-        if (doc.logs?.length) {
-          setTraces(doc.logs);
-          setUserInput(doc.user_input || null);
-          setSource('api');
-        }
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, [requestId]);
+    if (rid) {
+      setLoading(true);
+      fetchByRequestId(rid).finally(() => setLoading(false));
+    } else {
+      fetchRecent(false);
+    }
+  }, [requestId, fetchByRequestId, fetchRecent]);
+
+  // ── Live polling (only in recent/live mode, not when a specific requestId is given) ──
+  useEffect(() => {
+    const rid = (requestId || '').trim();
+    if (rid) return; // pinned to a specific request — no polling needed
+
+    pollRef.current = setInterval(() => fetchRecent(true), POLL_INTERVAL_MS);
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, [requestId, fetchRecent]);
 
   const filtered = filter === 'All' ? traces : traces.filter(t => t.agent_name === filter);
 
   // ── Stats ──────────────────────────────────────────────────────────────────
-  const totalTime   = traces.reduce((s, l) => s + (l.time_seconds || 0), 0).toFixed(2);
-  const avgConf     = traces.length
+  const totalTime = traces.reduce((s, l) => s + (l.time_seconds || 0), 0).toFixed(2);
+  const avgConf   = traces.length
     ? Math.round(traces.reduce((s, l) => s + (l.confidence || 0), 0) / traces.length * 100)
     : 0;
-  const fallbacks   = traces.filter(l => l.fallback_used).length;
+  const fallbacks = traces.filter(l => l.fallback_used).length;
 
   const handleExport = async () => {
     const text = traces.map((t, i) =>
@@ -244,7 +325,6 @@ export default function AgentTracesScreen() {
       `INPUT:\n${t.input_summary}\n\nOUTPUT:\n${t.output_summary}\n\nDECISION: ${t.decision_made}\n` +
       `${'─'.repeat(50)}`
     ).join('\n\n');
-
     try {
       if (Platform.OS !== 'web') {
         await Share.share({ message: `Haazir AI — Agent Traces\n${'═'.repeat(40)}\n\n${text}` });
@@ -254,6 +334,12 @@ export default function AgentTracesScreen() {
     } catch {}
   };
 
+  const subTitle = source === 'demo'
+    ? 'Demo pipeline · 6 agents'
+    : activeReqId
+      ? `${activeReqId.slice(0, 18)}… · ${source}`
+      : `Live · ${source}`;
+
   return (
     <View style={[s.root, { paddingTop: insets.top }]}>
       {/* ── Header ── */}
@@ -262,20 +348,52 @@ export default function AgentTracesScreen() {
           <Ionicons name="chevron-back" size={22} color={Colors.textPrimary} />
         </TouchableOpacity>
         <View style={s.headerCenter}>
-          <Text style={s.headerTitle}>Agent Traces</Text>
-          <Text style={s.headerSub}>
-            {source === 'api' ? `Request ${requestId} · Firestore` : 'Demo pipeline · 6 agents'}
-          </Text>
+          <View style={s.headerTitleRow}>
+            <Text style={s.headerTitle}>Agent Traces</Text>
+            {isLive && !requestId && <LiveDot />}
+          </View>
+          <Text style={s.headerSub}>{subTitle}</Text>
         </View>
         <TouchableOpacity style={s.exportBtn} onPress={handleExport} activeOpacity={0.8}>
           <Ionicons name="share-outline" size={18} color={Colors.primary} />
         </TouchableOpacity>
       </View>
 
-      <ScrollView style={s.scroll} contentContainerStyle={[s.content, { paddingBottom: insets.bottom + 32 }]} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={s.scroll}
+        contentContainerStyle={[s.content, { paddingBottom: insets.bottom + 32 }]}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* ── Recent requests picker (live mode only) ── */}
+        {!requestId && recentList.length > 1 && (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={s.recentScroll}
+            contentContainerStyle={{ paddingRight: Spacing.md }}
+          >
+            {recentList.map((entry) => (
+              <TouchableOpacity
+                key={entry.request_id}
+                style={[s.recentChip, entry.request_id === activeReqId && s.recentChipActive]}
+                onPress={() => {
+                  setActiveReqId(entry.request_id);
+                  setTraces(entry.logs || []);
+                  setUserInput(entry.user_input || null);
+                }}
+                activeOpacity={0.75}
+              >
+                <Text style={[s.recentChipId, entry.request_id === activeReqId && s.recentChipIdActive]}>
+                  {entry.request_id.slice(-8)}
+                </Text>
+                <Text style={s.recentChipMeta}>{entry.log_count} agents</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        )}
 
         {/* ── User input display ── */}
-        {userInput && (
+        {userInput ? (
           <View style={s.userInputCard}>
             <View style={s.userInputHeader}>
               <Ionicons name="person-circle-outline" size={16} color={Colors.primary} />
@@ -283,29 +401,33 @@ export default function AgentTracesScreen() {
             </View>
             <Text style={s.userInputText}>{userInput}</Text>
           </View>
-        )}
+        ) : null}
 
-        {loading && <ActivityIndicator color={Colors.primary} style={{ marginBottom: Spacing.md }} />}
+        {loading ? (
+          <ActivityIndicator color={Colors.primary} style={{ marginVertical: Spacing.xl }} />
+        ) : null}
 
         {/* ── Stats row ── */}
-        <View style={s.statsRow}>
-          <View style={s.statCard}>
-            <Text style={s.statVal}>{traces.length}</Text>
-            <Text style={s.statLbl}>Agents</Text>
+        {traces.length > 0 && (
+          <View style={s.statsRow}>
+            <View style={s.statCard}>
+              <Text style={s.statVal}>{traces.length}</Text>
+              <Text style={s.statLbl}>Agents</Text>
+            </View>
+            <View style={s.statCard}>
+              <Text style={[s.statVal, { color: Colors.primary }]}>{totalTime}s</Text>
+              <Text style={s.statLbl}>Total Time</Text>
+            </View>
+            <View style={s.statCard}>
+              <Text style={[s.statVal, { color: avgConf >= 90 ? '#16A34A' : Colors.warning }]}>{avgConf}%</Text>
+              <Text style={s.statLbl}>Avg Confidence</Text>
+            </View>
+            <View style={s.statCard}>
+              <Text style={[s.statVal, { color: fallbacks > 0 ? Colors.warning : '#16A34A' }]}>{fallbacks}</Text>
+              <Text style={s.statLbl}>Fallbacks</Text>
+            </View>
           </View>
-          <View style={s.statCard}>
-            <Text style={[s.statVal, { color: Colors.primary }]}>{totalTime}s</Text>
-            <Text style={s.statLbl}>Total Time</Text>
-          </View>
-          <View style={s.statCard}>
-            <Text style={[s.statVal, { color: avgConf >= 90 ? '#16A34A' : Colors.warning }]}>{avgConf}%</Text>
-            <Text style={s.statLbl}>Avg Confidence</Text>
-          </View>
-          <View style={s.statCard}>
-            <Text style={[s.statVal, { color: fallbacks > 0 ? Colors.warning : '#16A34A' }]}>{fallbacks}</Text>
-            <Text style={s.statLbl}>Fallbacks</Text>
-          </View>
-        </View>
+        )}
 
         {/* ── Pipeline label ── */}
         <View style={s.pipelineLabel}>
@@ -336,7 +458,7 @@ export default function AgentTracesScreen() {
         </ScrollView>
 
         {/* ── Trace cards ── */}
-        {filtered.length === 0 ? (
+        {filtered.length === 0 && !loading ? (
           <View style={s.empty}>
             <Ionicons name="layers-outline" size={40} color={Colors.border} />
             <Text style={s.emptyText}>Is agent ke koi traces nahi milein</Text>
@@ -352,8 +474,10 @@ export default function AgentTracesScreen() {
           <Ionicons name="information-circle-outline" size={14} color={Colors.textMuted} />
           <Text style={s.infoFooterText}>
             {source === 'demo'
-              ? 'Demo data shown. Real traces appear when a request is processed.'
-              : `Live traces from Firestore — Request ID: ${requestId}`}
+              ? 'Demo data — backend se connect hone ke baad real traces ayenge.'
+              : isLive
+                ? `Live Firestore — har ${POLL_INTERVAL_MS / 1000}s mein refresh. Request: ${activeReqId ?? '—'}`
+                : `Firestore — Request ID: ${activeReqId ?? requestId ?? '—'}`}
           </Text>
         </View>
       </ScrollView>
@@ -376,9 +500,26 @@ const s = StyleSheet.create({
   },
   backBtn: { width: 38, height: 38, borderRadius: 19, justifyContent: 'center', alignItems: 'center', backgroundColor: Colors.background },
   headerCenter: { flex: 1, paddingHorizontal: Spacing.sm },
+  headerTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   headerTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: Colors.textPrimary },
   headerSub: { fontSize: FontSize.xs, color: Colors.textMuted, marginTop: 1 },
   exportBtn: { width: 38, height: 38, borderRadius: 19, justifyContent: 'center', alignItems: 'center', backgroundColor: Colors.primaryLight },
+
+  // Live dot
+  liveDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#16A34A' },
+
+  // Recent requests picker
+  recentScroll: { marginBottom: Spacing.md },
+  recentChip: {
+    paddingHorizontal: 12, paddingVertical: 8,
+    backgroundColor: Colors.surface, borderRadius: Radius.md,
+    borderWidth: 1, borderColor: Colors.border,
+    marginRight: 8, alignItems: 'center',
+  },
+  recentChipActive: { backgroundColor: Colors.primaryLight, borderColor: Colors.primary },
+  recentChipId: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: Colors.textSecondary, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+  recentChipIdActive: { color: Colors.primary },
+  recentChipMeta: { fontSize: 10, color: Colors.textMuted, marginTop: 2 },
 
   scroll: { flex: 1 },
   content: { padding: Spacing.md },

@@ -155,6 +155,7 @@ export async function workerUpdateStatus(
   jobRequestId: string,
   workerName: string,
   status: ChatStatus,
+  bookingId?: string,
 ): Promise<void> {
   const STATUS_MSG: Partial<Record<ChatStatus, string>> = {
     on_the_way:  `${workerName} rawaana ho gaye — thodi der mein pahunch jaenge!`,
@@ -164,6 +165,7 @@ export async function workerUpdateStatus(
   };
   const ref = doc(db, 'chats', jobRequestId);
   const updates: Record<string, unknown> = { status, updated_at: nowIso() };
+  if (bookingId) updates.booking_id = bookingId;
   const msg = STATUS_MSG[status];
   if (msg) updates.messages = arrayUnion(sysMsg(msg));
   await updateDoc(ref, updates);
@@ -208,14 +210,70 @@ export function subscribeToChat(
   callback: (chat: ChatDoc | null) => void,
 ): () => void {
   const ref = doc(db, 'chats', jobRequestId);
-  return onSnapshot(ref, (snap) => {
-    callback(snap.exists() ? (snap.data() as ChatDoc) : null);
+  let fallbackUnsub: (() => void) | null = null;
+
+  const unsub = onSnapshot(ref, (snap) => {
+    if (snap.exists()) {
+      callback(snap.data() as ChatDoc);
+    } else {
+      // Try querying by booking_id as fallback
+      const q = query(
+        collection(db, 'chats'),
+        where('booking_id', '==', jobRequestId),
+        limit(1),
+      );
+      if (fallbackUnsub) fallbackUnsub();
+      fallbackUnsub = onSnapshot(q, (qsnap) => {
+        if (!qsnap.empty) {
+          callback(qsnap.docs[0].data() as ChatDoc);
+        } else {
+          callback(null);
+        }
+      });
+    }
   });
+
+  return () => {
+    unsub();
+    if (fallbackUnsub) fallbackUnsub();
+  };
 }
 
 export async function getChat(jobRequestId: string): Promise<ChatDoc | null> {
   const snap = await getDoc(doc(db, 'chats', jobRequestId));
   return snap.exists() ? (snap.data() as ChatDoc) : null;
+}
+
+/** Worker cancels / declines the job */
+export async function cancelJob(jobRequestId: string, workerName: string): Promise<void> {
+  const ref = doc(db, 'chats', jobRequestId);
+  await updateDoc(ref, {
+    status: 'cancelled',
+    updated_at: nowIso(),
+    messages: arrayUnion(sysMsg(`${workerName} ne yeh job decline kar di.`)),
+  });
+}
+
+/** Worker sends a bid offer into the chat */
+export async function sendBidOffer(
+  jobRequestId: string,
+  workerName: string,
+  price: number,
+  etaMinutes: number,
+  extraMessage: string,
+): Promise<void> {
+  const ref = doc(db, 'chats', jobRequestId);
+  const text = `Mera rate: Rs ${price.toLocaleString()}. ETA: ${etaMinutes} min.${extraMessage ? ' ' + extraMessage : ''}`;
+  await updateDoc(ref, {
+    updated_at: nowIso(),
+    messages: arrayUnion({
+      id: mkId(),
+      sender_role: 'worker',
+      sender_name: workerName,
+      text,
+      ts: nowIso(),
+    }),
+  });
 }
 
 /**

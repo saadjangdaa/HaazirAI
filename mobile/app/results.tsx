@@ -11,6 +11,7 @@ import {
   FullOrchestrationResponse, Provider, triggerBidding, formatApiError, requireUserId,
   getJobBids, acceptBid, WorkerBid,
 } from '../services/api';
+import { workerAcceptJob } from '../services/chatService';
 import { useAuth } from '../context/AuthContext';
 import ProviderCard from '../components/ProviderCard';
 import PriceBreakdown from '../components/PriceBreakdown';
@@ -100,10 +101,16 @@ const ResultsScreen = () => {
     try {
       if (pollRef.current) clearInterval(pollRef.current);
       const res = await acceptBid(jobRequestId, bid.bid_id, user.id, 'cash');
+      // Update chat doc: worker accepted → messages appear for customer
+      workerAcceptJob(jobRequestId, bid.provider_id, bid.provider_name, {
+        customer_id: user.id,
+        service: result?.extracted_intent?.service_type || bid.provider_name,
+      }).catch(() => {});
       router.replace({
         pathname: '/booking',
         params: {
           bookingId: res.booking_id,
+          jobRequestId,                    // pass so tracking can find chat
           providerData: JSON.stringify(bid),
           confirmationMessage: res.confirmation_message,
         },

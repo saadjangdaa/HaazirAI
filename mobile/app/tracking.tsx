@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, ActivityIndicator, StatusBar,
 } from 'react-native';
@@ -10,6 +10,7 @@ import {
   getBookingStatus, getDisputeEligibility, updateBookingStatus, formatApiError, BookingStatus,
 } from '../services/api';
 import { isDisputeEligibleStatus } from '../utils/disputeEligibility';
+import { subscribeToChat, ChatDoc } from '../services/chatService';
 
 const DEMO_ADVANCE = ['confirmed', 'on_the_way', 'arrived', 'in_progress', 'completed'];
 
@@ -23,27 +24,54 @@ const STATUS_ICONS: Record<string, string> = {
 
 export default function TrackingScreen() {
   const router = useRouter();
-  const { bookingId } = useLocalSearchParams<{ bookingId: string }>();
+  const { bookingId, jobRequestId } = useLocalSearchParams<{ bookingId: string; jobRequestId?: string }>();
   const insets = useSafeAreaInsets();
   const [status, setStatus] = useState<BookingStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [advancing, setAdvancing] = useState(false);
   const [canFileDispute, setCanFileDispute] = useState(false);
+  const [chat, setChat] = useState<ChatDoc | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (silent = false) => {
     if (!bookingId) return;
-    setLoading(true);
+    if (!silent) setLoading(true);
     try {
       const data = await getBookingStatus(bookingId);
       setStatus(data);
     } catch (e) {
-      Alert.alert('Error', formatApiError(e));
+      if (!silent) Alert.alert('Error', formatApiError(e));
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [bookingId]);
 
-  useEffect(() => { load(); }, [load]);
+  // Initial load + polling every 10s
+  useEffect(() => {
+    load();
+    pollRef.current = setInterval(() => load(true), 10000);
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, [load]);
+
+  // Real-time Firestore chat listener (updates status without polling delay)
+  useEffect(() => {
+    const chatId = jobRequestId || bookingId;
+    if (!chatId) return;
+    const unsub = subscribeToChat(chatId, (doc) => {
+      if (!doc) return;
+      setChat(doc);
+      // Map chat status to booking tracking steps
+      const chatToBooking: Partial<Record<string, string>> = {
+        on_the_way: 'on_the_way', arrived: 'arrived',
+        in_progress: 'in_progress', completed: 'completed',
+      };
+      const mapped = chatToBooking[doc.status];
+      if (mapped && status) {
+        setStatus((prev) => prev ? { ...prev, status: mapped } : prev);
+      }
+    });
+    return unsub;
+  }, [jobRequestId, bookingId]);
 
   useEffect(() => {
     if (!bookingId || !status?.status) {
@@ -134,8 +162,26 @@ export default function TrackingScreen() {
               <TouchableOpacity style={styles.actionCircle}>
                 <Ionicons name="call-outline" size={18} color={Colors.primary} />
               </TouchableOpacity>
-              <TouchableOpacity style={styles.actionCircle}>
+              <TouchableOpacity
+                style={styles.actionCircle}
+                onPress={() => {
+                  const chatId = jobRequestId || bookingId;
+                  if (chatId) {
+                    router.push({
+                      pathname: '/job-chat',
+                      params: {
+                        jobRequestId: chatId,
+                        workerName: status?.provider_name || '',
+                        service: status?.service || '',
+                      },
+                    });
+                  }
+                }}
+              >
                 <Ionicons name="chatbubble-outline" size={18} color={Colors.primary} />
+                {chat && chat.status !== 'waiting' && (
+                  <View style={styles.chatDot} />
+                )}
               </TouchableOpacity>
             </View>
           </View>
@@ -242,6 +288,7 @@ const styles = StyleSheet.create({
   providerService: { fontSize: FontSize.xs, color: Colors.textMuted },
   providerActions: { flexDirection: 'row', gap: Spacing.sm },
   actionCircle: { width: 38, height: 38, borderRadius: 19, backgroundColor: Colors.primaryLight, justifyContent: 'center', alignItems: 'center' },
+  chatDot: { position: 'absolute', top: 6, right: 6, width: 8, height: 8, borderRadius: 4, backgroundColor: Colors.success, borderWidth: 1.5, borderColor: '#fff' },
 
   // Timeline
   timelineCard: {
