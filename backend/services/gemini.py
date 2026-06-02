@@ -65,23 +65,17 @@ if not MOCK_MODE:
 
 def _call_generate(prompt: str, system_prompt: str = "") -> str:
     """Synchronous Gemini call — runs in executor."""
+    full_content = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
     if _NEW_SDK and _client:
-        config = None
-        if system_prompt:
-            config = _genai_types.GenerateContentConfig(
-                system_instruction=system_prompt,
-            )
         response = _client.models.generate_content(
             model=_MODEL_NAME,
-            contents=prompt,
-            config=config,
+            contents=full_content,
         )
         return response.text or ""
     elif _OLD_SDK:
         import google.generativeai as _og
-        full = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
         model = _og.GenerativeModel(_MODEL_NAME)
-        response = model.generate_content(full)
+        response = model.generate_content(full_content)
         return response.text or ""
     return ""
 
