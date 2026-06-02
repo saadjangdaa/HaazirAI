@@ -120,6 +120,11 @@ export async function workerAcceptJob(
     },
   ];
 
+  const chatSource = snap.exists() ? (snap.data() as ChatDoc) : null;
+  const customerId = chatSource?.customer_id || jobData?.customer_id || '';
+  const service = chatSource?.service || jobData?.service || 'Service';
+  const estimatedPrice = chatSource?.estimated_price ?? jobData?.estimated_price ?? 0;
+
   if (snap.exists()) {
     await updateDoc(ref, {
       worker_uid: workerId,
@@ -132,20 +137,39 @@ export async function workerAcceptJob(
     // Marketplace job — no chat doc yet, create one
     await setDoc(ref, {
       job_request_id: jobRequestId,
-      customer_id: jobData?.customer_id || '',
+      customer_id: customerId,
       customer_name: jobData?.customer_name || 'Customer',
       worker_id: null,
       worker_uid: workerId,
       worker_name: workerName,
-      service: jobData?.service || 'Service',
+      service,
       location: jobData?.location || '',
       city: jobData?.city || '',
       urgency: jobData?.urgency || 'medium',
-      estimated_price: jobData?.estimated_price || 0,
+      estimated_price: estimatedPrice,
       status: 'accepted',
       messages: acceptMsgs,
       created_at: now,
       updated_at: now,
+    });
+  }
+
+  // Create a bookings/{bookingId} document so customer's Meri Bookings shows this job
+  if (customerId) {
+    const bookingId = `HAZ-${jobRequestId.slice(-8).toUpperCase()}`;
+    await setDoc(doc(db, 'bookings', bookingId), {
+      booking_id: bookingId,
+      job_request_id: jobRequestId,
+      user_id: customerId,
+      provider_id: chatSource?.worker_id || null,
+      provider_name: workerName,
+      service,
+      scheduled_time: now,
+      price: estimatedPrice,
+      status: 'confirmed',
+      created_at: now,
+      updated_at: now,
+      tracking_steps: [],
     });
   }
 }
