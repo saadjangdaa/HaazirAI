@@ -58,6 +58,7 @@ from models.request import (
     WorkerBidCreate,
     AcceptBidRequest,
     RebookRequest,
+    RebookFromChatRequest,
     WaitlistRequest,
 )
 from models.investigation import ComplaintCreateBody, WorkerDefenseBody
@@ -805,21 +806,22 @@ async def get_booking_dispute_eligibility(booking_id: str):
 
 @app.post("/api/booking/{booking_id}/rebook")
 async def rebook_after_cancellation(booking_id: str, body: RebookRequest):
-    """Provider ne cancel kiya — PAKKA se naya worker dhundho aur rebook karo."""
+    """Cancel booking and always attempt PAKKA replacement (customer late-rebook or provider cancel)."""
     booking = await get_booking(booking_id)
     if not booking:
         raise HTTPException(status_code=404, detail=f"Booking {booking_id} not found")
 
-    cancelled_by = body.cancelled_by
     reason = body.reason
     user_id = booking.get("user_id", "user_001")
-    provider_id = booking.get("provider_id", "")
+    provider_id = (booking.get("provider_id") or "").strip()
+    provider_uid = (booking.get("provider_uid") or "").strip()
 
-    # Reconstruct minimal intent from booking data
     intent = {
         "service_type": booking.get("service", "Service"),
         "normalized_category": None,
-        "location": booking.get("location", "").split(",")[0].strip() if "," in booking.get("location", "") else booking.get("location", ""),
+        "location": booking.get("location", "").split(",")[0].strip()
+        if "," in (booking.get("location") or "")
+        else (booking.get("location") or ""),
         "city": booking.get("city", "Islamabad"),
         "time_preference": "now",
         "urgency": "high",
@@ -829,53 +831,103 @@ async def rebook_after_cancellation(booking_id: str, body: RebookRequest):
     }
     pricing = {"total": booking.get("price", 1000)}
 
-    # Find fresh providers excluding the cancelled one
     from agents.dhundho import DhundhoAgent
     from agents.chunno import ChunnoAgent
+    from agents.pakka import PakkaAgent
+    from services.booking_service import set_booking_status
+
     _dhundho = DhundhoAgent()
     _chunno = ChunnoAgent()
+    _pakka = PakkaAgent()
 
     dhundho_result = await _dhundho.find_providers(intent)
     providers_raw = dhundho_result.get("providers", [])
-    alternatives = [p for p in providers_raw if p.get("id") != provider_id]
-
+    excluded = {provider_id, provider_uid} - {""}
+    alternatives = [p for p in providers_raw if (p.get("id") or "") not in excluded]
     if not alternatives:
-        alternatives = providers_raw  # fallback: any provider
+        alternatives = providers_raw
 
     if alternatives:
         chunno_result = await _chunno.rank_providers(alternatives, intent)
         alternatives = chunno_result.get("ranked_providers", alternatives)
 
-    _pakka = PakkaAgent()
-    result = await _pakka.handle_cancellation(
-        booking_id=booking_id,
-        provider_id=provider_id,
-        cancelled_by=cancelled_by,
-        reason=reason,
-        original_booking=booking,
-        alternative_providers=alternatives,
-        intent=intent,
-        pricing=pricing,
-        user_id=user_id,
-    )
+    # Worker late / rebook — treat as provider-side issue for penalty + replacement
+    cancelled_by = body.cancelled_by
+    if cancelled_by == "customer" and "late" in (reason or "").lower():
+        cancelled_by = "provider"
 
-    # Mark original booking as cancelled in Firestore
-    from services.booking_service import set_booking_status
     try:
         await set_booking_status(booking_id, "cancelled")
     except Exception:
         pass
 
+    replacement_booking = await _pakka._find_replacement(
+        alternatives, intent, pricing, user_id
+    )
+
+    if replacement_booking:
+        replacement_status = "replacement_found"
+        pname = (replacement_booking.get("receipt") or {}).get("provider_name", "Provider")
+        replacement_message = (
+            f"Naya worker mil gaya: {pname}. "
+            f"Reference: {replacement_booking.get('booking_id', '')}"
+        )
+    else:
+        replacement_status = "no_replacement_found"
+        replacement_message = (
+            "Abhi koi provider available nahi. "
+            "Aap waitlist mein hain — jaisay hi koi available ho ga hum notify karein ge."
+        )
+
+    replacement_provider = None
+    if replacement_booking:
+        replacement_provider = {
+            "id": replacement_booking.get("provider_id"),
+            "name": (replacement_booking.get("receipt") or {}).get("provider_name", "Provider"),
+        }
+
     return {
         "ok": True,
-        "cancellation_id": result.get("cancellation_id"),
-        "replacement_status": result.get("replacement_status"),
-        "replacement_message": result.get("replacement_message"),
-        "replacement_booking": result.get("replacement_booking"),
-        "customer_message": result.get("customer_message"),
-        "penalty_applied": result.get("penalty_applied"),
-        "penalty_points": result.get("penalty_points"),
+        "cancellation_id": f"CAN-{datetime.now().strftime('%Y%m%d')}-{str(uuid.uuid4())[:6].upper()}",
+        "replacement_status": replacement_status,
+        "replacement_message": replacement_message,
+        "replacement_booking": replacement_booking,
+        "replacement_provider": replacement_provider,
+        "customer_message": replacement_message,
+        "penalty_applied": cancelled_by == "provider",
+        "penalty_points": 10 if cancelled_by == "provider" else 0,
     }
+
+
+@app.post("/api/booking/rebook-from-chat")
+async def rebook_from_chat(body: RebookFromChatRequest):
+    """Mobile chat bookings (Firestore-only) — seed backend doc then run agent rebook."""
+    bid = (body.job_request_id or "").strip()
+    if not bid:
+        raise HTTPException(status_code=400, detail="job_request_id required")
+
+    booking = await get_booking(bid)
+    if not booking:
+        from services.firebase import save_booking
+
+        seed = {
+            "booking_id": bid,
+            "job_request_id": bid,
+            "user_id": body.user_id,
+            "provider_id": body.provider_id,
+            "service": body.service,
+            "location": body.location,
+            "city": body.city,
+            "price": int(body.price or 1000),
+            "status": "confirmed",
+        }
+        await save_booking(seed)
+        booking = seed
+
+    return await rebook_after_cancellation(
+        bid,
+        RebookRequest(cancelled_by=body.cancelled_by, reason=body.reason),
+    )
 
 
 @app.post("/api/waitlist")
