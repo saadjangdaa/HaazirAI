@@ -31,7 +31,7 @@ import {
 } from '../../services/api';
 import { formatWorkerPrice, formatWorkerTime, isActiveWorkerStatus, isOfferStatus, isTerminalStatus, WORKER_STATUS_LABEL } from '../../utils/workerBookings';
 import { MOCK_WORKER_BOOKINGS } from '../../data/mockData';
-import { workerAcceptJob } from '../../services/chatService';
+import { workerAcceptJob, workerCancelJob } from '../../services/chatService';
 import { db } from '../../services/firebase';
 import { collection, query, where, onSnapshot, limit } from 'firebase/firestore';
 
@@ -209,6 +209,49 @@ export default function WorkerJobsScreen() {
     } finally {
       setAdvancingId(null);
     }
+  };
+
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
+
+  const handleCancelJob = (booking: UserBooking) => {
+    const st = (booking.status || '').toLowerCase();
+    // Only allow cancel before worker has arrived
+    if (!['confirmed', 'on_the_way'].includes(st)) return;
+
+    Alert.alert(
+      'Job Cancel Karein?',
+      `Kya aap "${booking.service || 'yeh kaam'}" cancel karna chahte hain? Customer ko notify kar diya jayega.`,
+      [
+        { text: 'Nahi', style: 'cancel' },
+        {
+          text: 'Haan, Cancel Karein',
+          style: 'destructive',
+          onPress: async () => {
+            if (!booking.booking_id) return;
+            if (isMockMode) {
+              setBookings(prev => prev.map(b =>
+                b.booking_id === booking.booking_id ? { ...b, status: 'cancelled' } : b
+              ));
+              return;
+            }
+            setCancellingId(booking.booking_id);
+            try {
+              await updateBookingStatus(booking.booking_id, 'cancelled');
+              // Also update Firestore chat doc if this is a chat-based job
+              const chatId = (booking as any)._chat_id;
+              if (chatId) {
+                await workerCancelJob(chatId, user?.username || 'Worker');
+              }
+              await load();
+            } catch (e) {
+              Alert.alert('Cancel failed', formatApiError(e));
+            } finally {
+              setCancellingId(null);
+            }
+          },
+        },
+      ],
+    );
   };
 
   // Listener 1: targeted chat jobs — nearby worker direct bookings
@@ -670,6 +713,8 @@ export default function WorkerJobsScreen() {
             const enRoute = ['on_the_way', 'arrived', 'in_progress'].includes(st);
             const nextStep = STATUS_NEXT[st];
             const isAdvancing = advancingId === job.booking_id;
+            const isCancelling = cancellingId === job.booking_id;
+            const canCancel = ['confirmed', 'on_the_way'].includes(st);
             return (
               <View key={job.booking_id} style={[styles.jobCard, Shadow.sm]}>
                 <View style={styles.jobRow}>
@@ -694,7 +739,7 @@ export default function WorkerJobsScreen() {
                   <TouchableOpacity
                     style={styles.advanceBtn}
                     onPress={() => handleStatusAdvance(job)}
-                    disabled={isAdvancing}
+                    disabled={isAdvancing || isCancelling}
                     activeOpacity={0.8}
                   >
                     {isAdvancing ? (
@@ -704,6 +749,23 @@ export default function WorkerJobsScreen() {
                         <Ionicons name={nextStep.icon as any} size={14} color={Colors.primary} />
                         <Text style={styles.advanceBtnText}>{nextStep.label}</Text>
                         <Ionicons name="chevron-forward" size={14} color={Colors.primary} />
+                      </>
+                    )}
+                  </TouchableOpacity>
+                )}
+                {canCancel && (
+                  <TouchableOpacity
+                    style={styles.cancelJobBtn}
+                    onPress={() => handleCancelJob(job)}
+                    disabled={isCancelling || isAdvancing}
+                    activeOpacity={0.8}
+                  >
+                    {isCancelling ? (
+                      <ActivityIndicator size="small" color={Colors.danger} />
+                    ) : (
+                      <>
+                        <Ionicons name="close-circle-outline" size={14} color={Colors.danger} />
+                        <Text style={styles.cancelJobBtnText}>Job Cancel Karein</Text>
                       </>
                     )}
                   </TouchableOpacity>
@@ -1062,6 +1124,16 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: FontSize.sm, fontWeight: FontWeight.semibold,
     color: Colors.primary,
+  },
+  cancelJobBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    marginTop: Spacing.sm, paddingTop: Spacing.sm, paddingVertical: 8,
+    borderTopWidth: 1, borderTopColor: Colors.dangerDim,
+    backgroundColor: Colors.dangerDim, borderRadius: Radius.md,
+  },
+  cancelJobBtnText: {
+    fontSize: FontSize.sm, fontWeight: FontWeight.semibold,
+    color: Colors.danger,
   },
   // Tab switcher
   tabRow: {

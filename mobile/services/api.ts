@@ -321,6 +321,8 @@ export interface UserProfile {
   cnic?: string;
   city?: string;
   role?: 'customer' | 'worker';
+  /** Worker only: none | pending | active | rejected | suspended | inactive */
+  approval_status?: string;
   profile_complete?: boolean;
   push_token?: string;
   /** Unified worker fields on users/{uid} */

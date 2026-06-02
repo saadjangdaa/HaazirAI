@@ -3,60 +3,44 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
 
-from services.firebase import get_user, list_bookings, list_providers, update_user
+from services.firebase import get_user, list_bookings
 from services.booking_service import _enrich_booking
 from services.users_integrity import is_plausible_firebase_uid
+from services.user_validation import is_profile_complete
+from services.worker_registration import (
+    ensure_worker_provider_application,
+    get_worker_approval_status,
+    provider_id_for_worker,
+)
 
 
 async def resolve_worker_provider_id(user_id: str, persist: bool = True) -> Optional[str]:
     """
-    Return provider_id for a worker users/{uid} document.
-    Uses stored provider_id or matches Firestore provider by skill + city.
+    Return this worker's own provider_id (Firebase UID).
+    Creates a pending providers/{uid} application when profile is complete.
+    Does not link workers to unrelated seed/demo providers.
     """
     if not is_plausible_firebase_uid(user_id):
         return None
 
     user = await get_user(user_id)
-    if not user:
+    if not user or user.get("role") != "worker":
         return None
 
     existing = (user.get("provider_id") or "").strip()
     if existing:
         return existing
 
-    skills: List[str] = list(user.get("skills") or [])
-    wd = user.get("worker_data") or {}
-    if not skills and isinstance(wd, dict):
-        skills = list(wd.get("specializations") or [])
+    if not is_profile_complete(user):
+        return None
 
-    areas: List[str] = list(user.get("areas") or [])
-    if not areas and isinstance(wd, dict):
-        areas = list(wd.get("areas") or [])
-    city = (user.get("city") or (areas[0] if areas else "") or "Islamabad").strip()
+    if persist:
+        try:
+            return await ensure_worker_provider_application(user_id)
+        except ValueError:
+            return provider_id_for_worker(user_id)
 
-    providers = await list_providers(city=city if city else None)
-    if not providers and city:
-        providers = await list_providers()
-
-    matched: Optional[str] = None
-    for skill in skills:
-        sk = skill.lower()
-        for p in providers:
-            svc = (p.get("service") or "").lower()
-            specs = [s.lower() for s in (p.get("specialization") or [])]
-            if sk in svc or any(sk in s or s in sk for s in specs):
-                matched = p.get("id") or p.get("provider_id")
-                break
-        if matched:
-            break
-
-    if not matched and providers:
-        matched = providers[0].get("id") or providers[0].get("provider_id")
-
-    if matched and persist:
-        await update_user(user_id, {"provider_id": matched})
-
-    return matched
+    return provider_id_for_worker(user_id)
 
 
 async def get_worker_bookings(
@@ -65,6 +49,15 @@ async def get_worker_bookings(
     """Bookings for worker dashboard (via provider_id on users/{uid})."""
     if not is_plausible_firebase_uid(user_id):
         raise HTTPException(status_code=400, detail="Valid Firebase Auth UID required")
+
+    approval = await get_worker_approval_status(user_id)
+    if approval != "active":
+        msg = {
+            "pending": "Your application is pending admin approval",
+            "rejected": "Your worker application was rejected",
+            "none": "Complete worker registration first",
+        }.get(approval, "Worker account is not active")
+        raise HTTPException(status_code=403, detail=msg)
 
     provider_id = await resolve_worker_provider_id(user_id)
     if not provider_id:

@@ -80,8 +80,11 @@ def _extract_response_text(response) -> str:
         return response.text
 
 
+_GEMINI_TIMEOUT = 8.0  # seconds per key attempt — prevents SDK retry-loops from hanging
+
+
 async def _try_generate(content) -> str:
-    """Try all keys in sequence, rotating on any error. Falls back to mock if all exhausted."""
+    """Try all keys in sequence with timeout. Falls back to mock if all exhausted."""
     global _current_key_idx, MOCK_MODE
 
     tried = 0
@@ -89,20 +92,23 @@ async def _try_generate(content) -> str:
     while tried < len(_ALL_KEYS):
         try:
             loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None, lambda: _model.generate_content(content)
+            response = await asyncio.wait_for(
+                loop.run_in_executor(None, lambda: _model.generate_content(content)),
+                timeout=_GEMINI_TIMEOUT,
             )
             return _extract_response_text(response)
+        except asyncio.TimeoutError:
+            print(f"[gemini] key #{_current_key_idx + 1} timed out after {_GEMINI_TIMEOUT}s")
         except Exception as e:
             print(f"[gemini] key #{_current_key_idx + 1} error: {e}")
-            next_idx = _current_key_idx + 1
-            if next_idx < len(_ALL_KEYS):
-                print(f"[gemini] rotating to key #{next_idx + 1} of {len(_ALL_KEYS)}")
-                _init_model(next_idx)
-                tried += 1
-            else:
-                print(f"[gemini] all {len(_ALL_KEYS)} keys exhausted — falling back to mock")
-                return None
+        next_idx = _current_key_idx + 1
+        if next_idx < len(_ALL_KEYS):
+            print(f"[gemini] rotating to key #{next_idx + 1} of {len(_ALL_KEYS)}")
+            _init_model(next_idx)
+            tried += 1
+        else:
+            print(f"[gemini] all {len(_ALL_KEYS)} keys exhausted — falling back to mock")
+            return None
 
     return None
 
@@ -170,8 +176,9 @@ async def generate_chat(
                 else:
                     model_instance = _model
 
-                response = await loop.run_in_executor(
-                    None, lambda m=model_instance, c=contents: m.generate_content(c)
+                response = await asyncio.wait_for(
+                    loop.run_in_executor(None, lambda m=model_instance, c=contents: m.generate_content(c)),
+                    timeout=_GEMINI_TIMEOUT,
                 )
                 # Extract only non-thought parts (gemini-2.5-flash thinking model)
                 text = ""
@@ -182,6 +189,14 @@ async def generate_chat(
                 except Exception:
                     text = response.text  # fallback for older SDK versions
                 return text.strip() or None
+            except asyncio.TimeoutError:
+                print(f"[gemini] key #{_current_key_idx + 1} timed out after {_GEMINI_TIMEOUT}s")
+                next_idx = _current_key_idx + 1
+                if next_idx < len(_ALL_KEYS):
+                    _init_model(next_idx)
+                    tried += 1
+                else:
+                    return None
             except Exception as e:
                 print(f"[gemini] key #{_current_key_idx + 1} error: {e}")
                 next_idx = _current_key_idx + 1
@@ -236,11 +251,14 @@ def _mock_gemini_response(prompt: str, system_prompt: str = "") -> str:
         elif "carpent" in p_lower or "furniture" in p_lower:
             service = "carpenter"
         city = "Islamabad"
-        if "karachi" in p_lower: city = "Karachi"
-        elif "lahore" in p_lower: city = "Lahore"
+        _karachi_kw = ["karachi", "clifton", "gulshan", "nazimabad", "korangi", "dha khi",
+                       "defence", "saddar", "malir", "north karachi", "surjani", "lyari"]
+        _lahore_kw = ["lahore", "gulberg", "johar town", "model town", "dha lahore", "bahria town"]
+        if any(kw in p_lower for kw in _karachi_kw): city = "Karachi"
+        elif any(kw in p_lower for kw in _lahore_kw): city = "Lahore"
         is_emergency = any(kw in p_lower for kw in ["gas leak", "aag", "fire", "emergency"])
         return json.dumps({
-            "service_type": service, "location": "G-13", "city": city,
+            "service_type": service, "location": city, "city": city,
             "time_preference": "tomorrow_morning",
             "urgency": "critical" if is_emergency else "high",
             "budget_sensitivity": "high", "job_complexity": "intermediate",
@@ -332,9 +350,11 @@ def _mock_gemini_response(prompt: str, system_prompt: str = "") -> str:
         has_service = any(svc in user_text for svc in ["ac", "plumb", "electric", "tutor", "carpent",
                                                         "mechanic", "cook", "maid", "garden", "painter",
                                                         "beautician", "beaut"])
-        has_location = any(loc in p_lower for loc in ["g-", "dha", "f-", "islamabad", "karachi",
-                                                       "lahore", "sector", "clifton", "gulshan",
-                                                       "bahria", "gulberg"])
+        _karachi_areas = ["karachi", "clifton", "gulshan", "nazimabad", "korangi", "defence",
+                          "saddar", "malir", "north karachi", "surjani", "lyari", "dha khi"]
+        _lahore_areas = ["lahore", "gulberg", "johar town", "model town", "dha lahore", "bahria town", "cantt"]
+        _isb_areas = ["islamabad", "rawalpindi", "g-", "f-", "i-", "e-7", "bahria isb"]
+        has_location = any(kw in p_lower for kw in _karachi_areas + _lahore_areas + _isb_areas + ["sector", "dha", "bahria"])
         has_urgency = any(kw in p_lower for kw in [
             "urgent", "aaj", "abhi", "jaldi", "fori", "emergency",
             "baad", "kal", "schedule", "later", "high", "medium", "low",
@@ -356,8 +376,8 @@ def _mock_gemini_response(prompt: str, system_prompt: str = "") -> str:
                 elif "paint" in user_text: svc = "painter"
                 elif "beaut" in user_text or "salon" in user_text: svc = "beautician"
                 loc = "Islamabad"
-                if "karachi" in p_lower or "clifton" in p_lower or ("dha" in p_lower and "karachi" in p_lower): loc = "Karachi"
-                elif "lahore" in p_lower or "gulberg" in p_lower: loc = "Lahore"
+                if any(kw in p_lower for kw in _karachi_areas): loc = "Karachi"
+                elif any(kw in p_lower for kw in _lahore_areas): loc = "Lahore"
                 urgency = "high" if any(kw in p_lower for kw in ["urgent", "aaj", "abhi", "jaldi", "fori", "emergency"]) else "medium"
                 return f"[SEARCH: service={svc} location={loc} urgency={urgency}]\n{_SEARCH_CONFIRM[lang]}"
             return _ASK_LOCATION[lang]

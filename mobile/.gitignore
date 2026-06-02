@@ -1,2 +1,5 @@
 # Local Expo / Metro (never commit)
 .expo/
+
+# Native folders — generate via EAS prebuild only (never commit partial android/)
+android/

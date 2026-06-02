@@ -129,6 +129,12 @@ _cron_task: Optional[asyncio.Task] = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _cron_stop, _cron_task
+    from backend.services.admin_service import ensure_dev_admin_user
+
+    try:
+        await ensure_dev_admin_user()
+    except Exception as exc:
+        logger.warning("Admin user seed skipped: %s", exc)
     if internal_cron_enabled():
         _cron_stop = asyncio.Event()
         _cron_task = asyncio.create_task(notification_cron_loop(_cron_stop))
@@ -159,6 +165,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+from backend.routers.admin_portal import router as admin_portal_router
+
+app.include_router(admin_portal_router)
 
 from services.user_validation import (
     is_profile_complete,
@@ -247,6 +257,41 @@ def _fallback_ranked_providers(intent: dict, limit: int = 8) -> list:
     return ranked
 
 
+_KNOWN_CITIES = {"karachi", "lahore", "islamabad", "rawalpindi", "faisalabad", "peshawar", "quetta", "multan"}
+
+_AREA_CITY_MAP: dict[str, str] = {
+    "clifton": "Karachi", "defence": "Karachi", "dha khi": "Karachi",
+    "gulshan": "Karachi", "gulshan-e-iqbal": "Karachi", "gulshan iqbal": "Karachi",
+    "nazimabad": "Karachi", "korangi": "Karachi", "malir": "Karachi",
+    "saddar": "Karachi", "north karachi": "Karachi", "surjani": "Karachi",
+    "lyari": "Karachi", "orangi": "Karachi", "federal b": "Karachi",
+    "gulberg": "Lahore", "johar town": "Lahore", "model town": "Lahore",
+    "dha lahore": "Lahore", "bahria town": "Lahore", "cantt": "Lahore",
+    "g-13": "Islamabad", "g-11": "Islamabad", "g-10": "Islamabad",
+    "f-7": "Islamabad", "f-6": "Islamabad", "f-10": "Islamabad",
+    "i-8": "Islamabad", "i-10": "Islamabad", "e-7": "Islamabad",
+}
+
+
+def _resolve_city(location: str, user_city: str = "") -> str:
+    """Map a location string (area/neighbourhood/city) to a canonical city name."""
+    loc_lower = (location or "").lower().strip()
+    if not loc_lower:
+        return user_city or "Islamabad"
+    # Already a known city
+    if loc_lower in _KNOWN_CITIES:
+        return location.title()
+    # Check area→city map
+    for area, city in _AREA_CITY_MAP.items():
+        if area in loc_lower:
+            return city
+    # "DHA" alone is ambiguous — use user_city
+    if "dha" in loc_lower:
+        return user_city or "Karachi"
+    # Unknown area — fall back to user's registered city
+    return user_city or "Islamabad"
+
+
 def _filter_providers_by_service(providers: list, intent: dict) -> list:
     """Final safeguard: strip providers that don't match the requested service.
     If filtering would leave 0 results, return original (better some than none)."""
@@ -333,6 +378,13 @@ async def health():
         "instance_id": APP_INSTANCE_ID,
         "firebase": mode,
         "environment": config.ENVIRONMENT,
+        "admin_api": True,
+        "hint": (
+            "Replace backend/firebase-key.json with real Firebase service account (project haazir-ai) "
+            "so admin portal sees the same worker data as the mobile app."
+            if mode == "mock"
+            else None
+        ),
         "features": {
             "dispute_repeat_allowed": True,
             "dispute_two_sided": not dispute_instant_resolve_enabled(),
@@ -347,8 +399,6 @@ async def health():
             "notification_reminder_cron": cron_secret_configured(),
             "notification_cron_internal_loop": internal_cron_enabled(),
         },
-        "firebase": mode,
-        "environment": config.ENVIRONMENT,
     }
 
 
@@ -791,13 +841,23 @@ async def sync_user(body: UserSyncRequest):
 
     payload = mirror_profile_root_fields(payload)
     await sync_user_profile(uid, payload)
+    approval_status = None
     if body.role == "worker":
-        await resolve_worker_provider_id(uid, persist=True)
+        from services.worker_registration import (
+            ensure_worker_provider_application,
+            get_worker_approval_status,
+        )
+
+        doc_after = await get_user(uid)
+        if doc_after and is_profile_complete(doc_after):
+            await ensure_worker_provider_application(uid)
+        approval_status = await get_worker_approval_status(uid)
     doc = await get_user(uid)
     return {
         "success": True,
         "user_id": uid,
         "profile_complete": is_profile_complete(doc),
+        "approval_status": approval_status,
     }
 
 
@@ -810,7 +870,12 @@ async def get_user_profile(user_id: str):
     normalized = mirror_profile_root_fields({**doc})
     if normalized.get("phone") and not (doc.get("phone") or "").strip():
         await sync_user_profile(uid, normalized)
-    return {**normalized, "profile_complete": is_profile_complete(normalized)}
+    out = {**normalized, "profile_complete": is_profile_complete(normalized)}
+    if normalized.get("role") == "worker":
+        from services.worker_registration import get_worker_approval_status
+
+        out["approval_status"] = await get_worker_approval_status(uid)
+    return out
 
 
 @app.get("/api/logs/{request_id}")
@@ -913,16 +978,19 @@ async def conversation(body: ConversationRequest):
         if result.get("search_trigger"):
             trigger = result["search_trigger"]
             service = _normalize_service(trigger.get("service", "service"))
-            location = trigger.get("location") or body.user_city or "Islamabad"
+            raw_location = trigger.get("location") or body.user_city or "Islamabad"
+            # Map neighbourhood/area to canonical city (e.g. "Clifton" → "Karachi")
+            city = _resolve_city(raw_location, body.user_city or "")
+            location = city  # use resolved city for provider search
             urgency = trigger.get("urgency", "medium")
 
             orch: dict = {}
             try:
                 orch = await asyncio.wait_for(
                     run_samajh_workflow(
-                        user_input=f"Mujhe {service} chahiye, location: {location}, urgency: {urgency}",
+                        user_input=f"Mujhe {service} chahiye, location: {city}, urgency: {urgency}",
                         source="text",
-                        user_location=location,
+                        user_location=city,
                     ),
                     timeout=15.0,
                 )

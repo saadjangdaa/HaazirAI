@@ -169,6 +169,25 @@ export async function workerUpdateStatus(
   await updateDoc(ref, updates);
 }
 
+/** Worker cancels an accepted job before arriving at customer */
+export async function workerCancelJob(
+  jobRequestId: string,
+  workerName: string,
+  reason?: string,
+): Promise<void> {
+  const ref = doc(db, 'chats', jobRequestId);
+  const cancelMsg = sysMsg(
+    reason
+      ? `❌ ${workerName} ne kaam cancel kar diya. Wajah: ${reason}`
+      : `❌ ${workerName} ne kaam cancel kar diya. Aapko doosra worker milega.`,
+  );
+  await updateDoc(ref, {
+    status: 'cancelled',
+    updated_at: nowIso(),
+    messages: arrayUnion(cancelMsg),
+  });
+}
+
 /** Send a text message (customer or worker) */
 export async function sendChatMessage(
   jobRequestId: string,
