@@ -852,6 +852,7 @@ export async function rebookAfterCancellation(
   replacement_status: string;
   replacement_message: string;
   replacement_booking?: Record<string, unknown>;
+  replacement_provider?: { id: string; name: string } | null;
   customer_message: string;
   penalty_applied: boolean;
   penalty_points: number;
@@ -859,6 +860,36 @@ export async function rebookAfterCancellation(
   const { data } = await client.post(`/api/booking/${bookingId}/rebook`, {
     cancelled_by: cancelledBy,
     reason,
+  });
+  return data;
+}
+
+/** Rebook when booking doc may only exist in mobile Firestore — seeds backend then agents run. */
+export async function rebookFromChat(params: {
+  job_request_id: string;
+  user_id: string;
+  provider_id?: string;
+  service?: string;
+  location?: string;
+  city?: string;
+  price?: number;
+}): Promise<{
+  ok: boolean;
+  replacement_status: string;
+  replacement_message: string;
+  replacement_booking?: Record<string, unknown>;
+  replacement_provider?: { id: string; name: string } | null;
+}> {
+  const { data } = await client.post('/api/booking/rebook-from-chat', {
+    job_request_id: params.job_request_id,
+    user_id: params.user_id,
+    provider_id: params.provider_id || '',
+    service: params.service || 'Service',
+    location: params.location || '',
+    city: params.city || 'Islamabad',
+    price: params.price || 1000,
+    cancelled_by: 'provider',
+    reason: 'Worker late — customer ne naya worker maanga',
   });
   return data;
 }
