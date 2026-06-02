@@ -8,6 +8,7 @@ import { DisputesPage } from './pages/Disputes'
 import { AnalyticsPage } from './pages/Analytics'
 import { AdminUsersPage } from './pages/AdminUsers'
 import { AuditLogPage } from './pages/AuditLog'
+import { InvestigationsPage } from './pages/Investigations'
 
 export default function App() {
   return (
@@ -19,6 +20,7 @@ export default function App() {
             <Route index element={<DashboardPage />} />
             <Route path="providers" element={<ProvidersPage />} />
             <Route path="disputes" element={<DisputesPage />} />
+            <Route path="investigations" element={<InvestigationsPage />} />
             <Route path="analytics" element={<AnalyticsPage />} />
             <Route path="admin-users" element={<AdminUsersPage />} />
             <Route path="audit-log" element={<AuditLogPage />} />

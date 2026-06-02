@@ -18,8 +18,10 @@ from backend.models.admin import (
     ProviderRejectBody,
     ProviderSuspendBody,
 )
+from backend.models.investigation import AdminInvestigationDecisionBody
 from backend.services import admin_service
 from backend.services.admin_auth import AdminAuthContext, get_current_admin, require_permission
+from backend.services.investigation_service import apply_admin_investigation_decision, list_admin_investigations
 
 router = APIRouter(prefix="/api/admin", tags=["admin-portal"])
 
@@ -126,6 +128,33 @@ async def admin_list_disputes(
 ):
     rows = await admin_service.list_disputes_admin(status, dispute_type, priority, search)
     return {"disputes": rows, "count": len(rows)}
+
+
+@router.get("/investigations")
+async def admin_list_investigations(
+    status: Optional[str] = Query(None),
+    admin: AdminAuthContext = Depends(require_permission("disputes")),
+):
+    rows = await list_admin_investigations(status)
+    return {"investigations": rows, "count": len(rows)}
+
+
+@router.patch("/investigations/{investigation_id}/decision")
+async def admin_investigation_decision(
+    investigation_id: str,
+    body: AdminInvestigationDecisionBody,
+    admin: AdminAuthContext = Depends(require_permission("disputes", write=True)),
+):
+    try:
+        return await apply_admin_investigation_decision(
+            investigation_id=investigation_id,
+            actor=admin,
+            action=body.action,
+            reason=body.reason,
+            suspend_days=body.suspend_days,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/disputes/{dispute_id}")

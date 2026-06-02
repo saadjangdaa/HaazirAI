@@ -19,6 +19,7 @@ ProviderAdminStatus = Literal[
     "inactive",
     "suspended",
     "rejected",
+    "disabled",
 ]
 
 DisputeAdminStatus = Literal["open", "in_review", "resolved", "on_hold", "closed"]

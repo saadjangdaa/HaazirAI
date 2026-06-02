@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
 
 from services.firebase import check_slot_conflict
+from services.investigation_service import is_provider_eligible_for_assignment
 from services.maps import haversine, get_user_coordinates
 from services.scheduling import scheduled_time_from_intent
 
@@ -217,7 +218,10 @@ class DhundhoAgent:
 
         from services.service_categories import filter_providers_by_category
 
-        after_service = filter_providers_by_category(pool, normalized_category)
+        after_service = [
+            p for p in filter_providers_by_category(pool, normalized_category)
+            if is_provider_eligible_for_assignment(p)
+        ]
         count_stage("after_service_match", len(after_service))
 
         after_city = [p for p in after_service if (p.get("city") or "").lower() == (city or "").lower()]

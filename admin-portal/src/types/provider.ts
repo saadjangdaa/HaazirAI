@@ -24,6 +24,13 @@ export interface Provider {
   suspended_until?: string | null
   suspend_reason?: string
   reject_reason?: string
+  complaint_count?: number
+  verified_complaint_count?: number
+  trust_score?: number
+  risk_score?: number
+  late_arrival_count?: number
+  investigation_status?: string
+  recommended_action?: string
   documents?: Record<string, ProviderDocument>
   background_check?: { status: string; details: string; verified: boolean }
 }
