@@ -443,21 +443,32 @@ _AGENT_URDU = {
 def _judge_logs_to_mobile_agent_logs(logs: list) -> list:
     """Map judge-facing reasoning entries to the legacy shape used by the Expo AgentLogViewer."""
     out = []
-    for entry in logs:
+    for i, entry in enumerate(logs):
         ts = entry.get("timestamp", "")
         agent = entry.get("agent", "Samajh")
+        # Calculate elapsed from consecutive timestamps
+        time_seconds = 0.0
+        if ts and i + 1 < len(logs):
+            next_ts = logs[i + 1].get("timestamp", "")
+            if next_ts:
+                try:
+                    t1 = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    t2 = datetime.fromisoformat(next_ts.replace("Z", "+00:00"))
+                    time_seconds = round(abs((t2 - t1).total_seconds()), 3)
+                except Exception:
+                    pass
         out.append(
             {
                 "agent_name": agent.upper(),
                 "agent_name_urdu": _AGENT_URDU.get(agent, agent),
                 "start_time": ts,
-                "end_time": ts,
+                "end_time": logs[i + 1].get("timestamp", ts) if i + 1 < len(logs) else ts,
                 "input_summary": entry.get("reasoning", ""),
                 "output_summary": entry.get("decision", ""),
                 "decision_made": entry.get("decision", ""),
                 "confidence": float(entry.get("confidence", 0.0)),
                 "fallback_used": entry.get("status") == "failure",
-                "time_seconds": 0.0,
+                "time_seconds": time_seconds,
             }
         )
     return out
@@ -711,7 +722,12 @@ async def respond_to_dispute_route(dispute_id: str, body: DisputeRespondRequest)
 async def finalize_dispute_route(dispute_id: str, body: DisputeFinalizeRequest):
     """Phase E — JHAGRA final resolution after HIFAZAT review (under_review)."""
     uid = _require_firebase_uid(body.user_id)
-    return await finalize_dispute(user_id=uid, dispute_id=dispute_id)
+    result = await finalize_dispute(user_id=uid, dispute_id=dispute_id)
+    agent_logs = result.pop("_agent_logs", None) or []
+    if agent_logs:
+        req_id = f"DISP-{dispute_id[:16]}"
+        await save_agent_logs(req_id, f"Dispute resolution: {dispute_id}", agent_logs, user_id=uid)
+    return result
 
 
 @app.post("/api/complaints")
@@ -1185,6 +1201,18 @@ async def conversation(body: ConversationRequest):
                 logger.warning("[conversation] run_samajh_workflow timed out — using fallback providers")
             except Exception as _se:
                 logger.warning("[conversation] run_samajh_workflow failed: %s", _se)
+
+            # Save agent logs from conversation orchestration
+            if orch:
+                conv_logs = orch.get("logs") or orch.get("agent_logs") or []
+                if conv_logs:
+                    conv_req_id = orch.get("request_id") or f"CONV-{body.session_id[:16]}"
+                    conv_uid = (body.user_id or "").strip() or None
+                    try:
+                        mobile_logs = _judge_logs_to_mobile_agent_logs(conv_logs) if isinstance(conv_logs[0], dict) and "agent" in conv_logs[0] else conv_logs
+                        await save_agent_logs(conv_req_id, body.user_text or "", mobile_logs, user_id=conv_uid)
+                    except Exception as _le:
+                        logger.warning("[conversation] log save failed: %s", _le)
 
             providers = list((orch.get("providers_ranked") or []))[:3]
             if not providers:
