@@ -13,12 +13,14 @@ except ImportError:
     GEMINI_API_KEY = os.getenv("GOOGLE_GEMINI_API_KEY", "") or os.getenv("GEMINI_API_KEY", "")
     _GEMINI_MODEL = "gemini-2.0-flash"
 
-# ── Collect up to 5 API keys ──────────────────────────────────────────────────
+# ── Collect up to 15 API keys ─────────────────────────────────────────────────
 _ALL_KEYS: list[str] = []
-for _suffix in ["", "2", "3", "4", "5"]:
+for _suffix in ["", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15"]:
     _k = os.getenv(f"GOOGLE_GEMINI_API_KEY{_suffix}", "").strip()
-    if _k and _k != "your_gemini_api_key":
+    if _k and _k != "your_gemini_api_key" and _k.startswith("AIzaSy"):
         _ALL_KEYS.append(_k)
+    elif _k and _k != "your_gemini_api_key":
+        print(f"[gemini] skipping GOOGLE_GEMINI_API_KEY{_suffix} — invalid format (must start with AIzaSy)")
 
 MOCK_MODE = len(_ALL_KEYS) == 0
 _MODEL_NAME = "gemini-3.5-flash"
