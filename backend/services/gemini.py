@@ -103,6 +103,7 @@ async def _try_generate(prompt: str, system_prompt: str = "") -> str | None:
                 tried += 1
             else:
                 print(f"[gemini] all {len(_ALL_KEYS)} keys exhausted — falling back to mock")
+                _init_client(0)  # reset so next request starts from key #1 again
                 return None
 
     return None
@@ -143,6 +144,7 @@ async def generate_with_parts(parts: list) -> str:
             _init_client(next_idx)
             tried += 1
         else:
+            _init_client(0)  # reset so next request starts from key #1 again
             return '{"text": "", "detected_language": "unknown", "confidence": 0.0}'
     return '{"text": "", "detected_language": "unknown", "confidence": 0.0}'
 

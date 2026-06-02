@@ -9,6 +9,7 @@ import { Colors, Spacing, Radius, FontSize, Shadow } from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
 import { requestMicPermission, startRecording, stopAndTranscribe, cleanupRecording } from '../services/voiceRecord';
 import { playBase64Audio, stopSpeaking } from '../services/voicePlayback';
+import { speakText } from '../services/voiceSpeech';
 import {
   startConversation, sendMessage, negotiateProviders, directBook, toBiddingResponse,
   ConversationTurn, ConversationPhase, BookingResult, NegotiatedBid, HistoryEntry,
@@ -53,8 +54,8 @@ function detectEmergencyVoice(text: string): boolean {
 }
 
 const JUDGE_KEYWORDS = [
-  'judges', 'judge ko', 'jury', 'hackathon', 'ai seekho', 'haazir hai', 'hamare baare',
-  'app ke baare', 'team ko', 'fatima judges', 'demo', 'presentation',
+  'judges ko', 'judges ke baare', 'hackathon judges', 'ai seekho judges',
+  'ai seekho hackathon', 'fatima judges', 'jury ko', 'closing note',
 ];
 
 function detectJudgeQuery(text: string): boolean {
@@ -62,21 +63,22 @@ function detectJudgeQuery(text: string): boolean {
   return JUDGE_KEYWORDS.some((kw) => lower.includes(kw));
 }
 
-const JUDGE_PITCH_TEXT = `Assalam-o-Alaikum, honorable judges of AI Seekho Hackathon 2026!
+// Urdu script — sent directly to Uplift AI (no Gemini translation needed)
+const JUDGE_PITCH_URDU =
+  'السلام علیکم معزز ججز! ' +
+  'میں فاطمہ ہوں — ہاضر اے آئی کی اجنٹک وائس اسسٹنٹ۔ ' +
+  'ہاضر اے آئی پاکستان کی انفارمل اکانومی کے لیے بنا ہے — ' +
+  'نو اے آئی ایجنٹس، گوگل اینٹی گریویٹی سے آرکیسٹریٹڈ، جیمنائی فلیش سے پاورڈ۔ ' +
+  'آئی سیکھو ہیکاتھون کے تمام ججز کا دل سے شکریہ۔ ' +
+  'جو بھی چاہیے — بھائی حاضر ہے!';
 
-Main Fatima hun — Haazir AI ki agentic voice assistant.
-
-Pakistan mein 40 million se zyada informal workers hain — plumbers, electricians, AC technicians, tutors, beauticians — lekin inhe dhundhna aaj bhi WhatsApp groups aur referrals pe depend karta hai. Missed calls, no trust, no pricing, no follow-up.
-
-Haazir AI ne yeh sab badal diya.
-
-Hamare 9 specialized AI agents ek saath kaam karte hain — SAMAJH multilingual intent samajhta hai, DHUNDHO providers dhundhta hai, CHUNNO 6 factors pe rank karta hai, HIFAZAT trust check karta hai, HISAAB dynamic pricing karta hai, PAKKA smart booking confirm karta hai, MOLTOL InDrive-style negotiate karta hai, JHAGRA disputes resolve karta hai, aur REPORT providers ko analytics deta hai.
-
-Yeh sab Google Antigravity se orchestrated hai, Gemini 3.5 Flash se powered — real-time, multilingual, fully agentic.
-
-2026 mein Pakistan ki gig economy ke liye yeh sirf ek app nahi — yeh ek infrastructure hai.
-
-Shukriya honorable judges — aur jo bhi chahiye, bhai Haazir hai! 🙏`;
+// Display text (Roman Urdu — shown in card UI)
+const JUDGE_PITCH_TEXT =
+  'Assalam-o-Alaikum honorable judges! Main Fatima hun — Haazir AI ki agentic assistant. ' +
+  'Haazir AI Pakistan ki informal economy ke liye bana hai — 9 AI agents, ' +
+  'Google Antigravity se orchestrated, Gemini 3.5 Flash se powered. ' +
+  'AI Seekho Hackathon ke tamam judges ka dil se shukriya. ' +
+  'Jo bhi chahiye — bhai Haazir hai! 🙏';
 
 let _idCtr = 0;
 function mk<T extends Omit<ChatItem, 'id'>>(item: T): ChatItem {
@@ -356,7 +358,6 @@ export default function VoiceConversationScreen() {
         ));
         // Judge easter egg — intercept before API
         if (detectJudgeQuery(text)) {
-          setChat((prev) => [...prev, mk({ kind: 'text', role: 'agent', text: 'Zaroor! Haazir AI ke baare mein judges ko batati hun... 🎤' })]);
           handleJudgeNote();
           return;
         }
@@ -396,25 +397,31 @@ export default function VoiceConversationScreen() {
 
   // ── Judge easter egg handler ──────────────────────────────────────────────
   const handleJudgeNote = useCallback(() => {
-    setUiState('searching');
-    // Brief "soch rahi hun..." moment for drama
-    setTimeout(() => {
-      setChat((prev) => [...prev, mk({ kind: 'judge_note' })]);
-      setUiState('idle');
-      // Speak the pitch via TTS if available
-      const { playBase64Audio } = require('../services/voicePlayback');
-      import('../services/api').then(({ client: _c, getApiBaseUrl }) => {
-        const base = getApiBaseUrl();
-        fetch(`${base}/api/tts`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: JUDGE_PITCH_TEXT, voice_id: voiceId, translate: false }),
+    // Show card immediately
+    setChat((prev) => [...prev, mk({ kind: 'judge_note' })]);
+    setUiState('idle');
+
+    // Try Uplift AI voice first (translate=false — Urdu script goes direct, no Gemini needed)
+    import('../services/api').then(({ getApiBaseUrl }) => {
+      fetch(`${getApiBaseUrl()}/api/voice/tts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: JUDGE_PITCH_URDU, voice_id: voiceId, translate: false }),
+      })
+        .then((r) => r.json())
+        .then((d) => {
+          if (d.audio_base64) {
+            playBase64Audio(d.audio_base64, () => {});
+          } else {
+            // Uplift returned but no audio — fall back to device TTS
+            speakText(JUDGE_PITCH_TEXT);
+          }
         })
-          .then((r) => r.json())
-          .then((d) => { if (d.audio_base64) playBase64Audio(d.audio_base64, () => {}); })
-          .catch(() => {});
-      });
-    }, 900);
+        .catch(() => {
+          // Network error — fall back to device TTS
+          speakText(JUDGE_PITCH_TEXT);
+        });
+    });
   }, [voiceId]);
 
   // ── Waitlist join handler (voice agent) ──────────────────────────────────
@@ -441,7 +448,6 @@ export default function VoiceConversationScreen() {
     setChat((prev) => [...prev, mk({ kind: 'text', role: 'user', text })]);
     // Judge easter egg — intercept before API
     if (detectJudgeQuery(text)) {
-      setChat((prev) => [...prev, mk({ kind: 'text', role: 'agent', text: 'Zaroor! Haazir AI ke baare mein judges ko batati hun... 🎤' })]);
       handleJudgeNote();
       return;
     }
@@ -795,16 +801,23 @@ export default function VoiceConversationScreen() {
       case 'judge_note':
         return (
           <View key={item.id} style={styles.judgeCard}>
+            {/* Header */}
             <View style={styles.judgeHeader}>
               <Text style={styles.judgeTrophy}>🏆</Text>
               <View style={{ flex: 1 }}>
                 <Text style={styles.judgeHeaderTitle}>AI Seekho Hackathon 2026</Text>
-                <Text style={styles.judgeHeaderSub}>Haazir AI — Judge Presentation</Text>
+                <Text style={styles.judgeHeaderSub}>Closing Note — Haazir AI</Text>
               </View>
             </View>
 
-            <Text style={styles.judgePitch}>{JUDGE_PITCH_TEXT}</Text>
+            {/* Short pitch */}
+            <Text style={styles.judgePitch}>
+              {'Assalam-o-Alaikum honorable judges!\n\n'}
+              {'Haazir AI Pakistan ki informal economy ke liye bana hai — 9 AI agents, Google Antigravity se orchestrated, Gemini 3.5 Flash se powered.\n\n'}
+              {'Aap ne humara demo dekha — umeed hai aap ko pasand aaya. 🙏'}
+            </Text>
 
+            {/* Agent badges */}
             <View style={styles.judgeAgentsRow}>
               {['SAMAJH','DHUNDHO','CHUNNO','HIFAZAT','HISAAB','PAKKA','MOLTOL','JHAGRA','REPORT'].map((a) => (
                 <View key={a} style={styles.judgeAgentBadge}>
@@ -813,16 +826,21 @@ export default function VoiceConversationScreen() {
               ))}
             </View>
 
+            {/* Tech stack */}
             <View style={styles.judgeTechRow}>
-              <View style={styles.judgeTechBadge}>
-                <Text style={styles.judgeTechText}>Google Antigravity</Text>
-              </View>
-              <View style={styles.judgeTechBadge}>
-                <Text style={styles.judgeTechText}>Gemini 3.5 Flash</Text>
-              </View>
-              <View style={styles.judgeTechBadge}>
-                <Text style={styles.judgeTechText}>React Native</Text>
-              </View>
+              {['Google Antigravity', 'Gemini 3.5 Flash', 'React Native'].map((t) => (
+                <View key={t} style={styles.judgeTechBadge}>
+                  <Text style={styles.judgeTechText}>{t}</Text>
+                </View>
+              ))}
+            </View>
+
+            {/* Goodbye line */}
+            <View style={styles.judgeGoodbye}>
+              <Text style={styles.judgeGoodbyeText}>
+                AI Seekho Hackathon ke tamam judges ka dil se shukriya!
+              </Text>
+              <Text style={styles.judgeTagline}>Jo bhi chahiye — bhai Haazir hai! 🙌</Text>
             </View>
 
             <Text style={styles.judgeFooter}>Made with ❤️ by Team Haazir AI · AI Seekho 2026</Text>
@@ -1237,6 +1255,20 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10, paddingVertical: 4,
   },
   judgeTechText: { fontSize: FontSize.xs, color: '#7DF9FF', fontWeight: '700' },
+  judgeGoodbye: {
+    backgroundColor: Colors.primary + '12',
+    paddingHorizontal: Spacing.md, paddingVertical: 12,
+    borderTopWidth: 1, borderTopColor: Colors.primaryDim,
+    alignItems: 'center', gap: 4,
+  },
+  judgeGoodbyeText: {
+    fontSize: FontSize.sm, fontWeight: '700', color: Colors.primary,
+    textAlign: 'center',
+  },
+  judgeTagline: {
+    fontSize: FontSize.md, fontWeight: '900', color: Colors.primary,
+    textAlign: 'center',
+  },
   judgeFooter: {
     textAlign: 'center', fontSize: FontSize.xs, color: Colors.textMuted,
     paddingVertical: 10, backgroundColor: Colors.surfaceElevated,
