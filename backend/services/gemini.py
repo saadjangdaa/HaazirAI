@@ -44,7 +44,10 @@ def _init_client(idx: int) -> bool:
         return False
     try:
         if _NEW_SDK:
-            _client = _google_genai.Client(api_key=_ALL_KEYS[idx])
+            _client = _google_genai.Client(
+                api_key=_ALL_KEYS[idx],
+                http_options={"api_version": "v1"},
+            )
         else:
             _old_genai.configure(api_key=_ALL_KEYS[idx])
         _current_key_idx = idx
